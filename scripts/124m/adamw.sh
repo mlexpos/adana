@@ -7,8 +7,8 @@ torchrun --nproc_per_node=1 ./src/main.py --config_format base --model llama --d
     --dropout 0.0 --warmup_steps 2000 --grad_clip 0.5 --seed 0 \
     --opt adamw --lr 1e-3 --weight_decay 0.1 --scheduler cos \
     --beta1 0.8 --beta2 0.999 \
-    --wandb --wandb_project YOUR_WANDB-PROJECT  --wandb_entity YOUR-WANDB-ENTITY \
-    --eval_interval 115 --latest_ckpt_interval 1000 \
+    --wandb --wandb_project llm-optimizer-benchmark  --wandb_entity team_damien_frb \
+    --eval_interval 115 --latest_ckpt_interval 1000
 
 # WSD example
 torchrun --nproc_per_node=1 ./src/main.py --config_format base --model llama --distributed_backend nccl \
@@ -20,4 +20,4 @@ torchrun --nproc_per_node=1 ./src/main.py --config_format base --model llama --d
     --beta1 0.8 --beta2 0.999 \
     --wsd_fract_decay 0.2 --decay_type sqrt \
     --wandb --wandb_project YOUR_WANDB-PROJECT  --wandb_entity YOUR-WANDB-ENTITY \
-    --eval_interval 115 --latest_ckpt_interval 1000 \
+    --eval_interval 115 --latest_ckpt_interval 1000

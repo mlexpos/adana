@@ -11,7 +11,7 @@ from typing import Dict, Tuple
 import torch
 import torch.distributed as dist
 
-from .schedule import cos_inf_schedule, cosine_wsd_decay_schedule, wsd_schedule
+from .schedule import cos_inf_schedule, wsd_schedule #, cosine_wsd_decay_schedule, DOES NOT EXIST
 
 
 # copy from https://github.com/KellerJordan/Muon/tree/master

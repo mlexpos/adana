@@ -2,7 +2,7 @@ import os
 
 import numpy as np
 import tiktoken
-from datasets import load_dataset
+from datasets import load_dataset, DownloadConfig
 from tqdm import tqdm
 
 tknzr = tiktoken.get_encoding("gpt2")
@@ -10,16 +10,17 @@ tknzr = tiktoken.get_encoding("gpt2")
 
 def get_fineweb_data(datasets_dir, num_proc=40):
     """To change the cache dir, run `export HF_HOME=/path/to/cache/` before running the code."""
-    FWEB_DATA_PATH = os.path.join(datasets_dir, "fineweb-100BT/")
+    FWEB_DATA_PATH = os.path.join(datasets_dir, "fineweb-10BT/")
     if not os.path.exists(os.path.join(FWEB_DATA_PATH, "train.bin")):
         os.makedirs(FWEB_DATA_PATH, exist_ok=True)
 
         dataset = load_dataset(
             "HuggingFaceFW/fineweb",
-            name="sample-100BT",
+            name="sample-10BT",
             split="train",
             streaming=False,
             verification_mode="no_checks",
+            download_config=DownloadConfig(max_retries=10),
         )
 
         split_dataset = dataset.train_test_split(
@@ -73,4 +74,5 @@ def get_fineweb_data(datasets_dir, num_proc=40):
 
 
 if __name__ == "__main__":
-    get_fineweb_data("./datasets/")
+    # get_fineweb_data("./datasets/")
+    get_fineweb_data("~/scratch/fineweb-10BT/")

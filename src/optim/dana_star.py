@@ -1,0 +1,158 @@
+import math
+import torch
+from torch.optim import Optimizer
+from typing import Union, Callable, Iterable
+
+class DANA_STAR(Optimizer):
+    
+    def __init__(
+        self,
+        params: Iterable[torch.Tensor],
+        lr: float = 1.0, # learning rate for debugging
+        # g2: float = 1e-4,
+        # g3: float = 1e-5,
+        delta: float = 8.0,
+        kappa: float = 1.0,
+        epsilon: float = 1e-8,
+        weight_decay: float = 0.0,
+        ):
+        
+        defaults = dict(
+            lr=lr, delta=delta, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay)
+        
+        super(DANA_STAR, self).__init__(params, defaults)
+        
+        # Global step counter
+        self._step_count = 0
+    
+    def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
+        """Convert scalar or schedule to callable function."""
+        if callable(value):
+            return value
+        else:
+            return lambda step: value
+    
+    def _clip_to_half(self, tau: torch.Tensor) -> torch.Tensor:
+        """Clip tau values to at most 0.5."""
+        return torch.clamp(tau, max=0.5)
+    
+    def _tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
+        """
+        Tau regularization function that:
+        1. Ensures tau is not a poor estimate when p << 1/t
+        2. Converts tau/(1-tau) form to proper p estimate  
+        3. Clips to prevent numerical issues
+        """
+        clipped_tau = self._clip_to_half(tau)
+        p_estimate = clipped_tau / (1.0 - clipped_tau)
+        min_p = torch.full_like(tau, 1.0 / (1.0 + step))
+        return torch.maximum(p_estimate, min_p)
+    
+    def _root_tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
+        """Square root of tau regularization."""
+        return torch.sqrt(self._tau_reg(tau, step))
+    
+    # def _quarter_root_tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
+    #     """Quarter root of tau regularization."""
+    #     return torch.pow(self._tau_reg(tau, step), 0.25)
+    
+    def _effective_time(self, tau: torch.Tensor, step: int) -> torch.Tensor:
+        """Compute effective time for tau regularization."""
+        return torch.maximum(tau * step, torch.ones_like(tau))
+    
+    def _tau_updater(
+        self, 
+        # tau: torch.Tensor, 
+        g: torch.Tensor, # gradient
+        v: torch.Tensor, # second moment
+        epsilon: float
+    ) -> torch.Tensor:
+        return torch.abs(g) / (torch.abs(g) + torch.sqrt(v) + epsilon)
+        
+    
+    def _norm_term(
+        self, 
+        # g : torch.Tensor, # gradient
+        # md: torch.Tensor, 
+        v: torch.Tensor, 
+        tau: torch.Tensor, 
+        step: int, 
+        #clipsnr: float, 
+        epsilon: float
+    ) -> torch.Tensor:
+    
+        root_tau_reg = self._root_tau_reg(tau, step)
+        return root_tau_reg / (torch.sqrt(v) + epsilon)
+    
+    #@torch.compile
+    @torch.no_grad()
+    def step(self, closure=None):
+        """Perform a single optimization step."""
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        
+        self._step_count += 1
+        
+        for group in self.param_groups:
+            # Get schedule functions
+            g2 = group['lr']
+            g3 = group['lr']
+            lr = group['lr']
+            delta = group['delta']
+            kappa = group['kappa']
+            wd = group['weight_decay']
+            epsilon = group['epsilon']
+            
+            for p in group['params']:
+                grad = p.grad
+                if grad is None:
+                    continue
+                
+                state = self.state[p]
+                
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['m'] = torch.zeros_like(p)  # First moment
+                    state['v'] = torch.zeros_like(p)  # Second moment
+                    state['tau'] = torch.zeros_like(p)  # Tau estimates
+                
+                m, v, tau = state['m'], state['v'], state['tau']
+                state['step'] += 1
+                
+                # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
+                alpha = delta / (delta + state['step'])
+
+                # Update first moment
+                m.mul_(1 - alpha).add_(grad, alpha=alpha)
+
+                # Update second moment
+                v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+                
+                # Update tau using the specified tau updater
+                tau_update = self._tau_updater(grad, v, epsilon)
+                tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
+                
+                # Compute effective time
+                effective_time = self._effective_time(tau, state['step'])
+                
+                # Compute momentum terms
+                norm_term = self._norm_term(v, tau, state['step'], epsilon)
+                
+                # Compute parameter updates using effective time for g2 and g3 scheduling
+                g2_term = g2 * grad * norm_term
+                g3_term = g3 * (1 + effective_time)**(1-kappa) * m * norm_term
+                
+                # Apply the main update
+                update = -(g2_term + g3_term)
+
+                # Decoupled weight decay (AdamW-style)
+                if wd != 0:
+                    p.add_(p, alpha=-wd * lr)
+                
+                # Apply update to parameters with scheduled LR
+                p.add_(update)
+        
+        return loss

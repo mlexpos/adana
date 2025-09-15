@@ -24,12 +24,12 @@ from optim.lion import Lion
 from optim.mars import MARS
 from optim.muon import CombinedScheduler, DistributedMuon, Muon
 from optim.prodigy import Prodigy
-from optim.schedule import (cos_inf_schedule, cosine_wsd_decay_schedule,
-                            dd_schedule, wsd_schedule)
+from optim.schedule import cos_inf_schedule, wsd_schedule # cosine_wsd_decay_schedule, dd_schedule, DOES NOT EXIST
 from optim.schedulefree import AdamWScheduleFree, SGDScheduleFree
 from optim.sign import Signum
 from optim.soap import SOAP
 from optim.sophia import SophiaG
+from optim.dana_star import DANA_STAR
 
 
 def get_args():
@@ -273,6 +273,15 @@ def main(args, parser):
             lr_1d=args.lr,  # AdamW's lr when optimize_1d=False
             betas_1d=(args.beta1, args.beta2),  # AdamW's betas when optimize_1d=False
             weight_decay_1d=0.1,  # AdamW's weight decay
+        )
+    elif args.opt == "dana-star":
+        # Map generic CLI args to DANA-STAR hyperparameters
+        opt = DANA_STAR(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
+            kappa=args.kappa,
+            weight_decay=args.weight_decay,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(
