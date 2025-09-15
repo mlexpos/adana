@@ -282,6 +282,7 @@ def main(args, parser):
             delta=args.delta,
             kappa=args.kappa,
             weight_decay=args.weight_decay,
+            clipsnr=args.clipsnr,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(
@@ -322,8 +323,8 @@ def main(args, parser):
                 torch.optim.lr_scheduler.OneCycleLR(
                     optimizer=opt,
                     max_lr=[
-                        group.get("lr", args.lr) for group in group_specs
-                    ],  # it was args.lr
+                        group.get("lr", args.lr) for group in opt.param_groups
+                    ],  # Fixed: use opt.param_groups instead of group_specs
                     total_steps=args.iterations,
                     pct_start=args.warmup_steps
                     / args.iterations,  # it was args.warmup_percent

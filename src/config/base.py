@@ -169,6 +169,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--g3", default=1e-3, type=float)
     parser.add_argument("--delta", default=8.0, type=float)
     parser.add_argument("--kappa", default=1.0, type=float)
+    parser.add_argument("--clipsnr", default=1.0, type=float)
 
     # Dataset params
     parser.add_argument("--datasets_dir", type=str, default="./src/data/datasets/")

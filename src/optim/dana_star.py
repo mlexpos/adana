@@ -15,10 +15,11 @@ class DANA_STAR(Optimizer):
         kappa: float = 1.0,
         epsilon: float = 1e-8,
         weight_decay: float = 0.0,
+        clipsnr: float = 1.0,
         ):
         
         defaults = dict(
-            lr=lr, delta=delta, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay)
+            lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay)
         
         super(DANA_STAR, self).__init__(params, defaults)
         
@@ -104,6 +105,7 @@ class DANA_STAR(Optimizer):
             kappa = group['kappa']
             wd = group['weight_decay']
             epsilon = group['epsilon']
+            clipsnr = group['clipsnr']
             
             for p in group['params']:
                 grad = p.grad
@@ -140,9 +142,9 @@ class DANA_STAR(Optimizer):
                 
                 # Compute momentum terms
                 norm_term = self._norm_term(v, tau, state['step'], epsilon)
-                
+                clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, state['step']) * torch.abs(grad) + epsilon), max=1.0)
                 # Compute parameter updates using effective time for g2 and g3 scheduling
-                g2_term = g2 * grad * norm_term
+                g2_term = g2 * grad * norm_term * clip_g2_term
                 g3_term = g3 * (1 + effective_time)**(1-kappa) * m * norm_term
                 
                 # Apply the main update
