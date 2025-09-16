@@ -16,11 +16,19 @@ class DANA_STAR(Optimizer):
         epsilon: float = 1e-8,
         weight_decay: float = 0.0,
         clipsnr: float = 1.0,
+        weight_time: bool = False,
         ):
         
         defaults = dict(
-            lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay)
-        
+            lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
+        self.lr = lr
+        self.delta = delta
+        self.clipsnr = clipsnr
+        self.epsilon = epsilon
+        self.kappa = kappa
+        self.weight_decay = weight_decay
+        self.weight_time = weight_time
+
         super(DANA_STAR, self).__init__(params, defaults)
         
         # Global step counter
@@ -101,6 +109,8 @@ class DANA_STAR(Optimizer):
             g2 = group['lr']
             g3 = group['lr']
             lr = group['lr']
+            time_factor = group['lr'] / self.lr
+            group['weighted_step_count'] += time_factor
             delta = group['delta']
             kappa = group['kappa']
             wd = group['weight_decay']
@@ -125,8 +135,15 @@ class DANA_STAR(Optimizer):
                 state['step'] += 1
                 
                 # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
-                alpha = delta / (delta + state['step'])
+                if self.weight_time: # potentially take one during warmup
+                    step = group['weighted_step_count']
+                    alpha = delta / (delta + step) * time_factor
+                else:
+                    alpha = delta / (delta + state['step'])
+                    step = state['step']
 
+
+                
                 # Update first moment
                 m.mul_(1 - alpha).add_(grad, alpha=alpha)
 
@@ -138,11 +155,13 @@ class DANA_STAR(Optimizer):
                 tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
                 
                 # Compute effective time
-                effective_time = self._effective_time(tau, state['step'])
+                effective_time = self._effective_time(tau, step)
+                
                 
                 # Compute momentum terms
-                norm_term = self._norm_term(v, tau, state['step'], epsilon)
-                clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, state['step']) * torch.abs(grad) + epsilon), max=1.0)
+                norm_term = self._norm_term(v, tau, step, epsilon)
+
+                clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, step) * torch.abs(grad) + epsilon), max=1.0)
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term * clip_g2_term
                 g3_term = g3 * (1 + effective_time)**(1-kappa) * m * norm_term
