@@ -21,3 +21,5 @@ rm -rf exps/*dana-star*
 
 chmod +x scripts/124m/dana-star.sh
 scripts/124m/dana-star.sh
+
+#test
