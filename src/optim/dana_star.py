@@ -17,8 +17,23 @@ class DANA_STAR(Optimizer):
         weight_decay: float = 0.0,
         clipsnr: float = 1.0,
         weight_time: bool = False,
+        wd_decaying: bool = False,
         ):
+
+        """
+        DANA-STAR optimizer.
         
+        Args:
+            params: Iterable of parameters to optimize.
+            lr: Learning rate. In the code, g2=g3 are taken equal to lr.
+            delta: Delta parameter.
+            kappa: Kappa parameter.
+            epsilon: Epsilon parameter.
+            weight_decay: Weight decay parameter.
+            clipsnr: Clipsnr parameter.
+            weight_time: Whether to use a weighting of the time by a factor lr / lr_max when using scheduler to better handle annealing (doesn't work currently).
+            wd_decaying: Whether to decay the wd parameter along training by a (1 + t) factor.
+        """
         defaults = dict(
             lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
         self.lr = lr
@@ -28,7 +43,8 @@ class DANA_STAR(Optimizer):
         self.kappa = kappa
         self.weight_decay = weight_decay
         self.weight_time = weight_time
-
+        self.wd_decaying = wd_decaying
+        
         super(DANA_STAR, self).__init__(params, defaults)
         
         # Global step counter
@@ -139,29 +155,23 @@ class DANA_STAR(Optimizer):
                     step = group['weighted_step_count']
                     alpha = delta / (delta + step) * time_factor
                 else:
-                    alpha = delta / (delta + state['step'])
                     step = state['step']
-
-
+                    alpha = delta / (delta + step)              
                 
                 # Update first moment
                 m.mul_(1 - alpha).add_(grad, alpha=alpha)
-
                 # Update second moment
                 v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
                 
                 # Update tau using the specified tau updater
                 tau_update = self._tau_updater(grad, v, epsilon)
                 tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
-                
                 # Compute effective time
                 effective_time = self._effective_time(tau, step)
-                
-                
                 # Compute momentum terms
                 norm_term = self._norm_term(v, tau, step, epsilon)
-
                 clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, step) * torch.abs(grad) + epsilon), max=1.0)
+                
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term * clip_g2_term
                 g3_term = g3 * (1 + effective_time)**(1-kappa) * m * norm_term
@@ -171,7 +181,10 @@ class DANA_STAR(Optimizer):
 
                 # Decoupled weight decay (AdamW-style)
                 if wd != 0:
-                    p.add_(p, alpha=-wd * lr)
+                    if self.wd_decaying:
+                        p.add_(p, alpha= - wd / (1 + step) * lr)
+                    else:
+                        p.add_(p, alpha= - wd * lr)
                 
                 # Apply update to parameters with scheduled LR
                 p.add_(update)

@@ -1,0 +1,26 @@
+# WandB settings
+entity: team_damien_frb  # Set via environment variable WANDB_ENTITY or override
+project: llm-optimizer-benchmark  # Set via environment variable WANDB_PROJECT or override
+
+# Basic plot settings
+metric: "val/loss"
+x: "tokens"
+title: "Comparison of WSD and Cosine schedules for adamw and dana-star" # Auto-generated if not specified
+out: "wsd_against_cosine_dana_adamw.png"    # Auto-generated if not specified
+
+# Filtering - back to original request
+filter_expr: "(opt=adamw or opt=dana-star or opt=ademamix) and n_layer=12 and tags!=hidden and state=finished and (lr=1e-3 or lr=5e-4)"
+# filter_expr: "state=finished"
+max_runs: 50
+
+# Axis settings
+xlog: true
+ylog: true  # Turn off y-log since val/loss doesn't need it
+xlim: [4e9, 8.5e9]  # Example: focus on 100M to 8.5B tokens
+ylim: [3.2, 3.5]      # Example: focus on converged loss range
+# xlim: null  # null = auto-scale to show all data
+# ylim: null  # null = auto-scale to show all data
+
+# Legend settings
+legend_loc: "upper left"
+legend_keys: ["opt", "scheduler", "lr"]

@@ -4,7 +4,7 @@
 #SBATCH --time=00:10:00
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:80GB
-#SBATCH --partition=main
+#SBATCH --partition=unkillable
 #SBATCH --cpus-per-task=4
 
 module load anaconda/3
