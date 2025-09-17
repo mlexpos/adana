@@ -15,12 +15,33 @@ Date: September 2025
 
 ## Quickstart 
 
-Create a conda environment and install dependencies:
+Load modules (tamia cluster):
 
 ```
-conda create -n env python=3.10
-conda activate env
-pip install -r requirements.txt
+module load arrow/21.0.0
+module load python/3.10.13
+module load httpproxy
+```
+
+Create a uv environment and install dependencies:
+
+```
+uv venv llm
+source llm/bin/activate
+uv pip install -r requirements.txt
+```
+
+Then download 10B tokens from fineweb (takes around 1h with 16 CPUs to tokenize)
+
+```
+uv run python src/data/fineweb.py
+```
+
+and launch one of 
+
+```
+mila.sh
+tamia.sh
 ```
 
 Run a simple training on the SlimPajama 6B dataset:
