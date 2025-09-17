@@ -9,3 +9,4 @@ wandb
 datasets
 zstandard
 numpy==1.22.4
+matplotlib

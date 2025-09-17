@@ -7,8 +7,7 @@
 #SBATCH --partition=unkillable
 #SBATCH --cpus-per-task=4
 
-module load anaconda/3
-conda activate llm-benchmark
+source ~/links/projects/aip-gidelgau/dferbach/benchmarking_optimizers/llm/bin/activate
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"
@@ -21,5 +20,3 @@ rm -rf exps/*dana-star*
 
 chmod +x scripts/124m/dana-star.sh
 scripts/124m/dana-star.sh
-
-#test
