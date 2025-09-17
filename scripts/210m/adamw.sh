@@ -7,6 +7,10 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --dataset fineweb --iterations 64000 \
     --dropout 0.0 --warmup_steps 2000 --grad_clip 0.5 --seed 0 \
     --opt adamw --lr 1e-3 --weight_decay 0.1 --scheduler cos \
+<<<<<<< Updated upstream
     --beta1 0.9 --beta2 0.999 --wsd_final_lr_scale 1e2 \
+=======
+    --beta1 0.9 --beta2 0.999 \
+>>>>>>> Stashed changes
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115 --latest_ckpt_interval 1000 \
