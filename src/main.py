@@ -285,6 +285,7 @@ def main(args, parser):
             clipsnr=args.clipsnr,
             weight_time=args.weight_time,
             wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(

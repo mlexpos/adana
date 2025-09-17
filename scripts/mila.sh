@@ -1,7 +1,7 @@
 #! /bin/bash
 #SBATCH --output=logs/%j.out
 #SBATCH --error=logs/%j.err
-#SBATCH --time=00:10:00
+#SBATCH --time=24:00:00
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:80GB
 #SBATCH --partition=unkillable

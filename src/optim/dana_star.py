@@ -18,6 +18,7 @@ class DANA_STAR(Optimizer):
         clipsnr: float = 1.0,
         weight_time: bool = False,
         wd_decaying: bool = False,
+        wd_ts: float = 1.0,
         ):
 
         """
@@ -34,6 +35,7 @@ class DANA_STAR(Optimizer):
             weight_time: Whether to use a weighting of the time by a factor lr / lr_max when using scheduler to better handle annealing (doesn't work currently).
             wd_decaying: Whether to decay the wd parameter along training by a (1 + t) factor.
         """
+
         defaults = dict(
             lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
         self.lr = lr
@@ -44,7 +46,8 @@ class DANA_STAR(Optimizer):
         self.weight_decay = weight_decay
         self.weight_time = weight_time
         self.wd_decaying = wd_decaying
-        
+        self.wd_ts = wd_ts
+
         super(DANA_STAR, self).__init__(params, defaults)
         
         # Global step counter
@@ -182,7 +185,7 @@ class DANA_STAR(Optimizer):
                 # Decoupled weight decay (AdamW-style)
                 if wd != 0:
                     if self.wd_decaying:
-                        p.add_(p, alpha= - wd / (1 + step) * lr)
+                        p.add_(p, alpha= - wd / (1 + step / self.wd_ts) * lr)
                     else:
                         p.add_(p, alpha= - wd * lr)
                 
