@@ -8,7 +8,7 @@ uv run torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format ba
     --dropout 0.0  --grad_clip 0.5 --seed 0 \
     --opt dana --lr 1e-3 --delta 8 --kappa 0.75 \
     --scheduler cos --warmup_steps 2000 \
-    --weight_decay 0.1 \
+    --weight_decay 0.1 --use_grad_ema_for_g2 --grad_ema_beta 0.9 \
     --beta1 0.9 --beta2 0.999 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115 --log_interval 50 --latest_ckpt_interval 1000 \

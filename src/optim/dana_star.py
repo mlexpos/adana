@@ -194,119 +194,278 @@ class DANA_STAR(Optimizer):
         
         return loss
 
+# class DANA(Optimizer):
+    
+#     def __init__(
+#         self,
+#         params: Iterable[torch.Tensor],
+#         lr: float = 1.0, # learning rate for debugging
+#         # g2: float = 1e-4,
+#         # g3: float = 1e-5,
+#         delta: float = 8.0,
+#         kappa: float = 1.0,
+#         epsilon: float = 1e-8,
+#         weight_decay: float = 0.0,
+#         weight_time: bool = False,
+#         ):
+
+#         """
+#         DANA optimizer: same as DANA-STAR but without the effective time term.
+        
+#         Args:
+#             params: Iterable of parameters to optimize.
+#             lr: Learning rate. In the code, g2=g3 are taken equal to lr.
+#             delta: Delta parameter.
+#             kappa: Kappa parameter.
+#             epsilon: Epsilon parameter.
+#             weight_decay: Weight decay parameter.
+#         """
+
+#         defaults = dict(
+#             lr=lr, delta=delta, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
+#         self.lr = lr
+#         self.delta = delta
+#         self.epsilon = epsilon
+#         self.kappa = kappa
+#         self.weight_decay = weight_decay
+#         self.weight_time = weight_time
+
+#         super(DANA, self).__init__(params, defaults)
+        
+#         # Global step counter
+#         self._step_count = 0
+    
+#     def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
+#         """Convert scalar or schedule to callable function."""
+#         if callable(value):
+#             return value
+#         else:
+#             return lambda step: value
+
+#     #@torch.compile
+#     @torch.no_grad()
+#     def step(self, closure=None):
+#         """Perform a single optimization step."""
+#         loss = None
+#         if closure is not None:
+#             with torch.enable_grad():
+#                 loss = closure()
+        
+#         self._step_count += 1
+        
+#         for group in self.param_groups:
+#             # Get schedule functions
+#             g2 = group['lr']
+#             g3 = group['lr']
+#             lr = group['lr']
+#             time_factor = group['lr'] / self.lr
+#             group['weighted_step_count'] += time_factor
+#             delta = group['delta']
+#             kappa = group['kappa']
+#             wd = group['weight_decay']
+#             epsilon = group['epsilon']
+            
+#             for p in group['params']:
+#                 grad = p.grad
+#                 if grad is None:
+#                     continue
+                
+#                 state = self.state[p]
+                
+#                 # State initialization
+#                 if len(state) == 0:
+#                     state['step'] = 0
+#                     state['m'] = torch.zeros_like(p)  # First moment
+#                     state['v'] = torch.zeros_like(p)  # Second moment
+                
+#                 m, v = state['m'], state['v']
+#                 state['step'] += 1
+                
+#                 # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
+#                 if self.weight_time: # potentially take one during warmup
+#                     step = group['weighted_step_count']
+#                     alpha = delta / (delta + step) * time_factor
+#                 else:
+#                     step = state['step']
+#                     alpha = delta / (delta + step)              
+                
+#                 # Update first moment
+#                 m.mul_(1 - alpha).add_(grad, alpha=alpha)
+#                 # Update second moment
+#                 v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+                
+#                 normalized_factor = torch.sqrt(v) + epsilon
+#                 # Compute parameter updates using effective time for g2 and g3 scheduling
+#                 g2_term = g2 * grad / normalized_factor
+#                 g3_term = g3 * (1 + step)**(1-kappa) * m / normalized_factor
+                
+#                 # Apply the main update
+#                 update = -(g2_term + g3_term)
+
+#                 # Decoupled weight decay (AdamW-style)
+#                 if wd != 0:
+#                     p.add_(p, alpha= - wd * lr)
+#                 # print(f"g2: {g2}, g3: {g3}, lr: {lr}, wd: {wd}")
+#                 # Apply update to parameters with scheduled LR
+#                 p.add_(update)
+        
+#         return loss
+
+
 class DANA(Optimizer):
+    """
+    DANA2 optimizer: DANA algorithm implemented with AdEMAMix-style structure.
+    
+    This implementation takes the clean, well-structured code from AdEMAMix
+    but uses DANA's mathematical formulation with:
+    - Delta-based EMA coefficient: alpha = delta / (delta + t)
+    - DANA's specific moment updates and parameter updates
+    - Kappa-based momentum scaling: (1 + step)**(1-kappa)
+    """
     
     def __init__(
         self,
-        params: Iterable[torch.Tensor],
-        lr: float = 1.0, # learning rate for debugging
-        # g2: float = 1e-4,
-        # g3: float = 1e-5,
-        delta: float = 8.0,
-        kappa: float = 1.0,
-        epsilon: float = 1e-8,
-        weight_decay: float = 0.0,
-        weight_time: bool = False,
-        ):
-
-        """
-        DANA optimizer: same as DANA-STAR but without the effective time term.
+        params,
+        lr=1e-3,
+        delta=8.0,
+        kappa=1.0,
+        eps=1e-8,
+        weight_decay=0.0,
+        weight_time=False,
+        use_grad_ema_for_g2=False,
+        grad_ema_beta=0.9,
+    ):
+        if not 0.0 <= lr:
+            raise ValueError("Invalid learning rate: {}".format(lr))
+        if not 0.0 <= eps:
+            raise ValueError("Invalid epsilon value: {}".format(eps))
+        if not 0.0 <= delta:
+            raise ValueError("Invalid delta value: {}".format(delta))
+        if not 0.0 <= weight_decay:
+            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+        if not 0.0 <= grad_ema_beta < 1.0:
+            raise ValueError("Invalid grad_ema_beta value: {}".format(grad_ema_beta))
         
-        Args:
-            params: Iterable of parameters to optimize.
-            lr: Learning rate. In the code, g2=g3 are taken equal to lr.
-            delta: Delta parameter.
-            kappa: Kappa parameter.
-            epsilon: Epsilon parameter.
-            weight_decay: Weight decay parameter.
-        """
-
         defaults = dict(
-            lr=lr, delta=delta, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
-        self.lr = lr
-        self.delta = delta
-        self.epsilon = epsilon
-        self.kappa = kappa
-        self.weight_decay = weight_decay
-        self.weight_time = weight_time
-
-        super(DANA, self).__init__(params, defaults)
+            lr=lr,
+            delta=delta,
+            kappa=kappa,
+            eps=eps,
+            weight_decay=weight_decay,
+            weight_time=weight_time,
+            use_grad_ema_for_g2=use_grad_ema_for_g2,
+            grad_ema_beta=grad_ema_beta,
+            weighted_step_count=0
+        )
+        super(DANA2, self).__init__(params, defaults)
         
-        # Global step counter
+        # Global step counter for weight_time
         self._step_count = 0
-    
-    def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
-        """Convert scalar or schedule to callable function."""
-        if callable(value):
-            return value
-        else:
-            return lambda step: value
 
-    #@torch.compile
+    def __setstate__(self, state):
+        super(DANA2, self).__setstate__(state)
+
     @torch.no_grad()
     def step(self, closure=None):
-        """Perform a single optimization step."""
+        """Performs a single optimization step.
+
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        
+
         self._step_count += 1
-        
+
         for group in self.param_groups:
-            # Get schedule functions
-            g2 = group['lr']
-            g3 = group['lr']
-            lr = group['lr']
-            time_factor = group['lr'] / self.lr
-            group['weighted_step_count'] += time_factor
-            delta = group['delta']
-            kappa = group['kappa']
-            wd = group['weight_decay']
-            epsilon = group['epsilon']
+            lr = group["lr"]
+            wd = group["weight_decay"]
+            eps = group["eps"]
+            delta = group["delta"]
+            kappa = group["kappa"]
+            weight_time = group["weight_time"]
+            use_grad_ema_for_g2 = group["use_grad_ema_for_g2"]
+            grad_ema_beta = group["grad_ema_beta"]
             
-            for p in group['params']:
-                grad = p.grad
-                if grad is None:
+            # Update weighted step count for weight_time feature
+            if weight_time:
+                time_factor = lr / getattr(self, 'initial_lr', lr)  # Fallback to current lr if initial_lr not set
+                group['weighted_step_count'] += time_factor
+
+            for p in group["params"]:
+                if p.grad is None:
                     continue
-                
+                    
+                grad = p.grad
+                if grad.is_sparse:
+                    raise RuntimeError("DANA2 does not support sparse gradients.")
+
                 state = self.state[p]
-                
+
                 # State initialization
                 if len(state) == 0:
-                    state['step'] = 0
-                    state['m'] = torch.zeros_like(p)  # First moment
-                    state['v'] = torch.zeros_like(p)  # Second moment
+                    state["step"] = 0
+                    # First moment estimate (momentum)
+                    state["exp_avg"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
+                    # Second moment estimate (RMSprop-style)
+                    state["exp_avg_sq"] = torch.zeros_like(
+                        p, memory_format=torch.preserve_format
+                    )
+                    # Optional gradient EMA for g2 term
+                    if use_grad_ema_for_g2:
+                        state["grad_ema"] = torch.zeros_like(
+                            p, memory_format=torch.preserve_format
+                        )
+
+                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+                state["step"] += 1
                 
-                m, v = state['m'], state['v']
-                state['step'] += 1
-                
-                # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
-                if self.weight_time: # potentially take one during warmup
-                    step = group['weighted_step_count']
-                    alpha = delta / (delta + step) * time_factor
+                # Determine which step count to use for alpha calculation
+                if weight_time:
+                    step_for_alpha = group['weighted_step_count']
                 else:
-                    step = state['step']
-                    alpha = delta / (delta + step)              
+                    step_for_alpha = state["step"]
                 
-                # Update first moment
-                m.mul_(1 - alpha).add_(grad, alpha=alpha)
-                # Update second moment
-                v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+                # DANA's delta-based EMA coefficient: alpha = delta / (delta + t)
+                alpha = delta / (delta + step_for_alpha)
+
+                # Update first moment (momentum) - DANA style
+                exp_avg.mul_(1 - alpha).add_(grad, alpha=alpha)
                 
-                normalized_factor = torch.sqrt(v) + epsilon
-                # Compute parameter updates using effective time for g2 and g3 scheduling
-                g2_term = g2 * grad / normalized_factor
-                g3_term = g3 * (1 + step)**(1-kappa) * m / normalized_factor
+                # Update second moment (squared gradients) - DANA style  
+                exp_avg_sq.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+
+                # Update gradient EMA if enabled for g2 term
+                if use_grad_ema_for_g2:
+                    grad_ema = state["grad_ema"]
+                    grad_ema.mul_(grad_ema_beta).add_(grad, alpha=1 - grad_ema_beta)
+                    g2_gradient = grad_ema
+                else:
+                    g2_gradient = grad
+
+                # Compute normalized factor (denominator)
+                normalized_factor = exp_avg_sq.sqrt() + eps
                 
-                # Apply the main update
+                # DANA's parameter update terms:
+                # g2_term: gradient (current or EMA) scaled by learning rate
+                g2_term = lr * g2_gradient / normalized_factor
+                
+                # g3_term: momentum with kappa-based time scaling
+                g3_term = lr * (1 + state["step"])**(1-kappa) * exp_avg / normalized_factor
+                
+                # Combine update terms (note: negative because we're doing gradient descent)
                 update = -(g2_term + g3_term)
 
-                # Decoupled weight decay (AdamW-style)
+                # Decoupled weight decay (AdamW-style) - applied before main update
                 if wd != 0:
-                    p.add_(p, alpha= - wd * lr)
-                # print(f"g2: {g2}, g3: {g3}, lr: {lr}, wd: {wd}")
-                # Apply update to parameters with scheduled LR
+                    p.add_(p, alpha=-wd * lr)
+                
+                # Apply the main parameter update
                 p.add_(update)
-        
+
         return loss

@@ -5,11 +5,11 @@ project: llm-optimizer-benchmark  # Set via environment variable WANDB_PROJECT o
 # Basic plot settings
 metric: "val/loss"
 x: "tokens"
-title: "Comparison of WSD and Cosine schedules for adamw and dana-star" # Auto-generated if not specified
-out: "wsd_against_cosine_dana_adamw.png"    # Auto-generated if not specified
+title: "Impact of weight decay: dana, dana-star vs adamw on 12 layers" # Auto-generated if not specified
+out: "dana-star_wd_impact_12layers.png"    # Auto-generated if not specified
 
 # Filtering - back to original request
-filter_expr: "(opt=adamw or opt=dana-star or opt=ademamix) and n_layer=12 and tags!=hidden and state=finished and (lr=1e-3 or lr=5e-4)"
+filter_expr: "(opt=dana-star) and n_layer=12 and tags!=hidden and state=finished and lr=1e-3 and weight_time!=True and kappa=0.75"
 # filter_expr: "state=finished"
 max_runs: 50
 

@@ -7,7 +7,7 @@
 #SBATCH --partition=long
 #SBATCH --cpus-per-task=4
 
-source ~/links/projects/aip-gidelgau/dferbach/benchmarking_optimizers/llm/bin/activate
+source ~/projects/llm-optimizer-benchmark/llm/bin/activate
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"

@@ -289,6 +289,7 @@ def iter_history(run, x_key: str, y_key: str) -> Iterable[Tuple[float, float]]:
 # Consistent color mapping for optimizers
 OPTIMIZER_COLORS = {
     "adamw": "#000000",        # Black
+    "dana": "#ff7f0e",         # Orange
     "mars": "#2ca02c",         # Green
     "muon": "#d62728",         # Red
     "soap": "#9467bd",         # Purple
@@ -296,7 +297,7 @@ OPTIMIZER_COLORS = {
     "prodigy": "#e377c2",      # Pink
     "sophiag": "#7f7f7f",      # Gray
     "adopt": "#bcbd22",        # Olive
-    "ademamix": "#ff7f0e",     # Orange (moved from dana-star)
+    "ademamix": "#17becf",     # Cyan
     "sf-adamw": "#ff9896",     # Light Red
     "signum": "#f7b6d3",       # Light Pink
     "d-muon": "#98df8a",       # Light Green
@@ -391,6 +392,88 @@ def get_optimizer_color(run) -> str:
     return OPTIMIZER_COLORS.get(opt, "#CCCCCC")  # Default to light gray
 
 
+def analyze_run_parameter_differences(runs) -> List[str]:
+    """Analyze and print parameters that vary across the filtered runs.
+    
+    Returns:
+        List of parameter names that vary across runs (for use in legend).
+    """
+    print(f"\nAnalyzing parameter differences across {len(runs)} filtered runs...")
+    all_config_keys = set()
+    all_tag_values = set()
+    config_values = {}
+    
+    # First pass: collect all possible config keys from all runs
+    for run in runs:
+        all_config_keys.update(run.config.keys())
+    
+    # Second pass: for each key, collect values from all runs (including null for missing keys)
+    for key in all_config_keys:
+        config_values[key] = set()
+        for run in runs:
+            if key in run.config:
+                config_values[key].add(str(run.config[key]))
+            else:
+                config_values[key].add('null')  # Mark missing parameters as null
+    
+    for run in runs:
+        # Collect tags
+        tags = getattr(run, 'tags', []) or []
+        all_tag_values.update(tags)
+        
+        # Add special fields
+        if 'state' not in config_values:
+            config_values['state'] = set()
+        config_values['state'].add(getattr(run, 'state', 'unknown'))
+    
+    # Find parameters that vary across runs
+    varying_params = []
+    
+    # Check config parameters
+    for key, values in config_values.items():
+        if len(values) > 1:  # Parameter has different values across runs
+            varying_params.append({
+                'parameter': key,
+                'type': 'config' if key != 'state' else 'metadata',
+                'values': sorted(list(values)),
+                'count': len(values)
+            })
+    
+    # Check if tags vary (some runs have different tag combinations)
+    if len(all_tag_values) > 0:
+        tag_combinations = set()
+        for run in runs:
+            tags = tuple(sorted(getattr(run, 'tags', []) or []))
+            tag_combinations.add(tags)
+        
+        if len(tag_combinations) > 1:
+            varying_params.append({
+                'parameter': 'tags',
+                'type': 'metadata', 
+                'values': [list(combo) for combo in sorted(tag_combinations)],
+                'count': len(tag_combinations)
+            })
+    
+    # Sort by number of different values (most varying first)
+    varying_params.sort(key=lambda x: x['count'], reverse=True)
+    
+    print(f"\nParameters that vary across the {len(runs)} filtered runs:")
+    print("=" * 60)
+    
+    if not varying_params:
+        print("All runs have identical parameters (no variation found).")
+    else:
+        for param in varying_params:
+            print(f"\n• {param['parameter']} ({param['type']}):")
+            print(f"  {param['count']} different values: {param['values']}")
+    
+    print("=" * 60)
+    
+    # Return list of varying parameter names for legend use
+    varying_param_names = [param['parameter'] for param in varying_params if param['type'] == 'config']
+    return varying_param_names
+
+
 def build_legend_label(run, legend_keys: List[str]) -> str:
     """Build a legend label from selected config keys and run metadata."""
     parts = []
@@ -423,6 +506,14 @@ def build_legend_label(run, legend_keys: List[str]) -> str:
         elif key == "kappa" and opt != "dana-star":
             # Skip kappa for non-dana-star optimizers
             continue
+        elif key == "wd_decaying":
+            # Handle wd_decaying: show null for optimizers that don't support it
+            config_val = run.config.get(key)
+            if config_val is not None:
+                val_str = str(config_val).lower()
+                parts.append(f"wd_decay={val_str}")
+            else:
+                parts.append("wd_decay=null")
         else:
             # Try to get from config
             config_val = run.config.get(key)
@@ -435,6 +526,9 @@ def build_legend_label(run, legend_keys: List[str]) -> str:
                 else:
                     val_str = str(config_val)
                 parts.append(f"{key}={val_str}")
+            else:
+                # Show null for missing parameters
+                parts.append(f"{key}=null")
     
     return ", ".join(parts) if parts else (run.name or run.id[:8])
 
@@ -476,6 +570,9 @@ def main() -> None:
         print("No runs found with given filters.")
         print("Try removing some filters or check your project/entity names.")
         return
+    
+    # Analyze parameter differences across filtered runs
+    varying_legend_keys = analyze_run_parameter_differences(runs)
 
     # Trim to max runs
     max_runs = getattr(args, 'max_runs', 50)
@@ -486,6 +583,39 @@ def main() -> None:
         return
 
     plt.figure(figsize=(10, 6))
+
+    # Create unique style mapping for each unique combination of varying parameters
+    unique_combinations = {}
+    combination_styles = {}
+    style_options = {
+        'linestyles': ['-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 5)), (0, (3, 5, 1, 5)), (0, (1, 1))],
+        'markers': ['o', 's', '^', 'D', 'v', '<', '>', 'p', '*', 'h', 'H', '+', 'x']
+    }
+    
+    # First pass: identify unique combinations
+    for run in runs:
+        legend_keys = varying_legend_keys if varying_legend_keys else getattr(args, 'legend_keys', ['opt', 'scheduler'])
+        
+        # Create a tuple of varying parameter values for this run
+        combination_values = []
+        for key in legend_keys:
+            if key in run.config:
+                combination_values.append(str(run.config[key]))
+            else:
+                combination_values.append('null')
+        
+        combination_tuple = tuple(combination_values)
+        if combination_tuple not in unique_combinations:
+            unique_combinations[combination_tuple] = len(unique_combinations)
+    
+    # Assign styles to each unique combination
+    for combo_tuple, idx in unique_combinations.items():
+        linestyle_idx = idx % len(style_options['linestyles'])
+        marker_idx = idx % len(style_options['markers'])
+        combination_styles[combo_tuple] = {
+            'linestyle': style_options['linestyles'][linestyle_idx],
+            'marker': style_options['markers'][marker_idx]
+        }
 
     # Collect all runs with their data and labels for sorting
     plot_data = []
@@ -514,32 +644,24 @@ def main() -> None:
             
         xs, ys = zip(*points)
 
-        legend_keys = getattr(args, 'legend_keys', ['opt', 'scheduler'])
+        # Use varying parameters for legend, fallback to config if none found
+        legend_keys = varying_legend_keys if varying_legend_keys else getattr(args, 'legend_keys', ['opt', 'scheduler'])
         label = build_legend_label(run, legend_keys)
         color = get_optimizer_color(run)
         opt = run.config.get("opt", "unknown")
         
-        # Get comprehensive style mapping based on scheduler and its hyperparameters
-        linestyle, marker = get_style_by_scheduler_and_decay(run)
+        # Get style based on unique combination of varying parameters
+        combination_values = []
+        for key in legend_keys:
+            if key in run.config:
+                combination_values.append(str(run.config[key]))
+            else:
+                combination_values.append('null')
+        combination_tuple = tuple(combination_values)
         
-        # For additional differentiation, modify marker based on learning rate if needed
-        lr = run.config.get("lr", 1e-3)
-        lr_vals = [1e-4, 5e-4, 1e-3, 2e-3, 5e-3]
-        if lr in lr_vals:
-            # Add subtle marker variation for learning rate
-            lr_idx = lr_vals.index(lr)
-            marker_variants = {
-                'o': ['o', 'o', 'o', 'o', 'o'],  # circle stays circle
-                's': ['s', 'D', 'p', 'h', 'H'],  # square variants
-                '^': ['^', 'v', '<', '>', '*'],  # triangle variants
-                'D': ['D', 'p', 's', 'h', 'H'],  # diamond variants
-                'v': ['v', '^', '<', '>', '*'],  # variants
-                '<': ['<', '>', '^', 'v', '+'],  # variants
-                '>': ['>', '<', '^', 'v', 'x'],  # variants
-                'p': ['p', 'D', 's', 'h', '*']   # variants
-            }
-            if marker in marker_variants:
-                marker = marker_variants[marker][lr_idx % len(marker_variants[marker])]
+        style_info = combination_styles[combination_tuple]
+        linestyle = style_info['linestyle']
+        marker = style_info['marker']
         
         plot_data.append({
             'xs': xs,
