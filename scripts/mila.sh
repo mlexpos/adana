@@ -4,10 +4,10 @@
 #SBATCH --time=00:05:00
 #SBATCH --mem=32G
 #SBATCH --gres=gpu:80GB
-#SBATCH --partition=long
+#SBATCH --partition=unkillable
 #SBATCH --cpus-per-task=4
 
-source ~/links/projects/aip-gidelgau/dferbach/benchmarking_optimizers/llm/bin/activate
+source ~/projects/llm-optimizer-benchmark/llm/bin/activate
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"
