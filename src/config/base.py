@@ -107,6 +107,7 @@ def parse_args(base_parser, args, namespace):
             "lamb",
             "d-muon",
             "dana-star",
+            "dana",
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)

@@ -193,3 +193,120 @@ class DANA_STAR(Optimizer):
                 p.add_(update)
         
         return loss
+
+class DANA(Optimizer):
+    
+    def __init__(
+        self,
+        params: Iterable[torch.Tensor],
+        lr: float = 1.0, # learning rate for debugging
+        # g2: float = 1e-4,
+        # g3: float = 1e-5,
+        delta: float = 8.0,
+        kappa: float = 1.0,
+        epsilon: float = 1e-8,
+        weight_decay: float = 0.0,
+        weight_time: bool = False,
+        ):
+
+        """
+        DANA optimizer: same as DANA-STAR but without the effective time term.
+        
+        Args:
+            params: Iterable of parameters to optimize.
+            lr: Learning rate. In the code, g2=g3 are taken equal to lr.
+            delta: Delta parameter.
+            kappa: Kappa parameter.
+            epsilon: Epsilon parameter.
+            weight_decay: Weight decay parameter.
+        """
+
+        defaults = dict(
+            lr=lr, delta=delta, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
+        self.lr = lr
+        self.delta = delta
+        self.epsilon = epsilon
+        self.kappa = kappa
+        self.weight_decay = weight_decay
+        self.weight_time = weight_time
+
+        super(DANA, self).__init__(params, defaults)
+        
+        # Global step counter
+        self._step_count = 0
+    
+    def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
+        """Convert scalar or schedule to callable function."""
+        if callable(value):
+            return value
+        else:
+            return lambda step: value
+
+    #@torch.compile
+    @torch.no_grad()
+    def step(self, closure=None):
+        """Perform a single optimization step."""
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        
+        self._step_count += 1
+        
+        for group in self.param_groups:
+            # Get schedule functions
+            g2 = group['lr']
+            g3 = group['lr']
+            lr = group['lr']
+            time_factor = group['lr'] / self.lr
+            group['weighted_step_count'] += time_factor
+            delta = group['delta']
+            kappa = group['kappa']
+            wd = group['weight_decay']
+            epsilon = group['epsilon']
+            
+            for p in group['params']:
+                grad = p.grad
+                if grad is None:
+                    continue
+                
+                state = self.state[p]
+                
+                # State initialization
+                if len(state) == 0:
+                    state['step'] = 0
+                    state['m'] = torch.zeros_like(p)  # First moment
+                    state['v'] = torch.zeros_like(p)  # Second moment
+                
+                m, v = state['m'], state['v']
+                state['step'] += 1
+                
+                # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
+                if self.weight_time: # potentially take one during warmup
+                    step = group['weighted_step_count']
+                    alpha = delta / (delta + step) * time_factor
+                else:
+                    step = state['step']
+                    alpha = delta / (delta + step)              
+                
+                # Update first moment
+                m.mul_(1 - alpha).add_(grad, alpha=alpha)
+                # Update second moment
+                v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+                
+                normalized_factor = torch.sqrt(v) + epsilon
+                # Compute parameter updates using effective time for g2 and g3 scheduling
+                g2_term = g2 * grad / normalized_factor
+                g3_term = g3 * (1 + step)**(1-kappa) * m / normalized_factor
+                
+                # Apply the main update
+                update = -(g2_term + g3_term)
+
+                # Decoupled weight decay (AdamW-style)
+                if wd != 0:
+                    p.add_(p, alpha= - wd * lr)
+                # print(f"g2: {g2}, g3: {g3}, lr: {lr}, wd: {wd}")
+                # Apply update to parameters with scheduled LR
+                p.add_(update)
+        
+        return loss

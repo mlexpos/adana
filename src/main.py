@@ -29,7 +29,7 @@ from optim.schedulefree import AdamWScheduleFree, SGDScheduleFree
 from optim.sign import Signum
 from optim.soap import SOAP
 from optim.sophia import SophiaG
-from optim.dana_star import DANA_STAR
+from optim.dana_star import DANA_STAR, DANA
 
 
 def get_args():
@@ -286,6 +286,15 @@ def main(args, parser):
             weight_time=args.weight_time,
             wd_decaying=args.wd_decaying,
             wd_ts=args.wd_ts,
+        )
+    elif args.opt == "dana":
+        opt = DANA(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
+            kappa=args.kappa,
+            weight_decay=args.weight_decay,
+            weight_time=args.weight_time,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(
