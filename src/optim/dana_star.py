@@ -314,13 +314,14 @@ class DANA_STAR(Optimizer):
 
 class DANA(Optimizer):
     """
-    DANA2 optimizer: DANA algorithm implemented with AdEMAMix-style structure.
+    DANA optimizer: DANA algorithm implemented with AdEMAMix-style structure.
     
     This implementation takes the clean, well-structured code from AdEMAMix
     but uses DANA's mathematical formulation with:
     - Delta-based EMA coefficient: alpha = delta / (delta + t)
     - DANA's specific moment updates and parameter updates
     - Kappa-based momentum scaling: (1 + step)**(1-kappa)
+    - Optional gradient EMA for g2 term
     """
     
     def __init__(
@@ -357,13 +358,13 @@ class DANA(Optimizer):
             grad_ema_beta=grad_ema_beta,
             weighted_step_count=0
         )
-        super(DANA2, self).__init__(params, defaults)
+        super(DANA, self).__init__(params, defaults)
         
         # Global step counter for weight_time
         self._step_count = 0
 
     def __setstate__(self, state):
-        super(DANA2, self).__setstate__(state)
+        super(DANA, self).__setstate__(state)
 
     @torch.no_grad()
     def step(self, closure=None):
@@ -401,7 +402,7 @@ class DANA(Optimizer):
                     
                 grad = p.grad
                 if grad.is_sparse:
-                    raise RuntimeError("DANA2 does not support sparse gradients.")
+                    raise RuntimeError("DANA does not support sparse gradients.")
 
                 state = self.state[p]
 
