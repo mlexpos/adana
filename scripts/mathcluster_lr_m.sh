@@ -23,7 +23,7 @@ module load miniconda/miniconda-winter2025
 cd $HOME/danastar/jax
 
 # Configuration - modify these values as needed
-M_VALUES="100,200,500"  # Comma-separated list of m values (number of classes)
+M_VALUES="1,100,10000"  # Comma-separated list of m values (number of classes)
 ZETA_VALUE="1.2"  # Single zeta value (class frequency decay exponent)
 
 cd $HOME/danastar/jax
@@ -35,7 +35,7 @@ python lr_m_sweeps.py \
     --beta 1.3 \
     --v 2000 \
     --d 500 \
-    --steps 100000 \
+    --steps 1000000 \
     --batch_size 100 \
     --g2_scale 0.001875 \
     --g3_over_g2 1.0 \
