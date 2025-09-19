@@ -322,6 +322,7 @@ class DANA(Optimizer):
     - DANA's specific moment updates and parameter updates
     - Kappa-based momentum scaling: (1 + step)**(1-kappa)
     - Optional gradient EMA for g2 term
+    - Optional traditional EMA for second moment v with configurable beta
     """
     
     def __init__(
@@ -335,6 +336,8 @@ class DANA(Optimizer):
         weight_time=False,
         use_grad_ema_for_g2=False,
         grad_ema_beta=0.9,
+        use_v_ema=False,
+        v_ema_beta=0.999,
     ):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
@@ -346,6 +349,8 @@ class DANA(Optimizer):
             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
         if not 0.0 <= grad_ema_beta < 1.0:
             raise ValueError("Invalid grad_ema_beta value: {}".format(grad_ema_beta))
+        if not 0.0 <= v_ema_beta < 1.0:
+            raise ValueError("Invalid v_ema_beta value: {}".format(v_ema_beta))
         
         defaults = dict(
             lr=lr,
@@ -356,6 +361,8 @@ class DANA(Optimizer):
             weight_time=weight_time,
             use_grad_ema_for_g2=use_grad_ema_for_g2,
             grad_ema_beta=grad_ema_beta,
+            use_v_ema=use_v_ema,
+            v_ema_beta=v_ema_beta,
             weighted_step_count=0
         )
         super(DANA, self).__init__(params, defaults)
@@ -390,6 +397,8 @@ class DANA(Optimizer):
             weight_time = group["weight_time"]
             use_grad_ema_for_g2 = group["use_grad_ema_for_g2"]
             grad_ema_beta = group["grad_ema_beta"]
+            use_v_ema = group["use_v_ema"]
+            v_ema_beta = group["v_ema_beta"]
             
             # Update weighted step count for weight_time feature
             if weight_time:
@@ -438,8 +447,13 @@ class DANA(Optimizer):
                 # Update first moment (momentum) - DANA style
                 exp_avg.mul_(1 - alpha).add_(grad, alpha=alpha)
                 
-                # Update second moment (squared gradients) - DANA style  
-                exp_avg_sq.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+                # Update second moment (squared gradients)
+                if use_v_ema:
+                    # Use traditional EMA for second moment with v_ema_beta
+                    exp_avg_sq.mul_(v_ema_beta).addcmul_(grad, grad, value=1 - v_ema_beta)
+                else:
+                    # Use DANA style with delta-based alpha
+                    exp_avg_sq.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
 
                 # Update gradient EMA if enabled for g2 term
                 if use_grad_ema_for_g2:

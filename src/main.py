@@ -297,6 +297,8 @@ def main(args, parser):
             weight_time=args.weight_time,
             use_grad_ema_for_g2=args.use_grad_ema_for_g2,
             grad_ema_beta=args.grad_ema_beta,
+            use_v_ema=args.use_v_ema,
+            v_ema_beta=args.v_ema_beta,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(
