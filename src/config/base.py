@@ -284,5 +284,6 @@ def parse_args(base_parser, args, namespace):
         choices=["softmax_topk", "topk_softmax"],
     )
     parser.add_argument("--plot_router_logits", action="store_true")
+    parser.add_argument("--z_loss_coeff", default=1e-4, type=float)
 
     return parser.parse_args(args, namespace)

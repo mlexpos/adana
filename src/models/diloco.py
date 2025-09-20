@@ -211,7 +211,7 @@ class DiLoCo(GPTBase):
             # Add z-loss with coefficient 1e-4 as mentioned in the paper
             z_loss = self.compute_z_loss(logits.view(-1, logits.size(-1)))
             aux_losses["z_loss"] = z_loss
-            loss += 1e-4 * z_loss
+            loss += self.config.z_loss_coeff * z_loss
 
             if moe and self.config.moe_routing == "standard_gating":
                 # calculate the router losses per layer
