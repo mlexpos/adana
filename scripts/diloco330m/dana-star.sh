@@ -6,6 +6,7 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --mlp_hidden_dim 5120 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
     --dataset fineweb --iterations 100708 \
+    --dropout 0.0 --grad_clip 2.5 --seed 0 \
     --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 1.6 \
     --scheduler cos --warmup_steps 2000 \
     --weight_decay 0.001 --wd_decaying --wd_ts 100 \
