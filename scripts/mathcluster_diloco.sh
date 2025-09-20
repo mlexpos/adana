@@ -30,4 +30,13 @@ cd /home/math/elliot.paquette@MCGILL.CA/danastar/
 
 cd /home/math/elliot.paquette@MCGILL.CA/danastar/
 
-bash ./scripts/diloco35m/adamw.sh
+#bash ./scripts/diloco35m/adamw.sh
+#bash ./scripts/diloco35m/dana-star.sh
+bash ./scripts/diloco90m/adamw.sh
+bash ./scripts/diloco90m/dana-star.sh
+bash ./scripts/diloco180m/adamw.sh
+bash ./scripts/diloco180m/dana-star.sh
+bash ./scripts/diloco330m/adamw.sh
+bash ./scripts/diloco330m/dana-star.sh
+bash ./scripts/diloco550m/adamw.sh
+bash ./scripts/diloco550m/dana-star.sh

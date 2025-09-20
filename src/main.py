@@ -467,6 +467,11 @@ def get_exp_name(
         "seed",
         "device",
         "plot_router_logits",
+        "sequence_length",
+        "dropout",
+        "compile",
+        "wd_ts",
+        "wd_decaying",
     ],
 ):
     # Get the default values
@@ -504,9 +509,20 @@ def get_exp_name(
 
     # Combine prefix and non-default string
     if non_default_string:
-        return f"{prefix}__{non_default_string}"
+        exp_name = f"{prefix}__{non_default_string}"
     else:
-        return prefix
+        exp_name = prefix
+
+    # Check if filename is too long for filesystem (limit ~200 chars for safety)
+    if len(exp_name) > 200:
+        import hashlib
+        # Create hash of the full name for uniqueness
+        name_hash = hashlib.md5(exp_name.encode()).hexdigest()[:8]
+        # Use prefix + hash
+        exp_name = f"{prefix}__hash_{name_hash}"
+        print(f"Warning: Experiment name too long, using hash: {exp_name}")
+
+    return exp_name
 
 
 if __name__ == "__main__":
