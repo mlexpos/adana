@@ -1,0 +1,11 @@
+tiktoken
+torch
+torchaudio
+torchvision
+tqdm
+transformers
+wandb
+datasets
+zstandard
+numpy==2.2.2
+matplotlib
