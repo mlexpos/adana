@@ -75,4 +75,4 @@ def get_fineweb_data(datasets_dir, num_proc=40):
 
 if __name__ == "__main__":
     # get_fineweb_data("./datasets/")
-    get_fineweb_data("~/scratch/fineweb-10BT/")
+    get_fineweb_data("./scratch/fineweb-10BT/")

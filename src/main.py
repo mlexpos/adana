@@ -13,7 +13,7 @@ import wandb
 
 import config
 import distributed
-from data.utils import DataReader, get_dataset
+from data.utils import DataReader, MultiFileDataReader, get_dataset
 from models.utils import get_model
 from optim.adafactor import Adafactor
 from optim.ademamix import AdEMAMix
@@ -416,15 +416,35 @@ def main(args, parser):
 
 def get_data_readers(args, verbose=True):
     data_srcs = get_dataset(args)
-    train_reader = DataReader(
-        data_src=data_srcs["train"],
-        batch_size=args.batch_size,
-        sequence_length=args.sequence_length,
-        seed=args.data_seed,
-        with_replacement=False,
-        auto_shard=True,
-        keep_in_ram=args.data_in_ram,
-    )
+
+    # Check if we have multiple train files (like from fineweb_100)
+    # data_srcs might contain train_XX keys directly or have a single "train" key
+    if "train" in data_srcs:
+        # Standard format with single train file
+        train_data = data_srcs["train"]
+        train_reader = DataReader(
+            data_src=train_data,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+            seed=args.data_seed,
+            with_replacement=False,
+            auto_shard=True,
+            keep_in_ram=args.data_in_ram,
+        )
+    elif any(k.startswith('train_') for k in data_srcs.keys()):
+        # Multiple train files detected (train_00, train_01, etc.), use MultiFileDataReader
+        train_reader = MultiFileDataReader(
+            data_files=data_srcs,
+            batch_size=args.batch_size,
+            sequence_length=args.sequence_length,
+            seed=args.data_seed,
+            with_replacement=False,
+            auto_shard=True,
+            keep_in_ram=args.data_in_ram,
+        )
+    else:
+        raise ValueError("No train data found in dataset")
+
     val_reader = DataReader(
         data_src=data_srcs["val"],
         batch_size=args.batch_size,

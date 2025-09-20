@@ -8,6 +8,7 @@ import torch.distributed as dist
 from .arxiv import get_arxiv_2000, get_arxiv_full
 from .c4 import get_c4_data
 from .fineweb import get_fineweb_data
+from .fineweb_100 import get_fineweb_100_data
 from .fineweb_edu import get_fineweb_edu_data
 from .openwebtext2 import get_openwebtext2_data
 from .redpajama import get_redpajama_data, get_redpajamav2_data
@@ -45,12 +46,125 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         return get_slimpajama_data(args.datasets_dir)
     if args.dataset == "fineweb":
         return get_fineweb_data(args.datasets_dir)
+    if args.dataset == "fineweb_100":
+        return get_fineweb_100_data(args.datasets_dir)
     if args.dataset == "finewebedu":
         return get_fineweb_edu_data(args.datasets_dir)
     if args.dataset == "c4":
         return get_c4_data(args.datasets_dir)
     else:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
+
+
+class MultiFileDataReader:
+    def __init__(
+        self,
+        data_files,
+        batch_size,
+        sequence_length,
+        seed=1337,
+        with_replacement=False,
+        auto_shard=True,
+        keep_in_ram=False,
+    ):
+        """
+        DataReader that handles multiple files transparently.
+        data_files: list of file paths or single file path
+        """
+        if isinstance(data_files, (str, Path)):
+            # Single file, use regular DataReader
+            self.readers = [DataReader(
+                data_files, batch_size, sequence_length, seed,
+                with_replacement, auto_shard, keep_in_ram
+            )]
+            self.is_single_file = True
+        elif isinstance(data_files, dict):
+            # Multiple files from get_fineweb_100_data format
+            train_files = [v for k, v in data_files.items() if k.startswith('train_')]
+            if train_files:
+                self.readers = []
+                for i, file_path in enumerate(train_files):
+                    # Adjust seed for each file to ensure different sampling
+                    file_seed = seed + i * 1000
+                    reader = DataReader(
+                        file_path, batch_size, sequence_length, file_seed,
+                        with_replacement, auto_shard, keep_in_ram
+                    )
+                    self.readers.append(reader)
+                self.is_single_file = False
+            else:
+                raise ValueError("No train files found in data_files dict")
+        elif isinstance(data_files, list):
+            # List of file paths
+            self.readers = []
+            for i, file_path in enumerate(data_files):
+                file_seed = seed + i * 1000
+                reader = DataReader(
+                    file_path, batch_size, sequence_length, file_seed,
+                    with_replacement, auto_shard, keep_in_ram
+                )
+                self.readers.append(reader)
+            self.is_single_file = False
+        else:
+            raise ValueError(f"Unsupported data_files type: {type(data_files)}")
+
+        self.batch_size = batch_size
+        self.sequence_length = sequence_length
+        self.seed = seed
+        self.with_replacement = with_replacement
+
+        # Calculate total tokens across all files
+        self.num_tokens = sum(reader.num_tokens for reader in self.readers)
+        self.current_file_idx = 0
+        self.step = 0
+
+    def __len__(self):
+        return sum(len(reader) for reader in self.readers)
+
+    def __getitem__(self, idx):
+        if self.is_single_file:
+            return self.readers[0][idx]
+
+        # Find which file contains this index
+        cumulative_len = 0
+        for reader in self.readers:
+            if idx < cumulative_len + len(reader):
+                local_idx = idx - cumulative_len
+                return reader[local_idx]
+            cumulative_len += len(reader)
+
+        raise IndexError(f"Index {idx} out of range")
+
+    def set_step(self, step):
+        self.step = step
+        for reader in self.readers:
+            reader.set_step(step)
+
+    def sample_batch(self):
+        if self.is_single_file:
+            return self.readers[0].sample_batch()
+
+        # Round-robin sampling across files or weighted sampling
+        if len(self.readers) == 1:
+            return self.readers[0].sample_batch()
+
+        # Use weighted random selection based on file sizes
+        weights = [reader.num_tokens for reader in self.readers]
+        total_weight = sum(weights)
+
+        # Generate deterministic file selection based on step
+        rng = np.random.default_rng(self.seed + self.step)
+        file_idx = rng.choice(len(self.readers), p=[w/total_weight for w in weights])
+
+        self.step += 1
+        return self.readers[file_idx].sample_batch()
+
+    def num_batches(self):
+        if self.is_single_file:
+            return self.readers[0].num_batches()
+
+        # Return sum of batches across all files
+        return sum(reader.num_batches() for reader in self.readers)
 
 
 class DataReader:
