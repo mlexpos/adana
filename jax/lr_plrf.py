@@ -33,6 +33,7 @@ class LogisticRegressionPLRF:
                  alpha: float,
                  beta: float,
                  zeta: float,
+                 snr : float,
                  v: int,
                  d: int,
                  m: int,
@@ -43,6 +44,7 @@ class LogisticRegressionPLRF:
             alpha: Power law exponent for data covariance decay
             beta: Power law exponent for class mean decay
             zeta: Power law exponent for class frequency decay
+            snr: Signal-to-noise ratio
             v: Abstract space dimension
             d: Feature dimension (embedded dimension)
             m: Number of classes (and experts)
@@ -51,6 +53,7 @@ class LogisticRegressionPLRF:
         self.alpha = alpha
         self.beta = beta
         self.zeta = zeta
+        self.snr = snr
         self.v = v
         self.d = d
         self.m = m
@@ -68,7 +71,7 @@ class LogisticRegressionPLRF:
 
         # Class means μ_i ~ N(0, Σ^μ) where Σ^μ has power-law decay
         # Σ^μ is diagonal with entries j^(-2β)
-        Sigma_mu_diag = jnp.arange(1, v + 1) ** (-2 * beta)
+        Sigma_mu_diag = self.snr * jnp.arange(1, v + 1) ** (-2 * beta)
         mu_standard = random.normal(key_mu, shape=(m, v))
         self.mu = (mu_standard * jnp.sqrt(Sigma_mu_diag)).T  # (v, m)
 

@@ -3,6 +3,7 @@ import torch
 from .base import GPTBase, LayerNorm
 from .llama import Llama, RMSNorm
 from .test import RMSNorm2, Test
+from .diloco import DiLoCo
 
 BLACKLIST_WEIGHT_MODULES = (
     torch.nn.LayerNorm,
@@ -29,6 +30,13 @@ def get_model(args):
         return model
     elif args.model == "test":
         model = Test(args)
+        if args.use_pretrained != "none":
+            raise NotImplementedError(
+                f"Loading of pretrained models not yet implemented for model '{args.model}'."
+            )
+        return model
+    elif args.model == "diloco":
+        model = DiLoCo(args)
         if args.use_pretrained != "none":
             raise NotImplementedError(
                 f"Loading of pretrained models not yet implemented for model '{args.model}'."

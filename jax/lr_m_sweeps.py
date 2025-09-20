@@ -42,6 +42,7 @@ def parse_args():
     parser.add_argument("--alpha", type=float, default=1.0, help="Power law exponent for data covariance decay")
     parser.add_argument("--beta", type=float, default=0.0, help="Beta value (power law exponent for class mean decay)")
     parser.add_argument("--zeta", type=float, default=0.5, help="Power law exponent for class frequency decay")
+    parser.add_argument("--snr", type=float, default=1.0, help="Signal-to-noise ratio")
     parser.add_argument("--v", type=int, default=2000, help="Abstract space dimension")
     parser.add_argument("--d", type=int, default=500, help="Feature dimension (embedded dimension)")
 
@@ -353,6 +354,7 @@ def main():
     # Parse m_range list from string, beta and zeta are single values
     beta = args.beta
     zeta = args.zeta
+    snr = args.snr
     m_list = [int(m.strip()) for m in args.m_range.split(',')]
 
     # Process optimizer flags (disable flags override enable flags)
@@ -381,6 +383,7 @@ def main():
             alpha=args.alpha,
             beta=beta,
             zeta=zeta,
+            snr=snr,
             v=args.v,
             d=args.d,
             m=m,
@@ -501,7 +504,7 @@ def main():
 
         ax.set_xlabel('Training Iteration', fontsize=14)
         ax.set_ylabel('Population Risk (Cross-Entropy)', fontsize=14)
-        ax.set_title(f'LR-PLRF Learning Curves \nα={args.alpha}, ζ={zeta}, d={args.d}, β={beta}, Adam learning rate = {args.adam_lr},\n β_1 = {args.adam_beta1}, β_2 = {args.adam_beta2}, κ = {args.tanea_kappa}, batch={args.batch_size}, steps={args.steps}', fontsize=16)
+        ax.set_title(f'LR-PLRF Learning Curves \nα={args.alpha}, ζ={zeta}, d={args.d}, β={beta}, snr={snr}, Adam learning rate = {args.adam_lr},\n β_1 = {args.adam_beta1}, β_2 = {args.adam_beta2}, κ = {args.tanea_kappa}, batch={args.batch_size}, steps={args.steps}', fontsize=16)
         ax.grid(True, alpha=0.3)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left',
                  handlelength=6, handletextpad=0.8, columnspacing=2)

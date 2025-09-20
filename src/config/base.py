@@ -216,6 +216,7 @@ def parse_args(base_parser, args, namespace):
             "base",
             "llama",
             "test",
+            "diloco",
         ],
     )
     parser.add_argument("--parallel_block", action="store_true")
@@ -230,6 +231,12 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--sequence_length", default=512, type=int)
     parser.add_argument(
         "--n_embd", default=768, type=int  # embedding size / hidden size ...
+    )
+    parser.add_argument(
+        "--qkv_dim", default=None, type=int  # QKV dimension per head (if None, uses n_embd // n_head)
+    )
+    parser.add_argument(
+        "--mlp_hidden_dim", default=None, type=int  # MLP hidden dimension (if None, uses standard calculation)
     )
     parser.add_argument(
         "--multiple_of",  # make SwiGLU hidden layer size multiple of large power of 2
