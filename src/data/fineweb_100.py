@@ -30,12 +30,13 @@ def get_fineweb_100_data(
     val_file_path = os.path.join(fweb_data_path, "val.bin")
 
     # Check if all train files already exist (expecting 150 files)
-    expected_train_files = 150
+    #expected_train_files = 150
+    sufficient_train_files = 15
     train_pattern = os.path.join(fweb_data_path, "train_*.bin")
     existing_train_files = sorted(glob.glob(train_pattern))
     
-    if len(existing_train_files) == expected_train_files and os.path.exists(val_file_path):
-        print(f"Found all {expected_train_files} train files and validation file. Skipping tokenization.")
+    if len(existing_train_files) >= sufficient_train_files and os.path.exists(val_file_path):
+        print(f"Found {sufficient_train_files} train files and validation file. Skipping tokenization.")
         # Return existing files without processing
         result = {"val": val_file_path}
         for i, train_file in enumerate(existing_train_files):

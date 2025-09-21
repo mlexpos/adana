@@ -31,30 +31,14 @@ echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 
 wandb offline
 
-# Run the diloco330m experiment with FineWeb 100BT dataset
-# torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
-#     --distributed_backend nccl --compile \
-#     --datasets_dir "$DATASETS_DIR" \
-#     --n_embd 1280 --qkv_dim 64 --n_head 20 --n_layer 15 \
-#     --mlp_hidden_dim 5120 \
-#     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-#     --dataset fineweb_100 --iterations 100708 \
-#     --dropout 0.0 --grad_clip 2.5 --seed 0 \
-#     --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 1.6 \
-#     --scheduler cos --warmup_steps 2000 \
-#     --weight_decay 0.001 --wd_decaying --wd_ts 100 \
-#     --beta1 0.9 --beta2 0.999 \
-#     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-#     --eval_interval 115 --log_interval 50 --latest_ckpt_interval 1000
-
 torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
-    --datasets_dir "$DATASETS_DIR" \
-    --n_embd 1280 --qkv_dim 64 --n_head 20 --n_layer 15 \
-    --mlp_hidden_dim 5120 \
+    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+    --n_embd 1536 --qkv_dim 64 --n_head 24 --n_layer 18 \
+    --mlp_hidden_dim 6144 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-    --dataset fineweb_100 --iterations 100708 \
-    --dropout 0.0 --warmup_steps 2000 --grad_clip 2.5 --seed 0 \
+    --iterations 167846 \
+    --dropout 0.0 --warmup_steps 3000 --grad_clip 2.5 --seed 0 \
     --opt adamw --lr 1e-3 --weight_decay 0.001 --scheduler cos \
     --beta1 0.9 --beta2 0.99 --wsd_final_lr_scale 1e2 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \

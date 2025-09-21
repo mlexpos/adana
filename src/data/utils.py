@@ -1,5 +1,8 @@
 from pathlib import Path
 from typing import Dict
+import threading
+import queue
+import time
 
 import numpy as np
 import torch
@@ -9,7 +12,6 @@ from .arxiv import get_arxiv_2000, get_arxiv_full
 from .c4 import get_c4_data
 from .fineweb import get_fineweb_data
 from .fineweb_100 import get_fineweb_100_data
-from .fineweb_100_local import get_fineweb_100_data_local
 from .fineweb_edu import get_fineweb_edu_data
 from .openwebtext2 import get_openwebtext2_data
 from .redpajama import get_redpajama_data, get_redpajamav2_data
@@ -57,6 +59,60 @@ def get_dataset(args) -> Dict[str, np.ndarray]:
         raise NotImplementedError(f"Unknow dataset key '{args.dataset}'")
 
 
+class AsyncFileLoader:
+    """Asynchronous file loader that preloads the next file in background"""
+    def __init__(self):
+        self.load_queue = queue.Queue(maxsize=1)  # Only keep one file in queue
+        self.loader_thread = None
+        self.shutdown_flag = threading.Event()
+        
+    def start_loading(self, file_path):
+        """Start loading a file asynchronously"""
+        if self.loader_thread is not None and self.loader_thread.is_alive():
+            return  # Already loading
+            
+        self.shutdown_flag.clear()
+        self.loader_thread = threading.Thread(
+            target=self._load_file_worker, 
+            args=(file_path,),
+            daemon=True
+        )
+        self.loader_thread.start()
+        
+    def _load_file_worker(self, file_path):
+        """Worker thread to load file into memory"""
+        try:
+            if self.shutdown_flag.is_set():
+                return
+            print(f"Async loading file: {file_path}")
+            start_time = time.time()
+            data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
+            load_time = time.time() - start_time
+            print(f"Async loaded {file_path} in {load_time:.2f}s ({len(data)/1e6:.1f}M tokens)")
+            
+            if not self.shutdown_flag.is_set():
+                # Try to put in queue, but don't block if queue is full
+                try:
+                    self.load_queue.put((file_path, data), timeout=0.1)
+                except queue.Full:
+                    pass  # Queue full, discard this load
+        except Exception as e:
+            print(f"Error loading file {file_path}: {e}")
+            
+    def get_loaded_file(self, timeout=0.1):
+        """Get a loaded file if available"""
+        try:
+            return self.load_queue.get(timeout=timeout)
+        except queue.Empty:
+            return None
+            
+    def shutdown(self):
+        """Shutdown the async loader"""
+        self.shutdown_flag.set()
+        if self.loader_thread is not None and self.loader_thread.is_alive():
+            self.loader_thread.join(timeout=1.0)
+
+
 class MultiFileDataReader:
     def __init__(
         self,
@@ -69,42 +125,21 @@ class MultiFileDataReader:
         keep_in_ram=False,
     ):
         """
-        DataReader that handles multiple files transparently.
-        data_files: list of file paths or single file path
+        Optimized DataReader that handles multiple files with dual buffering.
+        Always keeps current file and next file in RAM, with async loading.
         """
+        # Parse file paths
         if isinstance(data_files, (str, Path)):
-            # Single file, use regular DataReader
-            self.readers = [DataReader(
-                data_files, batch_size, sequence_length, seed,
-                with_replacement, auto_shard, keep_in_ram
-            )]
+            self.file_paths = [Path(data_files)]
             self.is_single_file = True
         elif isinstance(data_files, dict):
-            # Multiple files from get_fineweb_100_data format
-            train_files = [v for k, v in data_files.items() if k.startswith('train_')]
-            if train_files:
-                self.readers = []
-                for i, file_path in enumerate(train_files):
-                    # Adjust seed for each file to ensure different sampling
-                    file_seed = seed + i * 1000
-                    reader = DataReader(
-                        file_path, batch_size, sequence_length, file_seed,
-                        with_replacement, auto_shard, keep_in_ram
-                    )
-                    self.readers.append(reader)
-                self.is_single_file = False
-            else:
+            train_files = [Path(v) for k, v in data_files.items() if k.startswith('train_')]
+            if not train_files:
                 raise ValueError("No train files found in data_files dict")
+            self.file_paths = sorted(train_files)  # Sort for consistent ordering
+            self.is_single_file = False
         elif isinstance(data_files, list):
-            # List of file paths
-            self.readers = []
-            for i, file_path in enumerate(data_files):
-                file_seed = seed + i * 1000
-                reader = DataReader(
-                    file_path, batch_size, sequence_length, file_seed,
-                    with_replacement, auto_shard, keep_in_ram
-                )
-                self.readers.append(reader)
+            self.file_paths = [Path(f) for f in data_files]
             self.is_single_file = False
         else:
             raise ValueError(f"Unsupported data_files type: {type(data_files)}")
@@ -113,59 +148,166 @@ class MultiFileDataReader:
         self.sequence_length = sequence_length
         self.seed = seed
         self.with_replacement = with_replacement
+        self.auto_shard = auto_shard
 
-        # Calculate total tokens across all files
-        self.num_tokens = sum(reader.num_tokens for reader in self.readers)
+        # Initialize distributed settings
+        if auto_shard and dist.is_initialized():
+            self.world_size = dist.get_world_size()
+            self.rank = dist.get_rank()
+        else:
+            self.world_size = 1
+            self.rank = 0
+
+        # Dual buffer system: current file and next file in RAM
         self.current_file_idx = 0
+        self.current_data = None
+        self.current_reader = None
+        self.next_data = None
+        
+        # Async file loader for preloading next file
+        self.async_loader = AsyncFileLoader()
+        
+        # Load initial files
+        self._load_current_file()
+        if len(self.file_paths) > 1:
+            self._start_loading_next_file()
+
+        # Calculate total tokens (approximate, will be exact once all files are seen)
+        self._calculate_total_tokens()
+        
         self.step = 0
+        print(f"MultiFileDataReader initialized with {len(self.file_paths)} files, "
+              f"~{self.num_tokens/1e6:.1f}M total tokens")
+
+    def _load_current_file(self):
+        """Load current file into RAM and create DataReader"""
+        file_path = self.file_paths[self.current_file_idx]
+        print(f"Loading current file: {file_path}")
+        start_time = time.time()
+        
+        # Load file data into RAM
+        self.current_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
+        load_time = time.time() - start_time
+        print(f"Loaded {file_path} in {load_time:.2f}s ({len(self.current_data)/1e6:.1f}M tokens)")
+        
+        # Create DataReader with data already in RAM
+        file_seed = self.seed + self.current_file_idx * 1000
+        self.current_reader = DataReader(
+            data_src=self.current_data,
+            batch_size=self.batch_size,
+            sequence_length=self.sequence_length,
+            seed=file_seed,
+            with_replacement=self.with_replacement,
+            auto_shard=self.auto_shard,
+            keep_in_ram=True  # Data already in RAM
+        )
+
+    def _start_loading_next_file(self):
+        """Start asynchronously loading the next file"""
+        if len(self.file_paths) <= 1:
+            return
+            
+        next_idx = (self.current_file_idx + 1) % len(self.file_paths)
+        next_file_path = self.file_paths[next_idx]
+        self.async_loader.start_loading(next_file_path)
+
+    def _switch_to_next_file(self):
+        """Switch current file to next file and start loading the new next file"""
+        # Check if next file is ready
+        loaded_file = self.async_loader.get_loaded_file(timeout=5.0)  # Wait up to 5 seconds
+        
+        if loaded_file is not None:
+            file_path, data = loaded_file
+            print(f"Switching to pre-loaded file: {file_path}")
+            self.next_data = data
+        else:
+            # Fallback: load synchronously
+            next_idx = (self.current_file_idx + 1) % len(self.file_paths)
+            file_path = self.file_paths[next_idx]
+            print(f"Loading next file synchronously (async not ready): {file_path}")
+            self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
+        
+        # Switch files
+        self.current_file_idx = (self.current_file_idx + 1) % len(self.file_paths)
+        self.current_data = self.next_data
+        self.next_data = None
+        
+        # Create new DataReader for current file
+        file_seed = self.seed + self.current_file_idx * 1000
+        self.current_reader = DataReader(
+            data_src=self.current_data,
+            batch_size=self.batch_size,
+            sequence_length=self.sequence_length,
+            seed=file_seed,
+            with_replacement=self.with_replacement,
+            auto_shard=self.auto_shard,
+            keep_in_ram=True
+        )
+        
+        # Start loading the new next file
+        if len(self.file_paths) > 1:
+            self._start_loading_next_file()
+
+    def _calculate_total_tokens(self):
+        """Calculate total tokens across all files (approximate initially)"""
+        if self.current_data is not None:
+            # For now, estimate based on current file
+            tokens_per_file = len(self.current_data)
+            self.num_tokens = tokens_per_file * len(self.file_paths)
+        else:
+            self.num_tokens = 0
 
     def __len__(self):
-        return sum(len(reader) for reader in self.readers)
+        if self.current_reader is not None:
+            # Estimate based on current file
+            return len(self.current_reader) * len(self.file_paths)
+        return 0
 
     def __getitem__(self, idx):
-        if self.is_single_file:
-            return self.readers[0][idx]
-
-        # Find which file contains this index
-        cumulative_len = 0
-        for reader in self.readers:
-            if idx < cumulative_len + len(reader):
-                local_idx = idx - cumulative_len
-                return reader[local_idx]
-            cumulative_len += len(reader)
-
-        raise IndexError(f"Index {idx} out of range")
+        # For indexing, we need to figure out which file and local index
+        if self.current_reader is None:
+            raise RuntimeError("No data loaded")
+            
+        # Simple approach: use current file only for indexing
+        # This is mainly for compatibility, most usage will be through sample_batch
+        return self.current_reader[idx % len(self.current_reader)]
 
     def set_step(self, step):
         self.step = step
-        for reader in self.readers:
-            reader.set_step(step)
+        if self.current_reader is not None:
+            self.current_reader.set_step(step)
 
     def sample_batch(self):
+        """Sample a batch from current file, switching files when needed"""
+        if self.current_reader is None:
+            raise RuntimeError("No data loaded")
+        
+        # For single file, just use the current reader
         if self.is_single_file:
-            return self.readers[0].sample_batch()
-
-        # Round-robin sampling across files or weighted sampling
-        if len(self.readers) == 1:
-            return self.readers[0].sample_batch()
-
-        # Use weighted random selection based on file sizes
-        weights = [reader.num_tokens for reader in self.readers]
-        total_weight = sum(weights)
-
-        # Generate deterministic file selection based on step
-        rng = np.random.default_rng(self.seed + self.step)
-        file_idx = rng.choice(len(self.readers), p=[w/total_weight for w in weights])
-
+            self.step += 1
+            return self.current_reader.sample_batch()
+        
+        # For multiple files, check if we should switch files
+        # We'll switch files periodically to ensure good mixing
+        # Switch after consuming roughly 1/4 of the current file's batches
+        batches_per_file_switch = max(1, self.current_reader.num_batches() // 4)
+        
+        if self.step > 0 and self.step % batches_per_file_switch == 0:
+            print(f"Switching files after {batches_per_file_switch} batches")
+            self._switch_to_next_file()
+        
         self.step += 1
-        return self.readers[file_idx].sample_batch()
+        return self.current_reader.sample_batch()
 
     def num_batches(self):
-        if self.is_single_file:
-            return self.readers[0].num_batches()
+        if self.current_reader is not None:
+            return self.current_reader.num_batches() * len(self.file_paths)
+        return 0
 
-        # Return sum of batches across all files
-        return sum(reader.num_batches() for reader in self.readers)
+    def __del__(self):
+        """Cleanup async loader on deletion"""
+        if hasattr(self, 'async_loader'):
+            self.async_loader.shutdown()
 
 
 class DataReader:

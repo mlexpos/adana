@@ -3,9 +3,13 @@ torch
 torchaudio
 torchvision
 tqdm
+triton
 transformers
 wandb
 datasets
 zstandard
 numpy==2.2.2
+sympy
 matplotlib
+packaging
+pandas

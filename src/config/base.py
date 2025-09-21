@@ -196,6 +196,7 @@ def parse_args(base_parser, args, namespace):
             "slimpajama_chunk1",
             "redpajamav2",
             "fineweb",
+            "fineweb_100",
             "finewebedu",
             "c4",
         ],

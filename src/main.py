@@ -432,7 +432,8 @@ def get_data_readers(args, verbose=True):
             keep_in_ram=args.data_in_ram,
         )
     elif any(k.startswith('train_') for k in data_srcs.keys()):
-        # Multiple train files detected (train_00, train_01, etc.), use MultiFileDataReader
+        # Multiple train files detected (train_00, train_01, etc.), use optimized MultiFileDataReader
+        print("Using optimized MultiFileDataReader with dual buffering and async loading")
         train_reader = MultiFileDataReader(
             data_files=data_srcs,
             batch_size=args.batch_size,
@@ -440,7 +441,7 @@ def get_data_readers(args, verbose=True):
             seed=args.data_seed,
             with_replacement=False,
             auto_shard=True,
-            keep_in_ram=args.data_in_ram,
+            keep_in_ram=True,  # Always use RAM for optimal performance
         )
     else:
         raise ValueError("No train data found in dataset")
@@ -452,7 +453,7 @@ def get_data_readers(args, verbose=True):
         seed=args.data_seed,
         with_replacement=False,
         auto_shard=False,  # NOTE Identical Per Rank
-        keep_in_ram=args.data_in_ram,
+        keep_in_ram=True,  # Always keep validation data in RAM for fast access
     )
 
     if verbose:
