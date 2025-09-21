@@ -25,7 +25,7 @@ source $HOME/danastarenv/bin/activate
 echo "Activated virtual environment"
 
 # Set up directories
-FINEWEB_DIR="$HOME/links/scratch/fineweb"
+FINEWEB_DIR="$HOME/links/projects/def-epaq/fineweb"
 DATASETS_DIR="$HOME/links/scratch/datasets"
 
 echo "Processing FineWeb 100BT sample data..."

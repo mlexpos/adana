@@ -13,7 +13,7 @@ def get_fineweb_100_data(
     datasets_dir: str,
     fineweb_dir: str = "./fineweb/",
     num_proc: int = 40,
-    test_size: float = 0.00001,
+    validation_examples: int = 1470,  # 1470 examples for validation (147M * 1E-5)
 ):
     """
     Process locally downloaded FineWeb 100BT sample data using Hugging Face
@@ -27,67 +27,134 @@ def get_fineweb_100_data(
     fweb_data_path = os.path.join(datasets_dir, "fineweb-100BT/")
     os.makedirs(fweb_data_path, exist_ok=True)
 
-    train_file_path = os.path.join(fweb_data_path, "train.bin")
     val_file_path = os.path.join(fweb_data_path, "val.bin")
 
-    if os.path.exists(train_file_path) and os.path.exists(val_file_path):
-        return {"train": train_file_path, "val": val_file_path}
+    # Check if all train files already exist (expecting 150 files)
+    expected_train_files = 150
+    train_pattern = os.path.join(fweb_data_path, "train_*.bin")
+    existing_train_files = sorted(glob.glob(train_pattern))
+    
+    if len(existing_train_files) == expected_train_files and os.path.exists(val_file_path):
+        print(f"Found all {expected_train_files} train files and validation file. Skipping tokenization.")
+        # Return existing files without processing
+        result = {"val": val_file_path}
+        for i, train_file in enumerate(existing_train_files):
+            result[f"train_{i:04d}"] = train_file
+        return result
 
     parquet_pattern = os.path.join(fineweb_dir, "sample", "100BT", "*.parquet")
     parquet_files = sorted(glob.glob(parquet_pattern))
     if not parquet_files:
         raise ValueError(f"No parquet files found in {fineweb_dir}/sample/100BT/")
 
-    print(f"Found {len(parquet_files)} parquet files. Building dataset...")
-
-    # Build a single dataset from many local parquet files (arrow-mmap under the hood)
-    dataset = Dataset.from_parquet(parquet_files)
-
-    print(f"Dataset size (rows): {len(dataset):,}")
-
-    print(f"Creating train/val split with test_size={test_size}...")
-    split_dataset = dataset.train_test_split(test_size=test_size, seed=2357, shuffle=True)
-    split_dataset["val"] = split_dataset.pop("test")
+    print(f"Found {len(parquet_files)} parquet files.")
 
     def process(example):
         ids = tknzr.encode_ordinary(example["text"])  # ignores any special tokens
         ids.append(tknzr.eot_token)  # add end-of-text token
         return {"ids": ids, "len": len(ids)}
 
-    print("Tokenizing with datasets.map (multiprocessing)...")
-    tokenized = split_dataset.map(
-        process,
-        remove_columns=["text"],
-        desc="tokenizing the splits",
-        num_proc=num_proc,
-    )
+    # Process validation set from first parquet file
+    if not os.path.exists(val_file_path):
+        print(f"Processing validation set from first parquet file with {validation_examples:,} examples...")
+        first_dataset = Dataset.from_parquet(parquet_files[0])
 
-    # Concatenate all ids and write per split
-    for split, dset in tokenized.items():
-        arr_len = int(np.sum(dset["len"]))
-        out_path = val_file_path if split == "val" else train_file_path
+        # Take first validation_examples rows for validation
+        val_dataset = first_dataset.select(range(min(validation_examples, len(first_dataset))))
+
+        print("Tokenizing validation set...")
+        tokenized_val = val_dataset.map(
+            process,
+            remove_columns=["text"],
+            desc="tokenizing validation",
+            num_proc=num_proc,
+        )
+
+        # Write validation file
+        val_arr_len = int(np.sum(tokenized_val["len"]))
         dtype = np.uint16  # gpt2 vocab fits
 
-        print(f"Writing {split} to {out_path} ({arr_len:,} tokens)...")
-        arr = np.memmap(out_path, dtype=dtype, mode="w+", shape=(arr_len,))
+        print(f"Writing validation to {val_file_path} ({val_arr_len:,} tokens)...")
+        val_arr = np.memmap(val_file_path, dtype=dtype, mode="w+", shape=(val_arr_len,))
 
-        total_batches = min(1024, len(dset)) if len(dset) > 0 else 0
+        total_batches = min(1024, len(tokenized_val)) if len(tokenized_val) > 0 else 0
         idx = 0
 
-        for batch_idx in tqdm(range(total_batches), desc=f"writing {split}"):
+        for batch_idx in tqdm(range(total_batches), desc="writing validation"):
             batch = (
-                dset.shard(num_shards=total_batches, index=batch_idx, contiguous=True)
+                tokenized_val.shard(num_shards=total_batches, index=batch_idx, contiguous=True)
                 .with_format("numpy")
             )
             if len(batch) == 0:
                 continue
             arr_batch = np.concatenate(batch["ids"]) if len(batch) > 0 else np.array([], dtype=dtype)
-            arr[idx : idx + len(arr_batch)] = arr_batch
+            val_arr[idx : idx + len(arr_batch)] = arr_batch
             idx += len(arr_batch)
 
-        arr.flush()
+        val_arr.flush()
 
-    return {"train": train_file_path, "val": val_file_path}
+    # Process each parquet file for train data
+    train_files = []
+    for i, parquet_file in enumerate(parquet_files):
+        train_file_path = os.path.join(fweb_data_path, f"train_{i:04d}.bin")
+
+        if os.path.exists(train_file_path):
+            print(f"Train file {train_file_path} already exists, skipping...")
+            train_files.append(train_file_path)
+            continue
+
+        print(f"Processing train data from {parquet_file}...")
+
+        # For the first parquet file, skip the validation examples
+        if i == 0:
+            dataset = Dataset.from_parquet(parquet_file)
+            train_dataset = dataset.select(range(validation_examples, len(dataset)))
+        else:
+            train_dataset = Dataset.from_parquet(parquet_file)
+
+        if len(train_dataset) == 0:
+            print(f"No train data left in {parquet_file}, skipping...")
+            continue
+
+        print(f"Dataset size (rows): {len(train_dataset):,}")
+
+        print("Tokenizing train data...")
+        tokenized_train = train_dataset.map(
+            process,
+            remove_columns=["text"],
+            desc=f"tokenizing train {i:04d}",
+            num_proc=num_proc,
+        )
+
+        # Write train file
+        train_arr_len = int(np.sum(tokenized_train["len"]))
+
+        print(f"Writing train to {train_file_path} ({train_arr_len:,} tokens)...")
+        train_arr = np.memmap(train_file_path, dtype=dtype, mode="w+", shape=(train_arr_len,))
+
+        total_batches = min(1024, len(tokenized_train)) if len(tokenized_train) > 0 else 0
+        idx = 0
+
+        for batch_idx in tqdm(range(total_batches), desc=f"writing train {i:04d}"):
+            batch = (
+                tokenized_train.shard(num_shards=total_batches, index=batch_idx, contiguous=True)
+                .with_format("numpy")
+            )
+            if len(batch) == 0:
+                continue
+            arr_batch = np.concatenate(batch["ids"]) if len(batch) > 0 else np.array([], dtype=dtype)
+            train_arr[idx : idx + len(arr_batch)] = arr_batch
+            idx += len(arr_batch)
+
+        train_arr.flush()
+        train_files.append(train_file_path)
+
+    # Return in format expected by main.py - individual train_XXXX keys
+    result = {"val": val_file_path}
+    for i, train_file in enumerate(train_files):
+        result[f"train_{i:04d}"] = train_file
+    
+    return result
 
 
 if __name__ == "__main__":
@@ -100,10 +167,10 @@ if __name__ == "__main__":
     parser.add_argument("--fineweb-dir", default="./fineweb/", help="Directory containing local FineWeb data")
     parser.add_argument("--num-proc", type=int, default=40, help="Number of processes for datasets.map")
     parser.add_argument(
-        "--test-size",
-        type=float,
-        default=0.00001,
-        help="Validation fraction; 0.00001 keeps absolute size similar to 10BT baseline",
+        "--validation-examples",
+        type=int,
+        default=1470,
+        help="Number of examples to use for validation from first parquet file",
     )
 
     args = parser.parse_args()
@@ -112,7 +179,7 @@ if __name__ == "__main__":
         datasets_dir=args.datasets_dir,
         fineweb_dir=args.fineweb_dir,
         num_proc=args.num_proc,
-        test_size=args.test_size,
+        validation_examples=args.validation_examples,
     )
 
     print("Processing complete!")
