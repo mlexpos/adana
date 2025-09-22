@@ -222,11 +222,11 @@ class MultiFileDataReader:
             loaded_file = self.async_loader.get_loaded_file(timeout=5.0)
             async_ready = loaded_file is not None
             
-            # Step 2: All workers report their async status to master
-            async_status = torch.tensor([1 if async_ready else 0], dtype=torch.int32)
+            # Step 2: All workers report their async status to master (use GPU tensors for NCCL)
+            async_status = torch.tensor([1 if async_ready else 0], dtype=torch.int32, device='cuda')
             if self.rank == 0:
                 # Master collects status from all workers
-                all_status = [torch.tensor([0], dtype=torch.int32) for _ in range(self.world_size)]
+                all_status = [torch.tensor([0], dtype=torch.int32, device='cuda') for _ in range(self.world_size)]
                 dist.all_gather(all_status, async_status)
                 all_ready = all(status.item() == 1 for status in all_status)
                 
@@ -236,14 +236,14 @@ class MultiFileDataReader:
                     print(f"Some workers not ready - all workers will load synchronously: {file_path}")
                 
                 # Broadcast decision to all workers
-                use_async = torch.tensor([1 if all_ready else 0], dtype=torch.int32)
+                use_async = torch.tensor([1 if all_ready else 0], dtype=torch.int32, device='cuda')
                 dist.broadcast(use_async, src=0)
             else:
                 # Workers gather their status and receive decision
-                all_status = [torch.tensor([0], dtype=torch.int32) for _ in range(self.world_size)]
+                all_status = [torch.tensor([0], dtype=torch.int32, device='cuda') for _ in range(self.world_size)]
                 dist.all_gather(all_status, async_status)
                 
-                use_async = torch.tensor([0], dtype=torch.int32)
+                use_async = torch.tensor([0], dtype=torch.int32, device='cuda')
                 dist.broadcast(use_async, src=0)
             
             # Step 3: All workers use the same loading method
@@ -339,13 +339,13 @@ class MultiFileDataReader:
                 batches_consumed = self.step // self.world_size  # Account for distributed batching
                 should_switch = (batches_consumed >= current_batches_available)
                 
-                # Broadcast decision to all workers
-                switch_tensor = torch.tensor([1 if should_switch else 0], dtype=torch.int32)
+                # Broadcast decision to all workers (use GPU tensor for NCCL)
+                switch_tensor = torch.tensor([1 if should_switch else 0], dtype=torch.int32, device='cuda')
                 if dist.is_available():
                     dist.broadcast(switch_tensor, src=0)
             else:  # Worker processes
-                # Receive decision from master
-                switch_tensor = torch.tensor([0], dtype=torch.int32)
+                # Receive decision from master (use GPU tensor for NCCL)
+                switch_tensor = torch.tensor([0], dtype=torch.int32, device='cuda')
                 if dist.is_available():
                     dist.broadcast(switch_tensor, src=0)
                 should_switch = bool(switch_tensor.item())
