@@ -154,6 +154,9 @@ class MultiFileDataReader:
         if auto_shard and dist.is_initialized():
             self.world_size = dist.get_world_size()
             self.rank = dist.get_rank()
+            print(f"Distributed MultiFileDataReader Initialized for Worker {self.rank}/{self.world_size}")
+            if self.rank == 0:
+                print("Rank 0: Reporting for duty")
         else:
             self.world_size = 1
             self.rank = 0
@@ -171,6 +174,8 @@ class MultiFileDataReader:
         self._load_current_file()
         if len(self.file_paths) > 1:
             self._start_loading_next_file()
+
+        print(f"Number of batches in current file: {self.current_reader.num_batches()}")
 
         # Calculate total tokens (approximate, will be exact once all files are seen)
         self._calculate_total_tokens()
