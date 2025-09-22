@@ -10,7 +10,7 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --z_loss_coeff 0.0 \
     --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 1.6 \
     --scheduler cos --warmup_steps 1000 \
-    --weight_decay 0.001 --wd_decaying --wd_ts 100 \
+    --weight_decay 0.1 --wd_decaying --wd_ts 100 \
     --beta1 0.9 --beta2 0.999 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115 --log_interval 50 --latest_ckpt_interval 1000
