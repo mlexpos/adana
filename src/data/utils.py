@@ -336,7 +336,7 @@ class MultiFileDataReader:
             if self.rank == 0:  # Master worker
                 # Check if current file is exhausted (can't provide full batch)
                 current_batches_available = self.current_reader.num_batches()
-                batches_consumed = self.step // self.world_size  # Account for distributed batching
+                batches_consumed = self.step #Counts number of global batches
                 should_switch = (batches_consumed >= current_batches_available)
                 
                 # Broadcast decision to all workers (use GPU tensor for NCCL)
