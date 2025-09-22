@@ -336,18 +336,17 @@ class MultiFileDataReader:
             if self.rank == 0:  # Master worker
                 # Check if current file is exhausted (can't provide full batch)
                 current_batches_available = self.current_reader.num_batches()
-                batches_consumed = self.step #Counts number of global batches
+                batches_consumed = self.step  # Counts number of batches from current file
                 should_switch = (batches_consumed >= current_batches_available)
-                
+                if should_switch:
+                    print(f"Triggering switch to next file after exhausting current file ({self.step} batches)")
                 # Broadcast decision to all workers (use GPU tensor for NCCL)
                 switch_tensor = torch.tensor([1 if should_switch else 0], dtype=torch.int32, device='cuda')
-                if dist.is_available():
-                    dist.broadcast(switch_tensor, src=0)
+                dist.broadcast(switch_tensor, src=0)
             else:  # Worker processes
                 # Receive decision from master (use GPU tensor for NCCL)
                 switch_tensor = torch.tensor([0], dtype=torch.int32, device='cuda')
-                if dist.is_available():
-                    dist.broadcast(switch_tensor, src=0)
+                dist.broadcast(switch_tensor, src=0)
                 should_switch = bool(switch_tensor.item())
         else:
             # Fallback for non-distributed case
