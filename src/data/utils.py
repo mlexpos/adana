@@ -213,22 +213,62 @@ class MultiFileDataReader:
 
     def _switch_to_next_file(self):
         """Switch current file to next file and start loading the new next file"""
-        # Check if next file is ready
-        loaded_file = self.async_loader.get_loaded_file(timeout=5.0)  # Wait up to 5 seconds
+        next_idx = (self.current_file_idx + 1) % len(self.file_paths)
+        file_path = self.file_paths[next_idx]
         
-        if loaded_file is not None:
-            file_path, data = loaded_file
-            print(f"Switching to pre-loaded file: {file_path}")
-            self.next_data = data
+        # Coordinate file loading across all workers to prevent desynchronization
+        if self.auto_shard and dist.is_initialized():
+            # Step 1: Check if this worker's async load is ready
+            loaded_file = self.async_loader.get_loaded_file(timeout=5.0)
+            async_ready = loaded_file is not None
+            
+            # Step 2: All workers report their async status to master
+            async_status = torch.tensor([1 if async_ready else 0], dtype=torch.int32)
+            if self.rank == 0:
+                # Master collects status from all workers
+                all_status = [torch.tensor([0], dtype=torch.int32) for _ in range(self.world_size)]
+                dist.all_gather(all_status, async_status)
+                all_ready = all(status.item() == 1 for status in all_status)
+                
+                if all_ready:
+                    print(f"All workers ready - switching to pre-loaded file: {file_path}")
+                else:
+                    print(f"Some workers not ready - all workers will load synchronously: {file_path}")
+                
+                # Broadcast decision to all workers
+                use_async = torch.tensor([1 if all_ready else 0], dtype=torch.int32)
+                dist.broadcast(use_async, src=0)
+            else:
+                # Workers gather their status and receive decision
+                all_status = [torch.tensor([0], dtype=torch.int32) for _ in range(self.world_size)]
+                dist.all_gather(all_status, async_status)
+                
+                use_async = torch.tensor([0], dtype=torch.int32)
+                dist.broadcast(use_async, src=0)
+            
+            # Step 3: All workers use the same loading method
+            if use_async.item() == 1 and async_ready:
+                # Use pre-loaded file
+                _, data = loaded_file
+                self.next_data = data
+            else:
+                # All workers load synchronously together
+                print(f"Loading next file synchronously (coordinated): {file_path}")
+                self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
+                
         else:
-            # Fallback: load synchronously
-            next_idx = (self.current_file_idx + 1) % len(self.file_paths)
-            file_path = self.file_paths[next_idx]
-            print(f"Loading next file synchronously (async not ready): {file_path}")
-            self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
+            # Non-distributed case - use original logic
+            loaded_file = self.async_loader.get_loaded_file(timeout=5.0)
+            if loaded_file is not None:
+                file_path, data = loaded_file
+                print(f"Switching to pre-loaded file: {file_path}")
+                self.next_data = data
+            else:
+                print(f"Loading next file synchronously (async not ready): {file_path}")
+                self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
         
         # Switch files
-        self.current_file_idx = (self.current_file_idx + 1) % len(self.file_paths)
+        self.current_file_idx = next_idx
         self.current_data = self.next_data
         self.next_data = None
         
@@ -278,7 +318,7 @@ class MultiFileDataReader:
             self.current_reader.set_step(step)
 
     def sample_batch(self):
-        """Sample a batch from current file, switching files when needed"""
+        """Sample a batch from current file, switching files when current file is exhausted"""
         if self.current_reader is None:
             raise RuntimeError("No data loaded")
         
@@ -287,14 +327,39 @@ class MultiFileDataReader:
             self.step += 1
             return self.current_reader.sample_batch()
         
-        # For multiple files, check if we should switch files
-        # We'll switch files periodically to ensure good mixing
-        # Switch after consuming roughly 1/4 of the current file's batches
-        batches_per_file_switch = max(1, self.current_reader.num_batches() // 4)
+        # For multiple files, check if current file can provide a full batch
+        # If not, switch to next file with master-worker coordination
+        should_switch = False
         
-        if self.step > 0 and self.step % batches_per_file_switch == 0:
-            print(f"Switching files after {batches_per_file_switch} batches")
+        if self.auto_shard and dist.is_initialized():
+            # Master-worker coordination for file switching
+            if self.rank == 0:  # Master worker
+                # Check if current file is exhausted (can't provide full batch)
+                current_batches_available = self.current_reader.num_batches()
+                batches_consumed = self.step // self.world_size  # Account for distributed batching
+                should_switch = (batches_consumed >= current_batches_available)
+                
+                # Broadcast decision to all workers
+                switch_tensor = torch.tensor([1 if should_switch else 0], dtype=torch.int32)
+                if dist.is_available():
+                    dist.broadcast(switch_tensor, src=0)
+            else:  # Worker processes
+                # Receive decision from master
+                switch_tensor = torch.tensor([0], dtype=torch.int32)
+                if dist.is_available():
+                    dist.broadcast(switch_tensor, src=0)
+                should_switch = bool(switch_tensor.item())
+        else:
+            # Fallback for non-distributed case
+            current_batches_available = self.current_reader.num_batches()
+            should_switch = (self.step >= current_batches_available)
+        
+        # All workers switch together if current file is exhausted
+        if should_switch:
+            print(f"Switching files after exhausting current file ({self.step} batches)")
             self._switch_to_next_file()
+            # Reset step counter for new file
+            self.step = 0
         
         self.step += 1
         return self.current_reader.sample_batch()
