@@ -78,19 +78,11 @@ def get_fineweb_100_data(
         print(f"Writing validation to {val_file_path} ({val_arr_len:,} tokens)...")
         val_arr = np.memmap(val_file_path, dtype=dtype, mode="w+", shape=(val_arr_len,))
 
-        total_batches = min(1024, len(tokenized_val)) if len(tokenized_val) > 0 else 0
-        idx = 0
-
-        for batch_idx in tqdm(range(total_batches), desc="writing validation"):
-            batch = (
-                tokenized_val.shard(num_shards=total_batches, index=batch_idx, contiguous=True)
-                .with_format("numpy")
-            )
-            if len(batch) == 0:
-                continue
-            arr_batch = np.concatenate(batch["ids"]) if len(batch) > 0 else np.array([], dtype=dtype)
-            val_arr[idx : idx + len(arr_batch)] = arr_batch
-            idx += len(arr_batch)
+        # Process all data at once - much faster than sharding
+        if len(tokenized_val) > 0:
+            print("Concatenating all validation token sequences...")
+            all_ids = np.concatenate(tokenized_val["ids"])
+            val_arr[:] = all_ids
 
         val_arr.flush()
 
@@ -133,19 +125,11 @@ def get_fineweb_100_data(
         print(f"Writing train to {train_file_path} ({train_arr_len:,} tokens)...")
         train_arr = np.memmap(train_file_path, dtype=dtype, mode="w+", shape=(train_arr_len,))
 
-        total_batches = min(1024, len(tokenized_train)) if len(tokenized_train) > 0 else 0
-        idx = 0
-
-        for batch_idx in tqdm(range(total_batches), desc=f"writing train {i:04d}"):
-            batch = (
-                tokenized_train.shard(num_shards=total_batches, index=batch_idx, contiguous=True)
-                .with_format("numpy")
-            )
-            if len(batch) == 0:
-                continue
-            arr_batch = np.concatenate(batch["ids"]) if len(batch) > 0 else np.array([], dtype=dtype)
-            train_arr[idx : idx + len(arr_batch)] = arr_batch
-            idx += len(arr_batch)
+        # Process all data at once - much faster than sharding
+        if len(tokenized_train) > 0:
+            print(f"Concatenating all train token sequences for file {i:04d}...")
+            all_ids = np.concatenate(tokenized_train["ids"])
+            train_arr[:] = all_ids
 
         train_arr.flush()
         train_files.append(train_file_path)
