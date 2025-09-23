@@ -78,11 +78,12 @@ def get_fineweb_100_data(
         print(f"Writing validation to {val_file_path} ({val_arr_len:,} tokens)...")
         val_arr = np.memmap(val_file_path, dtype=dtype, mode="w+", shape=(val_arr_len,))
 
-        # Process all data at once - much faster than sharding
-        if len(tokenized_val) > 0:
-            print("Concatenating all validation token sequences...")
-            all_ids = np.concatenate(tokenized_val["ids"])
-            val_arr[:] = all_ids
+        # Use direct iteration over dataset - more efficient than sharding
+        idx = 0
+        for example in tqdm(tokenized_val, desc="writing validation"):
+            token_ids = np.array(example["ids"], dtype=dtype)
+            val_arr[idx:idx + len(token_ids)] = token_ids
+            idx += len(token_ids)
 
         val_arr.flush()
 
@@ -125,11 +126,12 @@ def get_fineweb_100_data(
         print(f"Writing train to {train_file_path} ({train_arr_len:,} tokens)...")
         train_arr = np.memmap(train_file_path, dtype=dtype, mode="w+", shape=(train_arr_len,))
 
-        # Process all data at once - much faster than sharding
-        if len(tokenized_train) > 0:
-            print(f"Concatenating all train token sequences for file {i:04d}...")
-            all_ids = np.concatenate(tokenized_train["ids"])
-            train_arr[:] = all_ids
+        # Use direct iteration over dataset - more efficient than sharding
+        idx = 0
+        for example in tqdm(tokenized_train, desc=f"writing train {i:04d}"):
+            token_ids = np.array(example["ids"], dtype=dtype)
+            train_arr[idx:idx + len(token_ids)] = token_ids
+            idx += len(token_ids)
 
         train_arr.flush()
         train_files.append(train_file_path)
