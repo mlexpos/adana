@@ -424,7 +424,7 @@ def get_data_readers(args, verbose=True):
         train_data = data_srcs["train"]
         train_reader = DataReader(
             data_src=train_data,
-            batch_size=args.batch_size,
+            local_batch_size=args.batch_size,
             sequence_length=args.sequence_length,
             seed=args.data_seed,
             with_replacement=False,
@@ -436,7 +436,7 @@ def get_data_readers(args, verbose=True):
         print("Using optimized MultiFileDataReader with dual buffering and async loading")
         train_reader = MultiFileDataReader(
             data_files=data_srcs,
-            batch_size=args.batch_size,
+            local_batch_size=args.batch_size,
             sequence_length=args.sequence_length,
             seed=args.data_seed,
             with_replacement=False,
@@ -448,7 +448,7 @@ def get_data_readers(args, verbose=True):
 
     val_reader = DataReader(
         data_src=data_srcs["val"],
-        batch_size=args.batch_size,
+        local_batch_size=args.batch_size,
         sequence_length=args.sequence_length,
         seed=args.data_seed,
         with_replacement=False,

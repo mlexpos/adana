@@ -117,7 +117,7 @@ class MultiFileDataReader:
     def __init__(
         self,
         data_files,
-        batch_size,
+        local_batch_size,
         sequence_length,
         seed=1337,
         with_replacement=False,
@@ -127,6 +127,19 @@ class MultiFileDataReader:
         """
         Optimized DataReader that handles multiple files with dual buffering.
         Always keeps current file and next file in RAM, with async loading.
+
+        Args:
+            data_files: Dictionary of file paths (train_00, train_01, etc.) or list of paths
+            local_batch_size: Number of samples per batch PER WORKER (not global batch size)
+            sequence_length: Length of each sequence
+            seed: Random seed for reproducibility
+            with_replacement: Whether to sample with replacement
+            auto_shard: Whether to enable automatic sharding for distributed training
+            keep_in_ram: Force keep data in RAM (always True for MultiFileDataReader)
+
+        Note:
+            In distributed training, local_batch_size is the per-worker batch size.
+            The global batch size is local_batch_size * world_size.
         """
         # Parse file paths
         if isinstance(data_files, (str, Path)):
@@ -144,7 +157,7 @@ class MultiFileDataReader:
         else:
             raise ValueError(f"Unsupported data_files type: {type(data_files)}")
 
-        self.batch_size = batch_size
+        self.local_batch_size = local_batch_size
         self.sequence_length = sequence_length
         self.seed = seed
         self.with_replacement = with_replacement
@@ -199,7 +212,7 @@ class MultiFileDataReader:
         file_seed = self.seed + self.current_file_idx * 1000
         self.current_reader = DataReader(
             data_src=self.current_data,
-            batch_size=self.batch_size,
+            local_batch_size=self.local_batch_size,
             sequence_length=self.sequence_length,
             seed=file_seed,
             with_replacement=self.with_replacement,
@@ -281,7 +294,7 @@ class MultiFileDataReader:
         file_seed = self.seed + self.current_file_idx * 1000
         self.current_reader = DataReader(
             data_src=self.current_data,
-            batch_size=self.batch_size,
+            local_batch_size=self.local_batch_size,
             sequence_length=self.sequence_length,
             seed=file_seed,
             with_replacement=self.with_replacement,
@@ -340,11 +353,12 @@ class MultiFileDataReader:
             # Master-worker coordination for file switching
             if self.rank == 0:  # Master worker
                 # Check if current file is exhausted (can't provide full batch)
-                current_batches_available = self.current_reader.num_batches()
-                batches_consumed = self.step  # Counts number of batches from current file
-                should_switch = (batches_consumed >= current_batches_available)
+                # Use current_file_num_batches() to get batches for current file only
+                local_batches_available = self.current_file_num_batches()
+                local_batches_consumed = self.step  # Counts number of local batches consumed by this worker
+                should_switch = (local_batches_consumed >= local_batches_available)
                 if should_switch:
-                    print(f"Triggering switch to next file after exhausting current file ({self.step} batches)")
+                    print(f"Triggering switch to next file after exhausting current file ({self.step} local batches consumed, {local_batches_available} available per worker)")
                 # Broadcast decision to all workers (use GPU tensor for NCCL)
                 switch_tensor = torch.tensor([1 if should_switch else 0], dtype=torch.int32, device='cuda')
                 dist.broadcast(switch_tensor, src=0)
@@ -355,8 +369,8 @@ class MultiFileDataReader:
                 should_switch = bool(switch_tensor.item())
         else:
             # Fallback for non-distributed case
-            current_batches_available = self.current_reader.num_batches()
-            should_switch = (self.step >= current_batches_available)
+            local_batches_available = self.current_file_num_batches()
+            should_switch = (self.step >= local_batches_available)
         
         # All workers switch together if current file is exhausted
         if should_switch:
@@ -369,8 +383,20 @@ class MultiFileDataReader:
         return self.current_reader.sample_batch()
 
     def num_batches(self):
+        """
+        Return total number of local batches across all files for this worker.
+
+        In distributed training, this returns the per-worker batch count,
+        not the global batch count across all workers.
+        """
         if self.current_reader is not None:
             return self.current_reader.num_batches() * len(self.file_paths)
+        return 0
+
+    def current_file_num_batches(self):
+        """Return number of local batches available in current file only for switching logic"""
+        if self.current_reader is not None:
+            return self.current_reader.num_batches_for_switching()
         return 0
 
     def __del__(self):
@@ -380,10 +406,27 @@ class MultiFileDataReader:
 
 
 class DataReader:
+    """
+    DataReader for single data file with support for distributed training.
+
+    Args:
+        data_src: Path to data file or numpy array
+        local_batch_size: Number of samples per batch PER WORKER (not global batch size)
+        sequence_length: Length of each sequence
+        seed: Random seed for reproducibility
+        with_replacement: Whether to sample with replacement
+        auto_shard: Whether to enable automatic sharding for distributed training
+        keep_in_ram: Whether to keep data in RAM
+
+    Note:
+        In distributed training, local_batch_size is the per-worker batch size.
+        The global batch size is local_batch_size * world_size.
+        Each worker gets different samples automatically when auto_shard=True.
+    """
     def __init__(
         self,
         data_src,
-        batch_size,
+        local_batch_size,
         sequence_length,
         seed=1337,
         with_replacement=False,
@@ -404,7 +447,7 @@ class DataReader:
             self.data = data_src
             self.keep_in_ram = True
 
-        self.batch_size = batch_size
+        self.local_batch_size = local_batch_size
         self.sequence_length = sequence_length
         self.seed = seed
         self.with_replacement = with_replacement
@@ -421,14 +464,25 @@ class DataReader:
             self.world_size = 1
             self.rank = 0
 
-        # Sampling without replacement
+        # Sampling without replacement state
         self.last_epoch = None
-        self.order = None
-        self.epoch_offset = None
-        self.step = 0
+        self.order = None  # Permutation of sequence indices for current epoch
+        self.epoch_offset = None  # Random offset within sequences for current epoch
+        self.step = 0  # Number of sample_batch() calls made by this worker
+
+        # Number of local batches this worker will process from the current file/epoch
+        # In distributed training: total_possible_batches // world_size
+        # In single worker: total_possible_batches
+        # This represents how many times this worker can call sample_batch()
+        # before exhausting its assigned portion of the data
         self.num_batches_of_seqlen = 0
+
+        # Initialize epoch data (sets num_batches_of_seqlen for both cases)
         if not with_replacement:
             self._shuffle_epoch(0)
+        else:
+            # For with_replacement, calculate finite batch count for file switching
+            self._calculate_finite_batches()
 
     def __len__(self):
         # Length in valid start indices for a sequence
@@ -473,11 +527,22 @@ class DataReader:
         return x, y
 
     def _sample_with_replacement(self, idx):
-        # Return an array of token indices of length self.batch_size
+        # Return an array of token indices of length self.local_batch_size
         # Sampled with replacement, can get repeats at any time
         seed = self.seed + idx * self.world_size + self.rank
         rng = np.random.default_rng(seed)
-        return rng.integers(len(self), self.batch_size)
+        return rng.integers(len(self), self.local_batch_size)
+
+    def _calculate_finite_batches(self):
+        """Calculate finite number of batches for file switching in with_replacement mode"""
+        if self.world_size > 1:
+            # Calculate based on available sequences, similar to without_replacement logic
+            total_sequences = (len(self)) // self.sequence_length - 1
+            total_possible_local_batches = total_sequences // self.local_batch_size
+            self.num_batches_of_seqlen = total_possible_local_batches // self.world_size
+        else:
+            total_sequences = (len(self)) // self.sequence_length - 1
+            self.num_batches_of_seqlen = total_sequences // self.local_batch_size
 
     def _shuffle_epoch(self, epoch):
         seed = self.seed + epoch
@@ -487,15 +552,36 @@ class DataReader:
         # Shift all sequences in this epoch by this amount:
         self.epoch_offset = rng.integers(self.sequence_length)
         self.last_epoch = epoch
-        self.num_batches_of_seqlen = (
-            len(self.order) // self.batch_size
-        )  # Drops remainder batch
+        # Calculate num_batches_of_seqlen: number of local batches this worker will process
+        #
+        # Example with 1000 sequences, local_batch_size=16, world_size=2:
+        # - total_possible_local_batches = 1000 // 16 = 62 local batches possible
+        # - In distributed: each worker processes 62 // 2 = 31 local batches
+        # - Worker 0 gets global batches [0, 2, 4, ...] -> 31 batches total
+        # - Worker 1 gets global batches [1, 3, 5, ...] -> 31 batches total
+        # - self.step goes from 0 to 30 for each worker
+        if self.world_size > 1:
+            # In distributed training, each worker processes every world_size-th batch
+            total_possible_local_batches = len(self.order) // self.local_batch_size
+            # Each worker gets every world_size-th batch, so divide by world_size
+            self.num_batches_of_seqlen = total_possible_local_batches // self.world_size
+        else:
+            # Single worker case: process all possible batches
+            self.num_batches_of_seqlen = len(self.order) // self.local_batch_size
 
     def _sample_without_replacement(self, step):
-        # Return an array of token indices of length self.batch_size
+        # Return an array of token indices of length self.local_batch_size
         # Sampled without replacement, cycle all sequences before potential repeats
         # Sequences are randomly offset in every epoch as well
+        #
+        # Distributed sampling logic:
+        # - All workers share the same permutation (from same epoch seed)
+        # - Worker 0 gets batches 0, world_size, 2*world_size, ...
+        # - Worker 1 gets batches 1, world_size+1, 2*world_size+1, ...
+        # - This ensures no overlap between workers
         batch_idx = self.world_size * step + self.rank
+        # epoch_length is the number of local batches this worker processes per epoch
+        # When batch_idx exceeds this, we move to the next epoch (reshuffle data)
         epoch_length = self.num_batches_of_seqlen
 
         epoch = batch_idx // epoch_length
@@ -503,11 +589,31 @@ class DataReader:
             self._shuffle_epoch(epoch)
         epoch_idx = batch_idx % epoch_length
 
-        start = epoch_idx * self.batch_size
-        end = start + self.batch_size
+        start = epoch_idx * self.local_batch_size
+        end = start + self.local_batch_size
         return self.order[start:end] * self.sequence_length + self.epoch_offset
 
     def num_batches(self):
+        """
+        Return number of local batches available for this worker.
+
+        In distributed training, this returns the per-worker batch count,
+        not the global batch count across all workers.
+
+        For with_replacement=True: Returns theoretical maximum based on data size
+        For with_replacement=False: Returns actual batches this worker will process
+        """
         if self.with_replacement:
-            return self.num_tokens // self.batch_size
+            # With replacement: theoretically unlimited, but limit to data size
+            return self.num_tokens // self.local_batch_size
+        return self.num_batches_of_seqlen
+
+    def num_batches_for_switching(self):
+        """
+        Return number of local batches for file switching logic.
+
+        This returns the finite number of batches this worker should process
+        from the current file before switching, ensuring consistent behavior
+        for both with_replacement and without_replacement modes.
+        """
         return self.num_batches_of_seqlen
