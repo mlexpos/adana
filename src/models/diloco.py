@@ -12,6 +12,53 @@ from torch.nn import functional as F
 from models.base import GPTBase, CausalSelfAttention, LayerNorm, Block, MLP
 
 
+def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
+    freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
+    t = torch.arange(end, device=freqs.device)  # type: ignore
+    freqs = torch.outer(t, freqs).float()  # type: ignore
+    cos_freqs = torch.cos(freqs)
+    sin_freqs = torch.sin(freqs)
+    # Stack the cos and sin parts in the last dimension to simulate complex numbers
+    return torch.stack((cos_freqs, sin_freqs), dim=-1)
+
+
+def _reshape_for_broadcast(freqs_cis: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """
+    freqs_cis: complex - (seq_len, head_dim / 2)
+    x: complex - (bsz, seq_len, head_dim / 2)
+    """
+    ndim = x.ndim
+    assert 1 < ndim
+    assert freqs_cis.shape[:-1] == (x.shape[1], x.shape[-2])
+    # New shape for broadcasting
+    shape = [
+        1 if i != 1 and i != ndim - 2 else d for i, d in enumerate(x.shape[:-1])
+    ] + [2]
+    return freqs_cis.view(*shape)
+
+
+def apply_rotary_emb(q, k, freqs_cis):
+    # q, k: (B, T, nh, hs)
+    # freq_cis: (T, hs)
+    # return: (B, T, nh, hs), (B, T, nh, hs)
+    q = q.float().reshape(*q.shape[:-1], -1, 2)
+    k = k.float().reshape(*k.shape[:-1], -1, 2)
+
+    freqs_cis = _reshape_for_broadcast(freqs_cis, q)
+
+    # Perform manual "complex" multiplication
+    q_cos = q[..., 0] * freqs_cis[..., 0] - q[..., 1] * freqs_cis[..., 1]
+    q_sin = q[..., 0] * freqs_cis[..., 1] + q[..., 1] * freqs_cis[..., 0]
+    k_cos = k[..., 0] * freqs_cis[..., 0] - k[..., 1] * freqs_cis[..., 1]
+    k_sin = k[..., 0] * freqs_cis[..., 1] + k[..., 1] * freqs_cis[..., 0]
+
+    # Combine the results back into the interleaved format expected by q and k
+    q_out = torch.stack((q_cos, q_sin), dim=-1).reshape(q.shape).flatten(3)
+    k_out = torch.stack((k_cos, k_sin), dim=-1).reshape(k.shape).flatten(3)
+
+    return q_out, k_out
+
+
 class DiLoCoAttention(CausalSelfAttention):
     def __init__(self, config):
         # Determine QKV dimension per head
@@ -51,7 +98,7 @@ class DiLoCoAttention(CausalSelfAttention):
         self.q_layernorm = LayerNorm(self.qkv_dim, bias=config.bias)
         self.k_layernorm = LayerNorm(self.qkv_dim, bias=config.bias)
 
-    def forward(self, x):
+    def forward(self, x, freqs_cis):
         # batch size, sequence length, embedding dimensionality (n_embd)
         B, T, C = x.size()
 
@@ -62,6 +109,9 @@ class DiLoCoAttention(CausalSelfAttention):
         k = k.view(B, T, self.n_head, self.qkv_dim)
         q = q.view(B, T, self.n_head, self.qkv_dim)
         v = v.view(B, T, self.n_head, self.qkv_dim)
+
+        # Apply RoPE before layer norm operations
+        q, k = apply_rotary_emb(q, k, freqs_cis)
 
         # Apply QK-LayerNorm
         q = self.q_layernorm(q)
@@ -137,12 +187,25 @@ class DiLoCoBlock(Block):
         else:
             self.mlp = DiLoCoMLP(config)
 
+    def forward(self, x, freqs_cis):
+        x = x + self.attn(self.ln_1(x), freqs_cis)
+        x_, logits_and_experts = self.mlp(self.ln_2(x))
+        x = x + x_
+        return x, logits_and_experts
+
 
 class DiLoCo(GPTBase):
     def __init__(self, config):
         # Override weight_tying to False for DiLoCo
         config.weight_tying = False
         super().__init__(config)
+
+        # Initialize RoPE frequencies
+        self.head_dim = self.config.qkv_dim if self.config.qkv_dim is not None else config.n_embd // config.n_head
+        self.freqs_cis = precompute_freqs_cis(self.head_dim, config.sequence_length)
+
+        # Remove unused positional embeddings since we're using RoPE
+        del self.transformer.wpe
 
         # Replace blocks with DiLoCo blocks
         self.transformer.h = nn.ModuleList([DiLoCoBlock(config) for _ in range(config.n_layer)])
@@ -172,6 +235,18 @@ class DiLoCo(GPTBase):
         # Return mean z-loss
         return z_loss.mean()
 
+    def get_num_params(self, non_embedding=True, exclude_embeddings=False):
+        """
+        Return the number of parameters in the model.
+        For DiLoCo, we don't have positional embeddings since we use RoPE.
+        """
+        n_params = sum(p.numel() for p in self.parameters())
+        if exclude_embeddings:
+            n_params -= self.transformer.wte.weight.numel()  # Token embeddings
+            n_params -= self.lm_head.weight.numel()  # LM head
+        # Note: No positional embeddings to subtract since we use RoPE
+        return n_params
+
     def forward(self, idx, targets=None, get_logits=False, moe=False):
         device = idx.device
         b, t = idx.size()
@@ -179,13 +254,13 @@ class DiLoCo(GPTBase):
             t <= self.config.sequence_length
         ), f"Cannot forward sequence of length {t}, block size is only {self.config.sequence_length}"
 
-        # shape (1, t)
-        pos = torch.arange(0, t, dtype=torch.long, device=device).unsqueeze(0)
+        # shape (t,)
+        pos = torch.arange(0, t, dtype=torch.long, device=device)
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx)  # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape (1, t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        x = self.transformer.drop(tok_emb)
+        freqs_cis = self.freqs_cis.to(x.device)[pos]
 
         # router logits is a list for each layer's routing, each of shape (b * seq_len, n_experts)
         router_logits = []
@@ -194,7 +269,7 @@ class DiLoCo(GPTBase):
 
         # forward pass through all the transformer blocks
         for block in self.transformer.h:
-            x, logits_and_experts = block(x)
+            x, logits_and_experts = block(x, freqs_cis)
             if len(logits_and_experts) > 0:
                 router_logits.append(logits_and_experts["router_logits"])
                 experts.append(logits_and_experts["selected_experts"])
