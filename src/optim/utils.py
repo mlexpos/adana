@@ -288,3 +288,47 @@ def visualize_routing(router_logits, extra_args):
         }
         logs.update(layer_token_routing)
     return logs
+
+
+def log_optimizer_schedules(optimizer, optimizer_name):
+    """
+    Log optimizer-specific scheduling parameters to wandb.
+    
+    For AdEMAMix: logs alpha(t) and 1-beta_3(t) schedules
+    For DANA/DANA-STAR: logs alpha factor and (1+t)**(1-kappa) schedules
+    """
+    logs = {}
+    
+    if optimizer_name in ["ademamix"]:
+        # Log AdEMAMix schedules: alpha(t) and 1-beta_3(t)
+        alpha_values = []
+        one_minus_beta3_values = []
+        
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param in optimizer.state and "current_alpha" in optimizer.state[param]:
+                    state = optimizer.state[param]
+                    alpha_values.append(state["current_alpha"])
+                    one_minus_beta3_values.append(state["current_one_minus_beta3"])
+        
+        if alpha_values:
+            logs["optimizer/alpha_schedule"] = torch.tensor(alpha_values).mean().item()
+            logs["optimizer/one_minus_beta3_schedule"] = torch.tensor(one_minus_beta3_values).mean().item()
+    
+    elif optimizer_name in ["dana", "dana_star"]:
+        # Log DANA schedules: alpha factor and (1+t)**(1-kappa)
+        alpha_values = []
+        kappa_factor_values = []
+        
+        for group in optimizer.param_groups:
+            for param in group["params"]:
+                if param in optimizer.state and "current_alpha" in optimizer.state[param]:
+                    state = optimizer.state[param]
+                    alpha_values.append(state["current_alpha"])
+                    kappa_factor_values.append(state["current_kappa_factor"])
+        
+        if alpha_values:
+            logs["optimizer/alpha_schedule"] = torch.tensor(alpha_values).mean().item()
+            logs["optimizer/kappa_factor_schedule"] = torch.tensor(kappa_factor_values).mean().item()
+    
+    return logs

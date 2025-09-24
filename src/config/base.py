@@ -61,6 +61,9 @@ def parse_args(base_parser, args, namespace):
         choices=["linear", "cos", "wsd", "none", "cos_inf"],
     )
     parser.add_argument(
+        "--div_factor", default=1e2, type=float
+    )
+    parser.add_argument(
         "--final_div_factor", default=1, type=float
     )  # cosine and linear schedulers
     parser.add_argument("--cos_inf_steps", default=0, type=int)

@@ -11,7 +11,7 @@ from typing import Dict, Tuple
 import torch
 import torch.distributed as dist
 
-from .schedule import cos_inf_schedule, wsd_schedule #, cosine_wsd_decay_schedule, DOES NOT EXIST
+from .schedule import cos_inf_schedule, wsd_schedule # cos_schedule, cosine_wsd_decay_schedule, DOES NOT EXIST
 
 
 # copy from https://github.com/KellerJordan/Muon/tree/master
@@ -671,7 +671,14 @@ class CombinedScheduler:
     def __init__(self, optimizer, cfg, muon_lr_key="lr", adamw_lr_key="adamw_lr"):
         self.schedulers = []
         scheduler_map = {
-            "cos": torch.optim.lr_scheduler.OneCycleLR,
+            "cos": lambda opt, lr: torch.optim.lr_scheduler.LambdaLR(
+                opt,
+                cos_schedule(
+                    n_iterations=cfg.iterations,
+                    n_warmup=cfg.warmup_steps,
+                    final_div_factor=cfg.final_div_factor,
+                ),
+            ),
             "linear": torch.optim.lr_scheduler.OneCycleLR,
             "cos_inf": lambda opt, lr: torch.optim.lr_scheduler.LambdaLR(
                 opt,
@@ -679,8 +686,8 @@ class CombinedScheduler:
                     n_iterations=cfg.iterations,
                     n_warmup=cfg.warmup_steps,
                     n_inf=cfg.cos_inf_steps,
-                    div_factor=1e2,
-                    final_div_factor=0.1,
+                    div_factor=cfg.div_factor,
+                    final_div_factor=cfg.final_div_factor,
                 ),
             ),
             "wsd": lambda opt, lr: torch.optim.lr_scheduler.LambdaLR(
@@ -713,7 +720,7 @@ class CombinedScheduler:
             if lr_key in group:
                 scheduler_cls = scheduler_map.get(cfg.scheduler, None)
                 if scheduler_cls:
-                    if cfg.scheduler in ["cos", "linear"]:
+                    if cfg.scheduler == "linear":
                         scheduler = scheduler_cls(
                             optimizer,
                             max_lr=[group.get(lr_key, getattr(cfg, lr_key.lower()))],

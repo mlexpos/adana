@@ -165,6 +165,11 @@ class AdEMAMix(torch.optim.Optimizer):
                 else:
                     beta3 = beta3_final
 
+                # Store current alpha and beta_3 values for logging
+                state["current_alpha"] = alpha
+                state["current_beta3"] = beta3
+                state["current_one_minus_beta3"] = 1 - beta3
+
                 # Decay the first and second moment running average coefficient
                 if beta1 != 0.0:
                     exp_avg_fast.mul_(beta1).add_(grad, alpha=1 - beta1)

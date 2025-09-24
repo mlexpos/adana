@@ -357,8 +357,8 @@ def main(args, parser):
                 n_iterations=args.iterations,
                 n_warmup=args.warmup_steps,
                 n_inf=args.cos_inf_steps,
-                div_factor=1e2,
-                final_div_factor=0.1,
+                div_factor=args.div_factor,
+                final_div_factor=args.final_div_factor,
             )
             scheduler = (
                 torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)

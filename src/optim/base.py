@@ -11,8 +11,8 @@ import yaml
 from logger.logger import DynamicsLogger
 
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
-                    load_worker_state, log_prodigy_lr, save_checkpoint,
-                    save_worker_state, visualize_routing)
+                    load_worker_state, log_prodigy_lr, log_optimizer_schedules,
+                    save_checkpoint, save_worker_state, visualize_routing)
 
 
 def train(
@@ -194,6 +194,9 @@ def train(
 
             if cfg.opt == "prodigy":
                 prodigy_efective_lrs = log_prodigy_lr(opt)
+            
+            # Log optimizer-specific schedules for AdEMAMix and DANA
+            optimizer_schedule_logs = log_optimizer_schedules(opt, cfg.opt)
 
             print(
                 f"Train: Iter={curr_iter} ({epoch:0.3f} epochs) "
@@ -220,6 +223,10 @@ def train(
 
                 if cfg.opt == "prodigy":
                     wandb_logs["effective_lr"] = prodigy_efective_lrs[0]
+                
+                # Add optimizer schedule logs to wandb
+                if optimizer_schedule_logs:
+                    wandb_logs.update(optimizer_schedule_logs)
 
                 if cfg.log_parameter_norms:
                     raw_model = distributed_backend.get_raw_model(model)

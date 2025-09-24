@@ -159,7 +159,7 @@ class DANA_STAR(Optimizer):
                     alpha = delta / (delta + step) * time_factor
                 else:
                     step = state['step']
-                    alpha = delta / (delta + step)              
+                    alpha = delta / (delta + step)
                 
                 # Update first moment
                 m.mul_(1 - alpha).add_(grad, alpha=alpha)
@@ -171,6 +171,10 @@ class DANA_STAR(Optimizer):
                 tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
                 # Compute effective time
                 effective_time = self._effective_time(tau, step)
+                
+                # Store current alpha and kappa-based factor for logging
+                state["current_alpha"] = alpha
+                state["current_kappa_factor"] = (1 + effective_time)**(1-kappa)
                 # Compute momentum terms
                 norm_term = self._norm_term(v, tau, step, epsilon)
                 clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, step) * torch.abs(grad) + epsilon), max=1.0)
@@ -443,6 +447,10 @@ class DANA(Optimizer):
                 
                 # DANA's delta-based EMA coefficient: alpha = delta / (delta + t)
                 alpha = delta / (delta + step_for_alpha)
+
+                # Store current alpha and kappa-based factor for logging
+                state["current_alpha"] = alpha
+                state["current_kappa_factor"] = (1 + state["step"])**(1-kappa)
 
                 # Update first moment (momentum) - DANA style
                 exp_avg.mul_(1 - alpha).add_(grad, alpha=alpha)
