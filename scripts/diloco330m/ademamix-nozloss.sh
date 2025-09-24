@@ -16,4 +16,4 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --adema_beta3 0.9999901 --adema_alpha 17.81 \
     --adema_beta3_warmup 129312 --adema_alpha_warmup 129312 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-    --eval_interval 115 \
+    --eval_interval 115

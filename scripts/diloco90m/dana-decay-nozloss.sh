@@ -14,4 +14,4 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --use_grad_ema_for_g2 --grad_ema_beta 0.9 --use_v_ema --v_ema_beta 0.999 \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-    --eval_interval 115 \
+    --eval_interval 115
