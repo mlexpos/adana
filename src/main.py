@@ -106,10 +106,11 @@ def main(args, parser):
         g["params"] = params
         optimized_params_cnt += sum([p.numel() for p in g["params"]])
     params_cnt = distributed_backend.get_raw_model(model).get_num_params()
-    params_cnt_with_embeddings = distributed_backend.get_raw_model(model).get_num_params(non_embedding=False)
+    params_cnt_with_all_embeddings = distributed_backend.get_raw_model(model).get_num_params(non_embedding=False)
+    params_cnt_non_embedding = distributed_backend.get_raw_model(model).get_num_params(exclude_embeddings=True)
     print("number of parameters: %.2fM" % (params_cnt / 1e6,))
-    print("number of non-embedding parameters: %.2fM" % (params_cnt / 1e6,))
-    print("number of parameters (with embeddings): %.2fM" % (params_cnt_with_embeddings / 1e6,))
+    print("number of non-embedding parameters: %.2fM" % (params_cnt_non_embedding / 1e6,))
+    print("number of parameters (with all embeddings): %.2fM" % (params_cnt_with_all_embeddings / 1e6,))
     print("number of optimized parameters: %.2fM" % (optimized_params_cnt / 1e6,))
     if args.wandb and distributed_backend.is_master_process():
         wandb.log(
