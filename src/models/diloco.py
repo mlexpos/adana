@@ -110,12 +110,12 @@ class DiLoCoAttention(CausalSelfAttention):
         q = q.view(B, T, self.n_head, self.qkv_dim)
         v = v.view(B, T, self.n_head, self.qkv_dim)
 
-        # Apply RoPE before layer norm operations
-        q, k = apply_rotary_emb(q, k, freqs_cis)
-
         # Apply QK-LayerNorm
         q = self.q_layernorm(q)
         k = self.k_layernorm(k)
+
+        # Apply RoPE after layer norm operations
+        q, k = apply_rotary_emb(q, k, freqs_cis)
 
         # transpose to (B, nh, T, qkv_dim)
         q = q.transpose(1, 2)
