@@ -140,6 +140,8 @@ class DiLoCoBlock(Block):
 
 class DiLoCo(GPTBase):
     def __init__(self, config):
+        # Override weight_tying to False for DiLoCo
+        config.weight_tying = False
         super().__init__(config)
 
         # Replace blocks with DiLoCo blocks

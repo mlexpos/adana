@@ -255,6 +255,7 @@ def parse_args(base_parser, args, namespace):
         choices=["float32", "float16", "bfloat16"],
     )
     parser.add_argument("--bias", default=False, type=bool)
+    parser.add_argument("--weight_tying", default=True, type=bool)
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--mlp_dim_exp_factor", default=1.0, type=float)
     parser.add_argument("--moe", action="store_true")
