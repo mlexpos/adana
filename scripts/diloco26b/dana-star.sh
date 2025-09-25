@@ -1,0 +1,14 @@
+#!/bin/bash
+
+torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --model diloco \
+    --distributed_backend nccl --compile \
+    --n_embd 2560 --qkv_dim 64 --n_head 40 --n_layer 30 \
+    --mlp_hidden_dim 10240 \
+    --batch_size 16 --sequence_length 2048 --acc_steps 2 \
+    --dataset fineweb --iterations 738600 \
+    --dropout 0.0 --warmup_steps 14772 --grad_clip 0.5 --seed 0 \
+    --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 2.0 \
+    --weight_decay 0.1 --wd_decaying --wd_ts 100 \
+    --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
+    --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
+    --eval_interval 115
