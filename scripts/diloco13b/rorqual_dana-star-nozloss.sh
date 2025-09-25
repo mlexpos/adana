@@ -40,7 +40,7 @@ torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --mo
     --iterations 400800 \
     --dropout 0.0 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 1.6 \
+    --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 2.0 \
     --warmup_steps 8016 \
     --weight_decay 0.1 --wd_decaying --wd_ts 100 \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
