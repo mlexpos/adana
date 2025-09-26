@@ -1,11 +1,11 @@
 #!/bin/bash
 #SBATCH --time=8:00:00
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=h100:1
+#SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --mem=80GB                    # "alloc as needed" on Alliance
+#SBATCH --mem=0                    # "alloc as needed" on Alliance
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"
@@ -58,7 +58,7 @@ done
 
 echo "Using lr=$LR and wd_ts=$WD_TS"
 
-torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --model diloco \
+torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
     --n_embd 768 --qkv_dim 64 --n_head 12 --n_layer 9 \
