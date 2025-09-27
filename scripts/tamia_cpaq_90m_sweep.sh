@@ -2,7 +2,8 @@
 
 # Define lr values: 2^2*1e-4, 2^3*1e-4, 2^4*1e-4, 2^5*1e-4, 2^6*1e-4
 #lr_values=(4e-4 8e-4 16e-4 32e-4 64e-4)
-lr_values=(2e-4 1e-4 5e-5 25e-6 125e-7)
+#lr_values=(2e-4 1e-4 5e-5 25e-6 125e-7)
+lr_values=(3e-4 5e-4)
 
 # Define r values for wd_ts calculation
 r_values=(-3 -2 -1 0 1 2 3)
