@@ -26,7 +26,7 @@ echo "Activated virtual environment"
 
 # Set up directories
 FINEWEB_DIR="$HOME/links/scratch/fineweb"
-DATASETS_DIR="$HOME/links/scratch/datasets"
+DATASETS_DIR="$HOME/links/projects/def-cypaquet"
 
 echo "Processing FineWeb 100BT sample data..."
 echo "Source directory: $FINEWEB_DIR"
