@@ -23,17 +23,8 @@ for lr in "${lr_values[@]}"; do
     # Loop over r values to calculate wd_ts
     for r in "${r_values[@]}"; do
         # Calculate wd_ts = 2^r / lr
-        # Convert scientific notation to decimal for bc
-        lr_decimal=$(echo "$lr" | sed 's/e-4/ * 0.0001/' | sed 's/e-3/ * 0.001/' | sed 's/e-2/ * 0.01/' | sed 's/e-1/ * 0.1/' | sed 's/e+0/ * 1/' | sed 's/e+1/ * 10/' | sed 's/e+2/ * 100/' | sed 's/e+3/ * 1000/')
-        
-        # Using bc for floating point arithmetic
-        if [ $r -ge 0 ]; then
-            wd_ts=$(echo "scale=10; 2^$r / ($lr_decimal)" | bc -l)
-        else
-            # For negative exponents, use 1/2^(-r)
-            neg_r=$((-$r))
-            wd_ts=$(echo "scale=10; 1 / (2^$neg_r) / ($lr_decimal)" | bc -l)
-        fi
+        # Use python for reliable floating point arithmetic
+        wd_ts=$(python3 -c "import sys; lr=float('$lr'); r=int('$r'); print(2**r / lr)")
         
         job_count=$((job_count + 1))
         echo "Job $job_count/$total_jobs: lr=$lr, r=$r, wd_ts=$wd_ts"
