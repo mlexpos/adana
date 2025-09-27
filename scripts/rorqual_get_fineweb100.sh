@@ -37,6 +37,6 @@ echo "Output directory: $DATASETS_DIR"
 python src/data/fineweb_100.py \
     --datasets-dir "$DATASETS_DIR" \
     --fineweb-dir "$FINEWEB_DIR" \
-    --num-proc 32
+    --num-proc 64
 
 echo "Tokenization completed!" 
