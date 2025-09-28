@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Define lr values: 2^2*1e-4, 2^3*1e-4, 2^4*1e-4, 2^5*1e-4, 2^6*1e-4
-lr_values=(2e-3 4e-3 5e-3 1e-3 3e-3)
+lr_values=(8e-4 9e-4 1e-3 2e-3 3e-3 4e-3 5e-3)
 
 # Define r values for weight_decay calculation
-r_values=(-3 -2 -1 0 1 2 3)
+r_values=(0 1 2 3 4)
 
 echo "Starting grid search over lr and weight_decay parameters"
 echo "lr values: ${lr_values[@]}"
