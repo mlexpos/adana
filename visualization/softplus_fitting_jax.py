@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """
-DanaStar Softplus Function Fitting with JAX
+DanaStar and AdamW Softplus Function Fitting with JAX
 
 OVERVIEW:
 ========
-This script fits a softplus-like function to validation loss data from DanaStar experiments
+This script fits a softplus-like function to validation loss data from optimization experiments
 to model the relationship between learning rate, weight decay, and final validation loss.
 
 The goal is to create a consistent fit that captures the optimal learning rate for different
-weight decay values (parameterized by omega = weight_decay_ts * learning_rate) and to model
-the validation loss landscape around the minimum.
+weight decay values and to model the validation loss landscape around the minimum.
+
+SUPPORTED OPTIMIZERS:
+====================
+1. **DanaStar**: Uses wd_ts (weight decay timescale) parameter
+   - omega = wd_ts * learning_rate
+   - Groups: DanaStar_35M_LR_WD_Sweep, DanaStar_90M_LR_WD_Sweep
+
+2. **AdamW**: Uses weight_decay and iterations parameters
+   - omega_T = weight_decay * learning_rate * iterations
+   - Groups: AdamW_small_lr_weight_decay_sweeps, AdamW_35M_lr_weight_decay_sweeps,
+            AdamW_90M_lr_weight_decay_sweeps, AdamW_180M_lr_weight_decay_sweeps
 
 FUNCTIONAL FORM:
 ===============
@@ -39,13 +49,36 @@ differences for distant omega values.
 
 USAGE:
 ======
-python softplus_fitting_jax.py --model 35M    # Fit 35M model data
-python softplus_fitting_jax.py --model 90M    # Fit 90M model data
+Basic usage:
+python softplus_fitting_jax.py --model DS35M     # DanaStar 35M model data
+python softplus_fitting_jax.py --model DS90M     # DanaStar 90M model data
+python softplus_fitting_jax.py --model AWsmall   # AdamW small model data
+python softplus_fitting_jax.py --model AW35M     # AdamW 35M model data
+python softplus_fitting_jax.py --model AW90M     # AdamW 90M model data
+python softplus_fitting_jax.py --model AW180M    # AdamW 180M model data
+
+With custom filtering and optimization:
+python softplus_fitting_jax.py --model DS35M --maxloss 3.5 --minpoints 3 --lambda 1e-4    # Custom loss, points, and regularization
+python softplus_fitting_jax.py --model AW35M --maxomega 2.0 --lambda 1e-2                # Limit to omega ≤ 2.0, stronger regularization
+
+OPTIONS:
+========
+--model: Model configuration (DS35M, DS90M, AWsmall, AW35M, AW90M, AW180M)
+--maxloss: Maximum validation loss threshold for filtering outliers (default: 4.0)
+           Data points with validation loss above this value are excluded
+--minpoints: Minimum number of data points required per omega group (default: 2)
+             Omega groups with fewer points are excluded from fitting
+--lambda: Regularization parameter for smooth parameter variation across omega (default: 1e-3)
+          Higher values enforce smoother parameter changes, lower values allow more variation
+--maxomega: Maximum omega value to include in fitting (default: no limit)
+            Omega groups above this threshold are excluded from analysis
 
 OUTPUT:
 =======
 - PDF plot showing data points, fitted curves, and optimal points
 - Console output with fitted parameters and minimum locations for each omega
+- For DanaStar: omega = wd_ts × lr
+- For AdamW: omega_T = weight_decay × lr × iterations
 """
 
 import wandb
@@ -73,57 +106,167 @@ C_INIT = -7.0  # Initial center location (log learning rate)
 D_INIT = 1.0   # Initial right slope parameter
 
 # Optimization hyperparameters
-LAMBDA_REG = 1e-3      # Regularization strength for parameter smoothness
 LEARNING_RATE = 1e-1   # Adagrad learning rate
 N_STEPS = 20000        # Number of optimization steps
 
-# Data filtering
-MAX_VAL_LOSS = 4.0     # Filter out validation losses above this threshold
+# Note: Regularization parameter and data filtering thresholds are now set via command line arguments
 
 # Parse command line arguments
-parser = argparse.ArgumentParser(description='JAX softplus fitting for DanaStar experiment data')
-parser.add_argument('--model', type=str, default='35M',
-                    choices=['35M', '90M'],
-                    help='Model size to fit (default: 35M)')
+parser = argparse.ArgumentParser(description='JAX softplus fitting for DanaStar and AdamW experiment data')
+parser.add_argument('--model', type=str, default='DS35M',
+                    choices=['DS35M', 'DS90M', 'AWsmall', 'AW35M', 'AW90M', 'AW180M'],
+                    help='Model configuration to fit (default: DS35M)')
+parser.add_argument('--maxloss', type=float, default=4.0,
+                    help='Maximum validation loss threshold - data points above this are filtered out (default: 4.0)')
+parser.add_argument('--minpoints', type=int, default=2,
+                    help='Minimum number of data points required per omega group (default: 2)')
+parser.add_argument('--lambda', type=float, default=1e-3, dest='lambda_reg',
+                    help='Regularization parameter for smooth parameter variation (default: 1e-3)')
+parser.add_argument('--maxomega', type=float, default=None,
+                    help='Maximum omega value to include - omega groups above this are filtered out (default: no limit)')
 args = parser.parse_args()
 
-# Configuration mapping for different model sizes
-model_size = args.model
+# Configuration mapping for different optimizers and model sizes
+model_config = args.model
 configs = {
-    '35M': {
-        'group': 'DanaStar_35M_LR_WD_Sweep',      # WandB experiment group name
-        'title': 'DanaStar 35M: JAX Softplus-like Fits',  # Plot title
-        'filename': '35m_lrwd_sweep_jax.pdf'      # Output filename
+    # DanaStar configurations
+    'DS35M': {
+        'group': 'DanaStar_35M_LR_WD_Sweep',                          # WandB experiment group name
+        'title': 'DanaStar 35M: JAX Softplus-like Fits',             # Plot title
+        'filename': 'danastar_35m_lrwd_sweep_jax.pdf',               # Output filename
+        'optimizer': 'danastar',                                      # Optimizer type
+        'omega_label': 'log(ω) where ω = wd_ts × lr'                # Colorbar label
     },
-    '90M': {
-        'group': 'DanaStar_90M_LR_WD_Sweep',      # WandB experiment group name
-        'title': 'DanaStar 90M: JAX Softplus-like Fits',  # Plot title
-        'filename': '90m_lrwd_sweep_jax.pdf'      # Output filename
+    'DS90M': {
+        'group': 'DanaStar_90M_LR_WD_Sweep',                          # WandB experiment group name
+        'title': 'DanaStar 90M: JAX Softplus-like Fits',             # Plot title
+        'filename': 'danastar_90m_lrwd_sweep_jax.pdf',               # Output filename
+        'optimizer': 'danastar',                                      # Optimizer type
+        'omega_label': 'log(ω) where ω = wd_ts × lr'                # Colorbar label
+    },
+    # AdamW configurations
+    'AWsmall': {
+        'group': 'AdamW_small_lr_weight_decay_sweeps',                # WandB experiment group name
+        'title': 'AdamW Small: JAX Softplus-like Fits',              # Plot title
+        'filename': 'adamw_small_lrwd_sweep_jax.pdf',                # Output filename
+        'optimizer': 'adamw',                                         # Optimizer type
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
+    },
+    'AW35M': {
+        'group': 'AdamW_35M_lr_weight_decay_sweeps',                  # WandB experiment group name
+        'title': 'AdamW 35M: JAX Softplus-like Fits',                # Plot title
+        'filename': 'adamw_35m_lrwd_sweep_jax.pdf',                  # Output filename
+        'optimizer': 'adamw',                                         # Optimizer type
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
+    },
+    'AW90M': {
+        'group': 'AdamW_90M_lr_weight_decay_sweeps',                  # WandB experiment group name
+        'title': 'AdamW 90M: JAX Softplus-like Fits',                # Plot title
+        'filename': 'adamw_90m_lrwd_sweep_jax.pdf',                  # Output filename
+        'optimizer': 'adamw',                                         # Optimizer type
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
+    },
+    'AW180M': {
+        'group': 'AdamW_180M_lr_weight_decay_sweeps',                 # WandB experiment group name
+        'title': 'AdamW 180M: JAX Softplus-like Fits',               # Plot title
+        'filename': 'adamw_180m_lrwd_sweep_jax.pdf',                 # Output filename
+        'optimizer': 'adamw',                                         # Optimizer type
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
     }
 }
 
-config = configs[model_size]
-print(f"Using configuration for {model_size}: {config}")
+config = configs[model_config]
+print(f"Using configuration for {model_config}: {config}")
 
 # =============================================================================
 # DATA LOADING AND PREPROCESSING
 # =============================================================================
 
-def load_wandb_data(project_name, group_name):
+def group_nearby_omegas(omega_values, tolerance_percent=1.0):
     """
-    Load experiment data from Weights & Biases.
+    Group omega values that are within a specified percentage of each other.
 
-    Downloads runs from the specified project and group, extracting:
+    This function clusters omega values that are very close (within tolerance_percent)
+    into groups and assigns each group a representative value. This prevents artificial
+    separation of essentially identical experimental conditions due to minor numerical
+    differences.
+
+    Args:
+        omega_values (list): List of calculated omega values
+        tolerance_percent (float): Tolerance as percentage (default: 1.0%)
+
+    Returns:
+        list: List of grouped omega values (same length as input)
+    """
+    if not omega_values:
+        return []
+
+    # Convert to numpy array and sort
+    omegas = np.array(omega_values)
+    sorted_indices = np.argsort(omegas)
+    sorted_omegas = omegas[sorted_indices]
+
+    # Group nearby values
+    groups = []
+    current_group = [sorted_omegas[0]]
+
+    for i in range(1, len(sorted_omegas)):
+        current_omega = sorted_omegas[i]
+        group_mean = np.mean(current_group)
+
+        # Check if current omega is within tolerance of the group mean
+        relative_diff = abs(current_omega - group_mean) / group_mean * 100
+
+        if relative_diff <= tolerance_percent:
+            current_group.append(current_omega)
+        else:
+            groups.append(current_group)
+            current_group = [current_omega]
+
+    # Add the last group
+    groups.append(current_group)
+
+    # Create mapping from original omega to group representative
+    omega_to_group = {}
+    for group in groups:
+        # Use the mean of the group as the representative value
+        group_representative = round(np.mean(group), 3)
+        for omega in group:
+            omega_to_group[omega] = group_representative
+
+    # Map back to original order
+    grouped_omegas = []
+    for original_omega in omega_values:
+        grouped_omegas.append(omega_to_group[original_omega])
+
+    return grouped_omegas
+
+def load_wandb_data(project_name, group_name, optimizer_type):
+    """
+    Load experiment data from Weights & Biases for different optimizers.
+
+    Downloads runs from the specified project and group, extracting different parameters
+    based on the optimizer type:
+
+    DanaStar:
     - lr: learning rate
     - wd_ts: weight decay (timescale)
     - dataset: dataset name (fineweb vs fineweb_100)
     - val_loss: final validation loss
+    - omega = wd_ts * lr
 
-    Computes omega = wd_ts * lr for parameterization.
+    AdamW:
+    - lr: learning rate
+    - weight_decay: weight decay parameter
+    - iterations: number of training iterations (T)
+    - dataset: dataset name (fineweb vs fineweb_100)
+    - val_loss: final validation loss
+    - omega_T = weight_decay * lr * iterations
 
     Args:
         project_name (str): WandB project name
         group_name (str): WandB experiment group name
+        optimizer_type (str): 'danastar' or 'adamw'
 
     Returns:
         pd.DataFrame: Processed experiment data
@@ -132,11 +275,15 @@ def load_wandb_data(project_name, group_name):
     api = wandb.Api()
 
     print(f"Downloading data from project: {project_name}, group: {group_name}")
+    print(f"Optimizer type: {optimizer_type}")
 
     # Get all runs in the specified group
     runs = api.runs(f"ep-rmt-ml-opt/{project_name}", filters={"group": group_name})
 
-    data = []
+    # First pass: collect all raw data with calculated omega values
+    raw_data = []
+    raw_omega_values = []
+
     for run in runs:
         print(f"Processing run: {run.name}")
 
@@ -144,67 +291,173 @@ def load_wandb_data(project_name, group_name):
         config = run.config
         summary = run.summary
 
-        # Get required fields
+        # Get common fields
         lr = config.get('lr')
-        wd_ts = config.get('wd_ts')
         dataset = config.get('dataset')
         val_loss = summary.get('val/loss')
 
-        # Only include runs with complete data
-        if all(x is not None for x in [lr, wd_ts, dataset, val_loss]):
-            # Calculate omega = wd_ts * lr (rounded for consistent grouping)
-            omega_3digits = round(wd_ts * lr, 3)
+        if optimizer_type == 'danastar':
+            # DanaStar-specific fields
+            wd_ts = config.get('wd_ts')
+            required_fields = [lr, wd_ts, dataset, val_loss]
 
-            data.append({
-                'lr': lr,
-                'wd_ts': wd_ts,
-                'dataset': dataset,
-                'val_loss': val_loss,
-                'omega_3digits': omega_3digits,
-                'log_omega': np.log(omega_3digits) if omega_3digits > 0 else np.nan,
-                'log_lr': np.log(lr)
-            })
+            if all(x is not None for x in required_fields):
+                # Calculate raw omega = wd_ts * lr (not rounded yet)
+                raw_omega = wd_ts * lr
+
+                raw_data.append({
+                    'lr': lr,
+                    'wd_ts': wd_ts,
+                    'dataset': dataset,
+                    'val_loss': val_loss,
+                    'raw_omega': raw_omega,
+                    'log_lr': np.log(lr),
+                    'optimizer': 'danastar'
+                })
+                raw_omega_values.append(raw_omega)
+            else:
+                print(f"Skipping run {run.name} - missing DanaStar data: lr={lr}, wd_ts={wd_ts}, dataset={dataset}, val_loss={val_loss}")
+
+        elif optimizer_type == 'adamw':
+            # AdamW-specific fields
+            weight_decay = config.get('weight_decay')
+            iterations = config.get('iterations')
+            required_fields = [lr, weight_decay, iterations, dataset, val_loss]
+
+            if all(x is not None for x in required_fields):
+                # Calculate raw omega_T = weight_decay * lr * iterations (not rounded yet)
+                raw_omega_T = weight_decay * lr * iterations
+
+                raw_data.append({
+                    'lr': lr,
+                    'weight_decay': weight_decay,
+                    'iterations': iterations,
+                    'dataset': dataset,
+                    'val_loss': val_loss,
+                    'raw_omega': raw_omega_T,  # Use same field name for consistency
+                    'log_lr': np.log(lr),
+                    'optimizer': 'adamw'
+                })
+                raw_omega_values.append(raw_omega_T)
+            else:
+                print(f"Skipping run {run.name} - missing AdamW data: lr={lr}, weight_decay={weight_decay}, iterations={iterations}, dataset={dataset}, val_loss={val_loss}")
+
         else:
-            print(f"Skipping run {run.name} - missing data: lr={lr}, wd_ts={wd_ts}, dataset={dataset}, val_loss={val_loss}")
+            raise ValueError(f"Unknown optimizer type: {optimizer_type}")
+
+    # Second pass: group nearby omega values (within 1% tolerance)
+    print(f"Grouping omega values within 1% tolerance...")
+    grouped_omega_values = group_nearby_omegas(raw_omega_values, tolerance_percent=1.0)
+
+    # Third pass: create final data with grouped omega values
+    data = []
+    for i, raw_entry in enumerate(raw_data):
+        grouped_omega = grouped_omega_values[i]
+
+        # Create final data entry with grouped omega
+        final_entry = raw_entry.copy()
+        final_entry['omega_3digits'] = grouped_omega
+        final_entry['log_omega'] = np.log(grouped_omega) if grouped_omega > 0 else np.nan
+        del final_entry['raw_omega']  # Remove temporary field
+
+        data.append(final_entry)
 
     return pd.DataFrame(data)
 
-def preprocess_data(df):
+def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_threshold=None):
     """
-    Clean and prepare data for fitting.
+    Clean and prepare data for fitting from either DanaStar or AdamW experiments.
 
-    - Filters out outliers with excessive validation loss
-    - Reports data statistics
-    - Prepares JAX arrays for optimization
+    CRITICAL: Multi-stage filtering to ensure quality fitting:
+    1. Filter out high validation losses
+    2. Filter out omega groups above maximum omega threshold
+    3. Filter out omega groups with too few data points
+    4. Only keep omega values that have sufficient data for reliable fitting
 
     Args:
-        df (pd.DataFrame): Raw experiment data
+        df (pd.DataFrame): Raw experiment data with unified omega representation
+        max_loss_threshold (float): Maximum validation loss threshold for filtering
+        min_points_per_omega (int): Minimum number of data points required per omega group
+        max_omega_threshold (float, optional): Maximum omega value to include (None = no limit)
 
     Returns:
-        tuple: (X, Y, omega_indices, unique_log_omega_jax) for JAX optimization
+        tuple: (df, X, Y, omega_indices, unique_log_omega_jax) for JAX optimization
     """
     print(f"Downloaded {len(df)} runs with complete data")
     print(f"Datasets found: {df['dataset'].unique()}")
 
-    # Remove outliers with high validation loss
+    # STEP 1: Filter out outliers with high validation loss FIRST
+    # This is critical - we must filter before determining omega values
     print(f"Before filtering outliers: {len(df)} runs")
-    df = df[df['val_loss'] < MAX_VAL_LOSS]
-    print(f"After filtering outliers: {len(df)} runs")
+    print(f"Filtering out runs with validation loss > {max_loss_threshold}")
+    df_filtered = df[df['val_loss'] < max_loss_threshold].copy()
+    print(f"After filtering outliers: {len(df_filtered)} runs")
 
-    # Report omega value statistics
-    unique_omega_3digits = sorted(df['omega_3digits'].unique())
-    unique_log_omega = sorted(df['log_omega'].unique())
+    # STEP 2: Filter out omega groups above maximum omega threshold (if specified)
+    if max_omega_threshold is not None:
+        print(f"Filtering out runs with omega > {max_omega_threshold}")
+        initial_count = len(df_filtered)
+        df_filtered = df_filtered[df_filtered['omega_3digits'] <= max_omega_threshold].copy()
+        print(f"After filtering high omega values: {len(df_filtered)} runs (removed {initial_count - len(df_filtered)})")
+
+    # STEP 3: Determine omega values from filtered data
+    initial_unique_omega_3digits = sorted(df_filtered['omega_3digits'].unique())
+    initial_unique_log_omega = sorted(df_filtered['log_omega'].unique())
+
+    print(f"Omega values from fully filtered data:")
+    print(f"Initial unique omega values (3 digits): {initial_unique_omega_3digits}")
+    print(f"Number of initial omega values: {len(initial_unique_omega_3digits)}")
+
+    # STEP 4: Filter out omega groups with too few data points
+    print(f"\\nFiltering omega groups with < {min_points_per_omega} data points:")
+    valid_omegas = []
+    valid_log_omegas = []
+
+    for log_omega in initial_unique_log_omega:
+        omega_count = np.sum(np.abs(df_filtered['log_omega'].values - log_omega) < 1e-6)
+        omega_value = np.exp(log_omega)
+
+        if omega_count >= min_points_per_omega:
+            valid_omegas.append(omega_value)
+            valid_log_omegas.append(log_omega)
+            print(f"  ✓ Omega {omega_value:.3f} (log={log_omega:.3f}): {omega_count} data points - KEEPING")
+        else:
+            print(f"  ✗ Omega {omega_value:.3f} (log={log_omega:.3f}): {omega_count} data points - REMOVING (< {min_points_per_omega})")
+
+    # STEP 5: Keep only data points from valid omega groups
+    if len(valid_log_omegas) == 0:
+        raise ValueError(f"No omega groups have >= {min_points_per_omega} data points. Try lowering --minpoints, --maxloss, or --maxomega thresholds.")
+
+    # Filter dataframe to keep only points from valid omega groups
+    valid_mask = np.zeros(len(df_filtered), dtype=bool)
+    for log_omega in valid_log_omegas:
+        omega_mask = np.abs(df_filtered['log_omega'].values - log_omega) < 1e-6
+        valid_mask |= omega_mask
+
+    df_final = df_filtered[valid_mask].copy()
+
+    # Update omega lists to only include valid ones
+    unique_omega_3digits = sorted([np.exp(log_omega) for log_omega in valid_log_omegas])
+    unique_log_omega = sorted(valid_log_omegas)
+
+    print(f"\\nFinal omega groups for fitting:")
     print(f"Unique omega values (3 digits): {unique_omega_3digits}")
     print(f"Unique log_omega values: {[f'{x:.3f}' for x in unique_log_omega]}")
-    print(f"Number of unique omega values: {len(unique_omega_3digits)}")
+    print(f"Number of omega groups: {len(unique_omega_3digits)}")
+    print(f"Total data points for fitting: {len(df_final)}")
 
-    # Convert to JAX arrays
-    X = jnp.array(df['log_lr'].values)                    # Log learning rates
-    Y = jnp.array(df['val_loss'].values)                  # Validation losses
-    log_omega_vals = jnp.array(df['log_omega'].values)    # Log omega values for each point
-    unique_log_omega_jax = jnp.array(unique_log_omega)    # Unique log omega values
+    # Verify final counts
+    for i, log_omega in enumerate(unique_log_omega):
+        omega_count = np.sum(np.abs(df_final['log_omega'].values - log_omega) < 1e-6)
+        print(f"  Final Omega {np.exp(log_omega):.3f}: {omega_count} data points")
 
-    # Create omega indices mapping each data point to its omega group
+    # STEP 6: Convert to JAX arrays (only from final filtered data)
+    X = jnp.array(df_final['log_lr'].values)                    # Log learning rates
+    Y = jnp.array(df_final['val_loss'].values)                  # Validation losses
+    log_omega_vals = jnp.array(df_final['log_omega'].values)    # Log omega values for each point
+    unique_log_omega_jax = jnp.array(unique_log_omega)          # Unique log omega values
+
+    # STEP 7: Create omega indices mapping each data point to its omega group
     n_omega = len(unique_log_omega)
     omega_indices = jnp.zeros(len(X), dtype=jnp.int32)
     for i, log_omega in enumerate(unique_log_omega):
@@ -212,10 +465,10 @@ def preprocess_data(df):
         mask = jnp.abs(log_omega_vals - log_omega) < 1e-6
         omega_indices = jnp.where(mask, i, omega_indices)
 
-    print(f"Data prepared for JAX: X shape {X.shape}, Y shape {Y.shape}")
+    print(f"\\nData prepared for JAX: X shape {X.shape}, Y shape {Y.shape}")
     print(f"Omega indices shape: {omega_indices.shape}")
 
-    return df, X, Y, omega_indices, unique_log_omega_jax
+    return df_final, X, Y, omega_indices, unique_log_omega_jax
 
 # =============================================================================
 # MATHEMATICAL FUNCTIONS
@@ -283,7 +536,7 @@ def compute_function_minimum(a, b, c, d):
 # OBJECTIVE FUNCTION WITH WEIGHTED RESIDUALS
 # =============================================================================
 
-def objective_function_jax(theta, X, Y, omega_indices, unique_log_omega, lambda_reg=LAMBDA_REG):
+def objective_function_jax(theta, X, Y, omega_indices, unique_log_omega, lambda_reg):
     """
     Vectorized JAX objective function with weighted residuals and regularization.
 
@@ -391,7 +644,7 @@ def objective_function_jax(theta, X, Y, omega_indices, unique_log_omega, lambda_
 # OPTIMIZATION
 # =============================================================================
 
-def optimize_parameters(X, Y, omega_indices, unique_log_omega_jax):
+def optimize_parameters(X, Y, omega_indices, unique_log_omega_jax, lambda_reg):
     """
     Optimize softplus function parameters using JAX and Optax.
 
@@ -400,6 +653,7 @@ def optimize_parameters(X, Y, omega_indices, unique_log_omega_jax):
 
     Args:
         X, Y, omega_indices, unique_log_omega_jax: Data arrays from preprocessing
+        lambda_reg (float): Regularization parameter for smooth parameter variation
 
     Returns:
         jnp.ndarray: Optimized parameter vector
@@ -415,7 +669,7 @@ def optimize_parameters(X, Y, omega_indices, unique_log_omega_jax):
 
     print(f"\\nInitial parameters shape: {theta_init_jax.shape}")
     print(f"Initial values: a={A_INIT:.4f}, b={B_INIT:.6f}, c={C_INIT:.4f}, d={D_INIT:.6f}")
-    print(f"Optimization settings: lr={LEARNING_RATE}, steps={N_STEPS}, λ_reg={LAMBDA_REG}")
+    print(f"Optimization settings: lr={LEARNING_RATE}, steps={N_STEPS}, λ_reg={lambda_reg}")
 
     # Set up Adagrad optimizer
     optimizer = optax.adagrad(LEARNING_RATE)
@@ -426,7 +680,7 @@ def optimize_parameters(X, Y, omega_indices, unique_log_omega_jax):
 
     # Create loss function with fixed data arguments
     def loss_fn(theta):
-        return objective_function_jax_jit(theta, X, Y, omega_indices, unique_log_omega_jax, LAMBDA_REG)
+        return objective_function_jax_jit(theta, X, Y, omega_indices, unique_log_omega_jax, lambda_reg)
 
     # JIT compile gradient function
     grad_fn = jit(grad(loss_fn))
@@ -536,6 +790,33 @@ def create_visualization(df, theta_opt, X, unique_log_omega, config):
     log_lr_range = jnp.linspace(float(X.min()), float(X.max()), 200)
     lr_range = jnp.exp(log_lr_range)
 
+    # First pass: calculate fitted minimums and find observed minimums for each omega
+    fitted_minima = []
+    observed_minima = []
+
+    for i, log_omega in enumerate(unique_log_omega):
+        # Extract parameters for this omega
+        start_idx = i * 4
+        a, b, c, d = theta_opt[start_idx:start_idx+4]
+
+        # Compute fitted minimum
+        x_min, y_min = compute_function_minimum(a, b, c, d)
+        fitted_minima.append((log_omega, float(y_min), np.exp(log_omega)))
+
+        # Find observed minimum for this omega group
+        omega_mask = np.abs(df['log_omega'].values - log_omega) < 1e-6
+        omega_data = df[omega_mask]
+        if len(omega_data) > 0:
+            observed_min_loss = omega_data['val_loss'].min()
+            observed_minima.append((log_omega, observed_min_loss, np.exp(log_omega)))
+
+    # Sort by loss values and get top 3
+    fitted_minima.sort(key=lambda x: x[1])  # Sort by fitted min loss
+    observed_minima.sort(key=lambda x: x[1])  # Sort by observed min loss
+
+    best_fitted = fitted_minima[:3]
+    best_observed = observed_minima[:3]
+
     # Plot fitted curves and minima for each omega
     for i, log_omega in enumerate(unique_log_omega):
         # Extract parameters for this omega
@@ -554,25 +835,67 @@ def create_visualization(df, theta_opt, X, unique_log_omega, config):
         normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
         color = clipped_plasma(normalized_log_omega)
 
-        # Plot fitted curve (only label first few to avoid legend clutter)
+        # Plot fitted curve (no labels - we'll add custom legend)
         plt.plot(np.array(lr_range), np.array(loss_pred), '-',
-                color=color, alpha=0.8, linewidth=2,
-                label=f'ω={np.exp(log_omega):.3f} JAX fit' if i < 3 else "")
+                color=color, alpha=0.8, linewidth=2)
 
-        # Mark minimum with star
+        # Mark minimum with star (no labels - we'll add custom legend)
         plt.plot(float(jnp.exp(x_min)), float(y_min), '*',
-                color=color, markersize=12, markeredgecolor='black', markeredgewidth=1,
-                label=f'ω={np.exp(log_omega):.3f} minimum' if i < 3 else "")
+                color=color, markersize=12, markeredgecolor='black', markeredgewidth=1)
 
     # Add colorbar for omega values
     if len(df) > 0:
-        cbar = plt.colorbar(label='log(ω) where ω = wd_ts × lr')
+        cbar = plt.colorbar(label=config['omega_label'])
+
+    # Create custom legend
+    legend_elements = []
+
+    # Add dataset markers if they exist
+    if len(fineweb_data) > 0:
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
+                                        markerfacecolor='gray', markersize=8, alpha=0.7,
+                                        label='fineweb', linestyle='None'))
+
+    if len(fineweb_100_data) > 0:
+        legend_elements.append(plt.Line2D([0], [0], marker='x', color='w',
+                                        markerfacecolor='gray', markersize=8, alpha=0.7,
+                                        label='fineweb_100', linestyle='None'))
+
+    # Add best omegas section
+    legend_elements.append(plt.Line2D([0], [0], color='none', label='Best omegas:'))
+
+    # Add best fitted minimums
+    for i, (log_omega, fitted_min, omega) in enumerate(best_fitted):
+        # Calculate color for this omega
+        log_omega_min = df['log_omega'].min()
+        log_omega_max = df['log_omega'].max()
+        normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
+        color = clipped_plasma(normalized_log_omega)
+
+        legend_elements.append(plt.Line2D([0], [0], marker='*', color='w',
+                                        markerfacecolor=color, markeredgecolor='black',
+                                        markersize=10, markeredgewidth=1,
+                                        label=f'  Fitted: ω={omega:.3f} (min={fitted_min:.3f})',
+                                        linestyle='None'))
+
+    # Add best observed minimums
+    for i, (log_omega, observed_min, omega) in enumerate(best_observed):
+        # Calculate color for this omega
+        log_omega_min = df['log_omega'].min()
+        log_omega_max = df['log_omega'].max()
+        normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
+        color = clipped_plasma(normalized_log_omega)
+
+        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
+                                        markerfacecolor=color, markersize=8,
+                                        label=f'  Observed: ω={omega:.3f} (min={observed_min:.3f})',
+                                        linestyle='None'))
 
     # Formatting
     plt.xlabel('Learning Rate (lr)')
     plt.ylabel('Validation Loss (val/loss)')
     plt.title(config['title'])
-    plt.legend()
+    plt.legend(handles=legend_elements, loc='upper right')
     plt.xscale('log')  # Log scale for learning rate axis
     plt.tight_layout()
 
@@ -585,15 +908,15 @@ def create_visualization(df, theta_opt, X, unique_log_omega, config):
 # =============================================================================
 
 if __name__ == "__main__":
-    print("DanaStar Softplus Function Fitting with JAX")
-    print("=" * 50)
+    print("DanaStar and AdamW Softplus Function Fitting with JAX")
+    print("=" * 60)
 
     # Load and preprocess data
-    df = load_wandb_data("danastar", config['group'])
-    df, X, Y, omega_indices, unique_log_omega_jax = preprocess_data(df)
+    df = load_wandb_data("danastar", config['group'], config['optimizer'])
+    df, X, Y, omega_indices, unique_log_omega_jax = preprocess_data(df, args.maxloss, args.minpoints, args.maxomega)
 
     # Optimize parameters
-    theta_opt = optimize_parameters(X, Y, omega_indices, unique_log_omega_jax)
+    theta_opt = optimize_parameters(X, Y, omega_indices, unique_log_omega_jax, args.lambda_reg)
 
     # Display results
     display_results(theta_opt, list(unique_log_omega_jax))
