@@ -4,7 +4,7 @@
 # Usage: ./generate_sweep_script_cypaq.sh
 
 PARAMS_FILE="/home/cypaquet/danastar/scripts/narval/failed_runs_params.txt"
-SWEEP_SCRIPT="/home/cypaquet/danastar/scripts/narval/narval_35m_sweep_cypaq.sh"
+SWEEP_SCRIPT="/home/cypaquet/danastar/scripts/narval/narval_90m_sweep_adamw.sh"
 
 if [ ! -f "$PARAMS_FILE" ]; then
     echo "Error: Parameters file not found: $PARAMS_FILE"
@@ -47,7 +47,7 @@ for param_set in "${PARAMS[@]}"; do
 
     # Submit the job
     sbatch --job-name="narval-adamw-retry-lr${lr}-wd${weight_decay}" \
-           /home/cypaquet/danastar/scripts/diloco35m/narval-adamw-nozloss-sweep.sh \
+           /home/cypaquet/danastar/scripts/diloco90m/narval-adamw-nozloss-sweep.sh \
            --lr "$lr" --weight_decay "$weight_decay"
 
     # Small delay to avoid overwhelming the scheduler

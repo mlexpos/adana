@@ -17,7 +17,7 @@ echo ""
 failed_count=0
 
 # Find all error files matching the patterns
-for pattern in 502446 502447; do
+for pattern in 5027; do
     for err_file in "$LOGS_DIR"/narval*${pattern}*err; do
         if [ -f "$err_file" ]; then
             # Extract job ID from filename
