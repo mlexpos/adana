@@ -4,7 +4,7 @@
 # Usage: ./generate_sweep_script_cypaq.sh
 
 PARAMS_FILE="/home/cypaquet/danastar/scripts/narval/failed_runs_params.txt"
-SWEEP_SCRIPT="/home/cypaquet/danastar/scripts/narval/narval_90m_sweep_adamw.sh"
+SWEEP_SCRIPT="/home/cypaquet/danastar/scripts/narval/narval_90m_sweep_adamw_reruns.sh"
 
 if [ ! -f "$PARAMS_FILE" ]; then
     echo "Error: Parameters file not found: $PARAMS_FILE"
