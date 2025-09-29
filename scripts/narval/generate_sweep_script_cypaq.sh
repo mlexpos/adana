@@ -47,7 +47,7 @@ for param_set in "${PARAMS[@]}"; do
 
     # Submit the job
     sbatch --job-name="narval-adamw-retry-lr${lr}-wd${weight_decay}" \
-           /home/cypaquet/danastar/scripts/diloco90m/narval-adamw-nozloss-sweep.sh \
+           /home/cypaquet/danastar/scripts/diloco90m/narval-cypaq-adamw-nozloss-sweep.sh \
            --lr "$lr" --weight_decay "$weight_decay"
 
     # Small delay to avoid overwhelming the scheduler
