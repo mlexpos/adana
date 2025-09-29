@@ -4,6 +4,7 @@
 lr_values=(8e-4 9e-4 1e-3 2e-3 3e-3 4e-3 5e-3)
 
 # Define r values for weight_decay calculation
+
 r_values=(-1)
 
 echo "Starting grid search over lr and weight_decay parameters"
