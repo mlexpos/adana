@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define lr values: 2^2*1e-4, 2^3*1e-4, 2^4*1e-4, 2^5*1e-4, 2^6*1e-4
-lr_values=(2e-4 8e-4 3e-4 12e-4 5e-4 10e-4)
+lr_values=(8e-4 3e-4 12e-4 5e-4 10e-4)
 
 # Define r values for weight_decay calculation
 
@@ -35,6 +35,8 @@ for lr in "${lr_values[@]}"; do
         # Run the adamw script with current parameters
         sbatch ./scripts/diloco180m/narval-cypaq-adamw-nozloss-sweep.sh --lr $lr --weight_decay $weight_decay
 
+        sleep 1
+        
         # Check if the job was successful
         if [ $? -eq 0 ]; then
             echo "Job $job_count submitted successfully"
