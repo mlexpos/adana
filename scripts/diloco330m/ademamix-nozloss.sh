@@ -14,7 +14,7 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --opt ademamix --lr 1e-3 --weight_decay 1e-3 \
     --beta1 0.9 --beta2 0.999 \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
-    --adema_beta3 0.9999901 --adema_alpha 17.81 \
+    --delta 8 --kappa 0.75 --gamma_3_factor 1.0 \
     --adema_beta3_warmup 129312 --adema_alpha_warmup 129312 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115

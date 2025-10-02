@@ -56,6 +56,7 @@ class AdEMAMix(torch.optim.Optimizer):
         alpha_warmup=None,
         eps=1e-8,
         weight_decay=0,
+        gamma_3_factor=1.0,
     ):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
@@ -79,6 +80,7 @@ class AdEMAMix(torch.optim.Optimizer):
             beta3_warmup=beta3_warmup,
             alpha_warmup=alpha_warmup,
             weight_decay=weight_decay,
+            gamma_3_factor=gamma_3_factor,
         )
         super(AdEMAMix, self).__init__(params, defaults)
 
@@ -106,6 +108,7 @@ class AdEMAMix(torch.optim.Optimizer):
             beta3_warmup = group["beta3_warmup"]
             alpha_final = group["alpha"]
             alpha_warmup = group["alpha_warmup"]
+            gamma_3_factor = group["gamma_3_factor"]
 
             for p in group["params"]:
                 if p.grad is None:
@@ -181,7 +184,7 @@ class AdEMAMix(torch.optim.Optimizer):
                 denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
 
                 update = (
-                    exp_avg_fast.div(bias_correction1) + alpha * exp_avg_slow
+                    exp_avg_fast.div(bias_correction1) + alpha * exp_avg_slow * gamma_3_factor
                 ) / denom
 
                 # decay

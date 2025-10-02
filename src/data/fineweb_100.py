@@ -26,6 +26,7 @@ def get_fineweb_100_data(
     """
     fweb_data_path = os.path.join(datasets_dir, "fineweb-100BT/")
     os.makedirs(fweb_data_path, exist_ok=True)
+    print(f"checking fineweb data is to {fweb_data_path}")
 
     val_file_path = os.path.join(fweb_data_path, "val.bin")
 

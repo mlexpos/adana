@@ -43,7 +43,9 @@ def get_args():
     final_args = config.parse_args_with_format(
         format=args.config_format, base_parser=parser, args=rem_args, namespace=args
     )
-
+    args.adema_beta3 = 1 - args.delta / args.iterations
+    args.adema_alpha = args.iterations ** (1 - args.kappa)
+    
     return final_args, parser
 
 
@@ -186,6 +188,7 @@ def main(args, parser):
                 beta3_warmup=args.adema_beta3_warmup,
                 alpha_warmup=args.adema_alpha_warmup,
                 weight_decay=args.weight_decay,
+                gamma_3_factor=args.gamma_3_factor,
             )
     elif args.opt == "lion":
             opt = Lion(
@@ -303,6 +306,7 @@ def main(args, parser):
             grad_ema_beta=args.grad_ema_beta,
             use_v_ema=args.use_v_ema,
             v_ema_beta=args.v_ema_beta,
+            gamma_3_factor=args.gamma_3_factor,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(

@@ -224,6 +224,7 @@ class DANA(Optimizer):
         grad_ema_beta=0.9,
         use_v_ema=False,
         v_ema_beta=0.999,
+        gamma_3_factor=1.0,
     ):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
@@ -249,7 +250,8 @@ class DANA(Optimizer):
             grad_ema_beta=grad_ema_beta,
             use_v_ema=use_v_ema,
             v_ema_beta=v_ema_beta,
-            weighted_step_count=0
+            weighted_step_count=0,
+            gamma_3_factor=gamma_3_factor
         )
         super(DANA, self).__init__(params, defaults)
         
@@ -285,7 +287,7 @@ class DANA(Optimizer):
             grad_ema_beta = group["grad_ema_beta"]
             use_v_ema = group["use_v_ema"]
             v_ema_beta = group["v_ema_beta"]
-            
+            gamma_3_factor = group["gamma_3_factor"]
             # Update weighted step count for weight_time feature
             if weight_time:
                 time_factor = lr / getattr(self, 'initial_lr', lr)  # Fallback to current lr if initial_lr not set
@@ -361,7 +363,7 @@ class DANA(Optimizer):
                 g2_term = lr * g2_gradient / normalized_factor
                 
                 # g3_term: momentum with kappa-based time scaling
-                g3_term = lr * (1 + state["step"])**(1-kappa) * exp_avg / normalized_factor
+                g3_term = lr * (1 + state["step"])**(1-kappa) * exp_avg / normalized_factor * gamma_3_factor
                 
                 # Combine update terms (note: negative because we're doing gradient descent)
                 update = -(g2_term + g3_term)
