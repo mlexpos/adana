@@ -7,7 +7,8 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --n_embd 768 --qkv_dim 64 --n_head 12 --n_layer 9 \
     --mlp_hidden_dim 3072 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-    --dataset fineweb --iterations 43024 \
+    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+    --iterations 43024 \
     --dropout 0.0 --warmup_steps 860 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
     --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 2.0 \

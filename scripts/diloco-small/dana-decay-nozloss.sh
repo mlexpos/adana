@@ -6,8 +6,9 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --distributed_backend nccl --compile \
     --n_embd 384 --qkv_dim 64 --n_head 6 --n_layer 4 \
     --mlp_hidden_dim 1536 \
-    --batch_size 64 --sequence_length 2048 --acc_steps 1 \
-    --dataset fineweb --iterations 13953 \
+    --batch_size 32 --sequence_length 2048 --acc_steps 1 \
+    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+    --iterations 13953 \
     --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
     --opt dana --lr 1e-3 --delta 8 --kappa 0.75 --weight_decay 1e-3 \
