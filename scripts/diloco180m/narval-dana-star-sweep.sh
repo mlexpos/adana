@@ -32,21 +32,32 @@ echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 
 wandb offline
 
-# Run the diloco330m experiment with FineWeb 100BT dataset
-# torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
-#     --distributed_backend nccl --compile \
-#     --datasets_dir "$DATASETS_DIR" \
-#     --n_embd 1280 --qkv_dim 64 --n_head 20 --n_layer 15 \
-#     --mlp_hidden_dim 5120 \
-#     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-#     --dataset fineweb_100 --iterations 100708 \
-#     --dropout 0.0 --grad_clip 2.5 --seed 0 \
-#     --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 1.6 \
-#     --scheduler cos --warmup_steps 2000 \
-#     --weight_decay 0.001 --wd_decaying --wd_ts 100 \
-#     --beta1 0.9 --beta2 0.999 \
-#     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-#     --eval_interval 115 --log_interval 50 --latest_ckpt_interval 1000
+# Modified version that accepts --lr and --wd_ts as command line arguments
+# Usage: ./narval-dana-star-sweep.sh --lr <learning_rate> --wd_ts <weight_decay_timestep>
+
+# Default values
+LR=5e-4
+WD_TS=100
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --lr)
+            LR="$2"
+            shift 2
+            ;;
+        --wd_ts)
+            WD_TS="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option $1"
+            exit 1
+            ;;
+    esac
+done
+
+echo "Using lr=$LR and wd_ts=$WD_TS"
 
 torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
@@ -57,8 +68,8 @@ torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --mo
     --iterations 77527 \
     --dropout 0.0 --warmup_steps 1551 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt dana-star --lr 5e-4 --delta 8 --kappa 0.75 --clipsnr 2.0 \
-    --weight_decay 0.1 --wd_decaying --wd_ts 100 \
+    --opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr 2.0 \
+    --weight_decay 0.1 --wd_decaying --wd_ts $WD_TS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115 --log_interval 50
