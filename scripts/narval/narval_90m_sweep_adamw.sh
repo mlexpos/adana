@@ -1,11 +1,13 @@
 #!/bin/bash
 
 # Define lr values: 2^2*1e-4, 2^3*1e-4, 2^4*1e-4, 2^5*1e-4, 2^6*1e-4
-lr_values=(1e-4 3e-4 5e-4)
+#lr_values=(1e-4 3e-4 5e-4)
+lr_values=(1e-3)
 
 # Define r values for weight_decay calculation
 
-r_values=(-1 0 1 2 3)
+#r_values=(-1 0 1 2 3)
+r_values=(2)
 
 echo "Starting grid search over lr and weight_decay parameters"
 echo "lr values: ${lr_values[@]}"
@@ -24,7 +26,9 @@ for lr in "${lr_values[@]}"; do
     for r in "${r_values[@]}"; do
         # Calculate weight_decay = (2^r / iterations) / lr
         # Using 43024 iterations for 90M model
-        iterations=43024
+        #iterations=43024
+        iterations=90000
+        
         lr_decimal=$(python -c "print(float('$lr'))")
 
         weight_decay=$(python -c "print((2**$r / $iterations) / $lr_decimal)")

@@ -3,11 +3,11 @@
 # Define lr values: 2^2*1e-4, 2^3*1e-4, 2^4*1e-4, 2^5*1e-4, 2^6*1e-4
 #lr_values=(4e-4 8e-4 16e-4 32e-4 64e-4)
 #lr_values=(5e-4 6e-4 7e-4 9e-4)
-lr_values=( 5e-4 6e-4 7e-4 )
+lr_values=( 8e-4 )
 
 
 # Define r values for wd_ts calculation
-r_values=(1 2 3)
+r_values=( 2 )
 
 echo "Starting grid search over lr and wd_ts parameters"
 echo "lr values: ${lr_values[@]}"
