@@ -66,7 +66,7 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --n_embd 768 --qkv_dim 64 --n_head 12 --n_layer 9 \
     --mlp_hidden_dim 3072 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-    --iterations 90000 \
+    --iterations 43024 \
     --dropout 0.0 --warmup_steps 860 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
     --opt adamw --lr $LR --weight_decay $WEIGHT_DECAY \
@@ -74,4 +74,3 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115
-    #--iterations 43024 \

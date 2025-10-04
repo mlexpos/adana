@@ -26,8 +26,7 @@ for lr in "${lr_values[@]}"; do
     for r in "${r_values[@]}"; do
         # Calculate weight_decay = (2^r / iterations) / lr
         # Using 43024 iterations for 90M model
-        #iterations=43024
-        iterations=90000
+        iterations=43024
         
         lr_decimal=$(python -c "print(float('$lr'))")
 
