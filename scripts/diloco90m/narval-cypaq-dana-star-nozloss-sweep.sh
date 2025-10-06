@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --time=14:00:00
+#SBATCH --time=8:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=a100:1
 #SBATCH --cpus-per-gpu=8
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
-#SBATCH --mem=80GB                    # "alloc as needed" on Alliance
+#SBATCH --mem=40GB                    # "alloc as needed" on Alliance
 
 # Hugging Face caches
 export HF_HOME="$HOME/hf"
@@ -67,9 +67,9 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --mlp_hidden_dim 3072 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
     --iterations 43024 \
-    --dropout 0.0 --warmup_steps 430 --grad_clip 0.5 --seed 0 \
+    --dropout 0.0 --warmup_steps 860 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt dana-star --lr $LR --delta 8 --kappa 1.0 --clipsnr 2.0 \
+    --opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr 2.0 \
     --weight_decay 1.0 --wd_decaying --wd_ts $WD_TS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
