@@ -1,5 +1,5 @@
 tiktoken
---find-links https://download.pytorch.org/whl/torch_stable.html
+# --find-links https://download.pytorch.org/whl/torch_stable.html
 torch
 torchaudio
 torchvision
