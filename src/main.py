@@ -29,7 +29,7 @@ from optim.schedulefree import AdamWScheduleFree, SGDScheduleFree
 from optim.sign import Signum
 from optim.soap import SOAP
 from optim.sophia import SophiaG
-from optim.dana_star import DANA_STAR, DANA
+from optim.dana_star import DANA_STAR, DANA, sign_DANA
 
 
 def get_args():
@@ -302,11 +302,10 @@ def main(args, parser):
             kappa=args.kappa,
             weight_decay=args.weight_decay,
             weight_time=args.weight_time,
-            use_grad_ema_for_g2=args.use_grad_ema_for_g2,
-            grad_ema_beta=args.grad_ema_beta,
             use_v_ema=args.use_v_ema,
             v_ema_beta=args.v_ema_beta,
             gamma_3_factor=args.gamma_3_factor,
+            beta1=args.beta1,
         )
     elif args.opt == "adafactor":
             opt = Adafactor(
@@ -325,6 +324,18 @@ def main(args, parser):
             weight_decay=args.weight_decay,
             adam=False,
             bias_correction=args.lamb_use_bias_correction,
+        )
+    elif args.opt == "sign_dana":
+        opt = sign_DANA(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
+            kappa=args.kappa,
+            weight_decay=args.weight_decay,
+            weight_time=args.weight_time,
+            gamma_3_factor=args.gamma_3_factor,
+            norm_type=args.norm_type,
+            beta1=args.beta1,
         )
     else:
         opt = torch.optim.SGD(

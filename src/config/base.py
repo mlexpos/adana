@@ -111,6 +111,7 @@ def parse_args(base_parser, args, namespace):
             "d-muon",
             "dana-star",
             "dana",
+            "sign_dana",
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)
@@ -177,11 +178,12 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--weight_time", default=False, action="store_true")
     parser.add_argument("--wd_decaying", default=False, action="store_true")
     parser.add_argument("--wd_ts", default=1.0, type=float)
-    parser.add_argument("--use_grad_ema_for_g2", default=False, action="store_true")
-    parser.add_argument("--grad_ema_beta", default=0.9, type=float)
+    # parser.add_argument("--use_grad_ema_for_g2", default=False, action="store_true")
+    # parser.add_argument("--grad_ema_beta", default=0.9, type=float)
     parser.add_argument("--use_v_ema", default=False, action="store_true")
     parser.add_argument("--v_ema_beta", default=0.999, type=float)
     parser.add_argument("--gamma_3_factor", default=1.0, type=float)
+    parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])
 
     # Dataset params
     parser.add_argument("--datasets_dir", type=str, default="./src/data/datasets/")
