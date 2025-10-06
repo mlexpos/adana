@@ -65,7 +65,7 @@ torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --mo
     --mlp_hidden_dim 3072 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
     --iterations 43024 \
-    --dropout 0.0 --warmup_steps 430 --grad_clip 0.5 --seed 0 \
+    --dropout 0.0 --warmup_steps 860 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
     --opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr 2.0 \
     --weight_decay 1.0 --wd_decaying --wd_ts $WD_TS \
