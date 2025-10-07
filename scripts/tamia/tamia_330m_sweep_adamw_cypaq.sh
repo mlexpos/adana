@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define lr values: 2^2*1e-4, 2^3*1e-4, 2^4*1e-4, 2^5*1e-4, 2^6*1e-4
-lr_values=(16e-5 24e-5 8e-5 32e-5 12e-5 20e-5)
+lr_values=(32e-5 40e-5 48e-5)
 
 # Define r values for weight_decay calculation
 
