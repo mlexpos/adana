@@ -21,6 +21,10 @@ SUPPORTED OPTIMIZERS:
    - Groups: AdamW_small_lr_weight_decay_sweeps, AdamW_35M_lr_weight_decay_sweeps,
             AdamW_90M_lr_weight_decay_sweeps, AdamW_180M_lr_weight_decay_sweeps
 
+3. **DanaStar 180M**: Uses wd_ts (weight decay timescale) parameter
+   - omega = wd_ts * learning_rate
+   - Groups: DanaStar_180M_lr_weight_decay_sweeps
+
 FUNCTIONAL FORM:
 ===============
 For each omega value, we fit: f(log_lr) = a + log(exp(b*(log_lr-c)) + exp(-d*(log_lr-c)))
@@ -52,6 +56,7 @@ USAGE:
 Basic usage:
 python softplus_fitting_jax.py --model DS35M     # DanaStar 35M model data
 python softplus_fitting_jax.py --model DS90M     # DanaStar 90M model data
+python softplus_fitting_jax.py --model DS180M    # DanaStar 180M model data
 python softplus_fitting_jax.py --model AWsmall   # AdamW small model data
 python softplus_fitting_jax.py --model AW35M     # AdamW 35M model data
 python softplus_fitting_jax.py --model AW90M     # AdamW 90M model data
@@ -60,10 +65,12 @@ python softplus_fitting_jax.py --model AW180M    # AdamW 180M model data
 With custom filtering and optimization:
 python softplus_fitting_jax.py --model DS35M --maxloss 3.5 --minpoints 3 --lambda 1e-4    # Custom loss, points, and regularization
 python softplus_fitting_jax.py --model AW35M --maxomega 2.0 --lambda 1e-2                # Limit to omega ≤ 2.0, stronger regularization
+python softplus_fitting_jax.py --model DS35M --dataset fineweb                           # Use only fineweb dataset
+python softplus_fitting_jax.py --model AW90M --dataset fineweb_100                       # Use only fineweb_100 dataset
 
 OPTIONS:
 ========
---model: Model configuration (DS35M, DS90M, AWsmall, AW35M, AW90M, AW180M)
+--model: Model configuration (DS35M, DS90M, DS180M, AWsmall, AW35M, AW90M, AW180M)
 --maxloss: Maximum validation loss threshold for filtering outliers (default: 4.0)
            Data points with validation loss above this value are excluded
 --minpoints: Minimum number of data points required per omega group (default: 2)
@@ -72,6 +79,14 @@ OPTIONS:
           Higher values enforce smoother parameter changes, lower values allow more variation
 --maxomega: Maximum omega value to include in fitting (default: no limit)
             Omega groups above this threshold are excluded from analysis
+--dataset: Dataset to include in analysis (default: both)
+           Options: fineweb, fineweb_100, both - restricts points to specified dataset(s)
+--color-by-host: Color datapoints by first 2 letters of hostname instead of omega values
+                 Uses tab10 colormap to distinguish different hosts
+--color-by-warmup: Color datapoints by warmup_steps value instead of omega values
+                   Uses tab10 colormap to distinguish different warmup values
+--filter-hosts: Comma-separated list of host prefixes (first 2 letters) to include
+                Example: --filter-hosts ng,rg (default: include all hosts)
 
 OUTPUT:
 =======
@@ -94,6 +109,7 @@ import jax
 import jax.numpy as jnp
 from jax import grad, jit
 import optax
+from model_library import MODEL_CONFIGS
 
 # =============================================================================
 # CONFIGURATION AND HYPERPARAMETERS
@@ -114,7 +130,7 @@ N_STEPS = 20000        # Number of optimization steps
 # Parse command line arguments
 parser = argparse.ArgumentParser(description='JAX softplus fitting for DanaStar and AdamW experiment data')
 parser.add_argument('--model', type=str, default='DS35M',
-                    choices=['DS35M', 'DS90M', 'AWsmall', 'AW35M', 'AW90M', 'AW180M'],
+                    choices=['DSsmall', 'DS35M', 'DS90M', 'DS180M', 'AWsmall', 'AW35M', 'AW90M', 'AW180M'],
                     help='Model configuration to fit (default: DS35M)')
 parser.add_argument('--maxloss', type=float, default=4.0,
                     help='Maximum validation loss threshold - data points above this are filtered out (default: 4.0)')
@@ -124,56 +140,20 @@ parser.add_argument('--lambda', type=float, default=1e-3, dest='lambda_reg',
                     help='Regularization parameter for smooth parameter variation (default: 1e-3)')
 parser.add_argument('--maxomega', type=float, default=None,
                     help='Maximum omega value to include - omega groups above this are filtered out (default: no limit)')
+parser.add_argument('--dataset', type=str, default='both',
+                    choices=['fineweb', 'fineweb_100', 'both'],
+                    help='Dataset to include: fineweb, fineweb_100, or both (default: both)')
+parser.add_argument('--color-by-host', action='store_true',
+                    help='Color datapoints by first 2 letters of hostname instead of omega (default: False)')
+parser.add_argument('--color-by-warmup', action='store_true',
+                    help='Color datapoints by warmup_steps value instead of omega (default: False)')
+parser.add_argument('--filter-hosts', type=str, default=None,
+                    help='Comma-separated list of host prefixes (first 2 letters) to include, e.g., "ng,rg" (default: all hosts)')
 args = parser.parse_args()
 
 # Configuration mapping for different optimizers and model sizes
 model_config = args.model
-configs = {
-    # DanaStar configurations
-    'DS35M': {
-        'group': 'DanaStar_35M_LR_WD_Sweep',                          # WandB experiment group name
-        'title': 'DanaStar 35M: JAX Softplus-like Fits',             # Plot title
-        'filename': 'danastar_35m_lrwd_sweep_jax.pdf',               # Output filename
-        'optimizer': 'danastar',                                      # Optimizer type
-        'omega_label': 'log(ω) where ω = wd_ts × lr'                # Colorbar label
-    },
-    'DS90M': {
-        'group': 'DanaStar_90M_LR_WD_Sweep',                          # WandB experiment group name
-        'title': 'DanaStar 90M: JAX Softplus-like Fits',             # Plot title
-        'filename': 'danastar_90m_lrwd_sweep_jax.pdf',               # Output filename
-        'optimizer': 'danastar',                                      # Optimizer type
-        'omega_label': 'log(ω) where ω = wd_ts × lr'                # Colorbar label
-    },
-    # AdamW configurations
-    'AWsmall': {
-        'group': 'AdamW_small_lr_weight_decay_sweeps',                # WandB experiment group name
-        'title': 'AdamW Small: JAX Softplus-like Fits',              # Plot title
-        'filename': 'adamw_small_lrwd_sweep_jax.pdf',                # Output filename
-        'optimizer': 'adamw',                                         # Optimizer type
-        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
-    },
-    'AW35M': {
-        'group': 'AdamW_35M_lr_weight_decay_sweeps',                  # WandB experiment group name
-        'title': 'AdamW 35M: JAX Softplus-like Fits',                # Plot title
-        'filename': 'adamw_35m_lrwd_sweep_jax.pdf',                  # Output filename
-        'optimizer': 'adamw',                                         # Optimizer type
-        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
-    },
-    'AW90M': {
-        'group': 'AdamW_90M_lr_weight_decay_sweeps',                  # WandB experiment group name
-        'title': 'AdamW 90M: JAX Softplus-like Fits',                # Plot title
-        'filename': 'adamw_90m_lrwd_sweep_jax.pdf',                  # Output filename
-        'optimizer': 'adamw',                                         # Optimizer type
-        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
-    },
-    'AW180M': {
-        'group': 'AdamW_180M_lr_weight_decay_sweeps',                 # WandB experiment group name
-        'title': 'AdamW 180M: JAX Softplus-like Fits',               # Plot title
-        'filename': 'adamw_180m_lrwd_sweep_jax.pdf',                 # Output filename
-        'optimizer': 'adamw',                                         # Optimizer type
-        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T'  # Colorbar label
-    }
-}
+configs = MODEL_CONFIGS  # Import from shared model library
 
 config = configs[model_config]
 print(f"Using configuration for {model_config}: {config}")
@@ -241,7 +221,7 @@ def group_nearby_omegas(omega_values, tolerance_percent=1.0):
 
     return grouped_omegas
 
-def load_wandb_data(project_name, group_name, optimizer_type):
+def load_wandb_data(project_name, group_name, optimizer_type, filter_hosts=None):
     """
     Load experiment data from Weights & Biases for different optimizers.
 
@@ -277,6 +257,12 @@ def load_wandb_data(project_name, group_name, optimizer_type):
     print(f"Downloading data from project: {project_name}, group: {group_name}")
     print(f"Optimizer type: {optimizer_type}")
 
+    # Parse filter_hosts if provided
+    allowed_host_prefixes = None
+    if filter_hosts:
+        allowed_host_prefixes = set([prefix.strip().lower() for prefix in filter_hosts.split(',')])
+        print(f"Filtering to hosts with prefixes: {allowed_host_prefixes}")
+
     # Get all runs in the specified group
     runs = api.runs(f"ep-rmt-ml-opt/{project_name}", filters={"group": group_name})
 
@@ -295,52 +281,84 @@ def load_wandb_data(project_name, group_name, optimizer_type):
         lr = config.get('lr')
         dataset = config.get('dataset')
         val_loss = summary.get('val/loss')
+        warmup_steps = config.get('warmup_steps')
+
+        # Get hostname from run metadata
+        metadata = getattr(run, 'metadata', {})
+        hostname = metadata.get('host', 'unknown') if metadata else 'unknown'
+        host_prefix = hostname[:2] if hostname and hostname != 'unknown' else 'un'
+
+        # Filter by host prefix if specified
+        if allowed_host_prefixes and host_prefix.lower() not in allowed_host_prefixes:
+            print(f"Skipping run {run.name} - host prefix '{host_prefix}' not in allowed list")
+            continue
+
+        # Get iteration counts to check if run completed
+        iterations_config = config.get('iterations')
+        actual_iter = summary.get('iter')
 
         if optimizer_type == 'danastar':
             # DanaStar-specific fields
             wd_ts = config.get('wd_ts')
-            required_fields = [lr, wd_ts, dataset, val_loss]
+            weight_decay = config.get('weight_decay')
+            required_fields = [lr, wd_ts, weight_decay, dataset, val_loss, iterations_config, actual_iter]
 
             if all(x is not None for x in required_fields):
-                # Calculate raw omega = wd_ts * lr (not rounded yet)
-                raw_omega = wd_ts * lr
+                # Check if run completed all iterations
+                if actual_iter < iterations_config:
+                    print(f"Skipping run {run.name} - incomplete: {actual_iter}/{iterations_config} iterations ({actual_iter/iterations_config*100:.1f}%)")
+                    continue
+
+                # Calculate raw omega = wd_ts * lr * weight_decay (not rounded yet)
+                raw_omega = wd_ts * lr * weight_decay
 
                 raw_data.append({
                     'lr': lr,
                     'wd_ts': wd_ts,
+                    'weight_decay': weight_decay,
                     'dataset': dataset,
                     'val_loss': val_loss,
                     'raw_omega': raw_omega,
                     'log_lr': np.log(lr),
-                    'optimizer': 'danastar'
+                    'optimizer': 'danastar',
+                    'hostname': hostname,
+                    'host_prefix': host_prefix,
+                    'warmup_steps': warmup_steps
                 })
                 raw_omega_values.append(raw_omega)
             else:
-                print(f"Skipping run {run.name} - missing DanaStar data: lr={lr}, wd_ts={wd_ts}, dataset={dataset}, val_loss={val_loss}")
+                print(f"Skipping run {run.name} - missing DanaStar data: lr={lr}, wd_ts={wd_ts}, weight_decay={weight_decay}, dataset={dataset}, val_loss={val_loss}, iterations={iterations_config}, iter={actual_iter}")
 
         elif optimizer_type == 'adamw':
             # AdamW-specific fields
             weight_decay = config.get('weight_decay')
-            iterations = config.get('iterations')
-            required_fields = [lr, weight_decay, iterations, dataset, val_loss]
+            required_fields = [lr, weight_decay, iterations_config, dataset, val_loss, actual_iter]
 
             if all(x is not None for x in required_fields):
+                # Check if run completed all iterations
+                if actual_iter < iterations_config:
+                    print(f"Skipping run {run.name} - incomplete: {actual_iter}/{iterations_config} iterations ({actual_iter/iterations_config*100:.1f}%)")
+                    continue
+
                 # Calculate raw omega_T = weight_decay * lr * iterations (not rounded yet)
-                raw_omega_T = weight_decay * lr * iterations
+                raw_omega_T = weight_decay * lr * iterations_config
 
                 raw_data.append({
                     'lr': lr,
                     'weight_decay': weight_decay,
-                    'iterations': iterations,
+                    'iterations': iterations_config,
                     'dataset': dataset,
                     'val_loss': val_loss,
                     'raw_omega': raw_omega_T,  # Use same field name for consistency
                     'log_lr': np.log(lr),
-                    'optimizer': 'adamw'
+                    'optimizer': 'adamw',
+                    'hostname': hostname,
+                    'host_prefix': host_prefix,
+                    'warmup_steps': warmup_steps
                 })
                 raw_omega_values.append(raw_omega_T)
             else:
-                print(f"Skipping run {run.name} - missing AdamW data: lr={lr}, weight_decay={weight_decay}, iterations={iterations}, dataset={dataset}, val_loss={val_loss}")
+                print(f"Skipping run {run.name} - missing AdamW data: lr={lr}, weight_decay={weight_decay}, iterations={iterations_config}, dataset={dataset}, val_loss={val_loss}, iter={actual_iter}")
 
         else:
             raise ValueError(f"Unknown optimizer type: {optimizer_type}")
@@ -364,21 +382,23 @@ def load_wandb_data(project_name, group_name, optimizer_type):
 
     return pd.DataFrame(data)
 
-def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_threshold=None):
+def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_threshold=None, dataset_filter='both'):
     """
     Clean and prepare data for fitting from either DanaStar or AdamW experiments.
 
     CRITICAL: Multi-stage filtering to ensure quality fitting:
-    1. Filter out high validation losses
-    2. Filter out omega groups above maximum omega threshold
-    3. Filter out omega groups with too few data points
-    4. Only keep omega values that have sufficient data for reliable fitting
+    1. Filter by dataset type (fineweb, fineweb_100, or both)
+    2. Filter out high validation losses
+    3. Filter out omega groups above maximum omega threshold
+    4. Filter out omega groups with too few data points
+    5. Only keep omega values that have sufficient data for reliable fitting
 
     Args:
         df (pd.DataFrame): Raw experiment data with unified omega representation
         max_loss_threshold (float): Maximum validation loss threshold for filtering
         min_points_per_omega (int): Minimum number of data points required per omega group
         max_omega_threshold (float, optional): Maximum omega value to include (None = no limit)
+        dataset_filter (str): 'fineweb', 'fineweb_100', or 'both' to specify which datasets to include
 
     Returns:
         tuple: (df, X, Y, omega_indices, unique_log_omega_jax) for JAX optimization
@@ -386,21 +406,30 @@ def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_thre
     print(f"Downloaded {len(df)} runs with complete data")
     print(f"Datasets found: {df['dataset'].unique()}")
 
-    # STEP 1: Filter out outliers with high validation loss FIRST
+    # STEP 1: Filter by dataset type FIRST
+    if dataset_filter != 'both':
+        print(f"Filtering to include only dataset: {dataset_filter}")
+        initial_count = len(df)
+        df = df[df['dataset'] == dataset_filter].copy()
+        print(f"After dataset filtering: {len(df)} runs (removed {initial_count - len(df)})")
+    else:
+        print(f"Using both datasets: {list(df['dataset'].unique())}")
+
+    # STEP 2: Filter out outliers with high validation loss
     # This is critical - we must filter before determining omega values
     print(f"Before filtering outliers: {len(df)} runs")
     print(f"Filtering out runs with validation loss > {max_loss_threshold}")
     df_filtered = df[df['val_loss'] < max_loss_threshold].copy()
     print(f"After filtering outliers: {len(df_filtered)} runs")
 
-    # STEP 2: Filter out omega groups above maximum omega threshold (if specified)
+    # STEP 3: Filter out omega groups above maximum omega threshold (if specified)
     if max_omega_threshold is not None:
         print(f"Filtering out runs with omega > {max_omega_threshold}")
         initial_count = len(df_filtered)
         df_filtered = df_filtered[df_filtered['omega_3digits'] <= max_omega_threshold].copy()
         print(f"After filtering high omega values: {len(df_filtered)} runs (removed {initial_count - len(df_filtered)})")
 
-    # STEP 3: Determine omega values from filtered data
+    # STEP 4: Determine omega values from filtered data
     initial_unique_omega_3digits = sorted(df_filtered['omega_3digits'].unique())
     initial_unique_log_omega = sorted(df_filtered['log_omega'].unique())
 
@@ -408,7 +437,7 @@ def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_thre
     print(f"Initial unique omega values (3 digits): {initial_unique_omega_3digits}")
     print(f"Number of initial omega values: {len(initial_unique_omega_3digits)}")
 
-    # STEP 4: Filter out omega groups with too few data points
+    # STEP 5: Filter out omega groups with too few data points
     print(f"\\nFiltering omega groups with < {min_points_per_omega} data points:")
     valid_omegas = []
     valid_log_omegas = []
@@ -424,7 +453,7 @@ def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_thre
         else:
             print(f"  ✗ Omega {omega_value:.3f} (log={log_omega:.3f}): {omega_count} data points - REMOVING (< {min_points_per_omega})")
 
-    # STEP 5: Keep only data points from valid omega groups
+    # STEP 6: Keep only data points from valid omega groups
     if len(valid_log_omegas) == 0:
         raise ValueError(f"No omega groups have >= {min_points_per_omega} data points. Try lowering --minpoints, --maxloss, or --maxomega thresholds.")
 
@@ -451,13 +480,13 @@ def preprocess_data(df, max_loss_threshold, min_points_per_omega, max_omega_thre
         omega_count = np.sum(np.abs(df_final['log_omega'].values - log_omega) < 1e-6)
         print(f"  Final Omega {np.exp(log_omega):.3f}: {omega_count} data points")
 
-    # STEP 6: Convert to JAX arrays (only from final filtered data)
+    # STEP 7: Convert to JAX arrays (only from final filtered data)
     X = jnp.array(df_final['log_lr'].values)                    # Log learning rates
     Y = jnp.array(df_final['val_loss'].values)                  # Validation losses
     log_omega_vals = jnp.array(df_final['log_omega'].values)    # Log omega values for each point
     unique_log_omega_jax = jnp.array(unique_log_omega)          # Unique log omega values
 
-    # STEP 7: Create omega indices mapping each data point to its omega group
+    # STEP 8: Create omega indices mapping each data point to its omega group
     n_omega = len(unique_log_omega)
     omega_indices = jnp.zeros(len(X), dtype=jnp.int32)
     for i, log_omega in enumerate(unique_log_omega):
@@ -597,22 +626,19 @@ def objective_function_jax(theta, X, Y, omega_indices, unique_log_omega, lambda_
     # Create matrix where entry (i,j) = 1 if points i,j belong to same omega
     same_omega_matrix = (omega_indices[:, None] == omega_indices[None, :]).astype(jnp.float32)
 
-    # Create matrix where entry (i,j) = 1 if point j is closer to min than point i
-    distance_comparison = (distances_from_min[:, None] > distances_from_min[None, :]).astype(jnp.float32)
+    # Create matrix where entry (i,j) = 1 if point j is farther from min than point i
+    distance_comparison = (distances_from_min[:, None] < distances_from_min[None, :]).astype(jnp.float32)
 
-    # Count points in same omega that are closer (gives rank: 0=closest, 1=second closest, etc.)
-    same_omega_closer = distance_comparison * same_omega_matrix
-    ranks = jnp.sum(same_omega_closer, axis=1)
+    # Count points in same omega that are farther (gives rank: 0=farthest, 1=second farthest, etc.)
+    same_omega_farther = distance_comparison * same_omega_matrix
+    ranks = jnp.sum(same_omega_farther, axis=1)
 
-    # Count total points in each omega
-    points_in_omega = jnp.sum(same_omega_matrix, axis=1)
+    # Convert ranks to weights: farthest point gets weight 1, closest gets highest weight
+    # Rank 0 (farthest) -> weight 1, rank 1 -> weight 2, etc.
+    weights = ranks + 1
 
-    # Convert ranks to weights: closest point gets highest weight
-    # If omega has n points: closest gets weight n, furthest gets weight 1
-    weights = points_in_omega - ranks
-
-    # Compute weighted data fitting loss with squared weights for emphasis
-    weighted_residuals = (weights**2) * (Y - predictions)**2
+    # Compute weighted data fitting loss: divide residuals by weights
+    weighted_residuals = (Y - predictions)**2
     data_loss = jnp.mean(weighted_residuals)
 
     # REGULARIZATION: Encourage smooth parameter variation across omega values
@@ -747,15 +773,15 @@ def display_results(theta_opt, unique_log_omega):
 # VISUALIZATION
 # =============================================================================
 
-def create_visualization(df, theta_opt, X, unique_log_omega, config):
+def create_visualization(df, theta_opt, X, unique_log_omega, config, color_by_host=False, color_by_warmup=False):
     """
     Create and save publication-quality plot of data and fitted curves.
 
     Shows:
-    - Scatter points colored by log(omega) with different markers for datasets
+    - Scatter points colored by log(omega), hostname, or warmup_steps with different markers for datasets
     - Fitted softplus curves for each omega value
     - Star markers indicating theoretical minima
-    - Colorbar for omega values
+    - Colorbar for omega values or legend for hostnames/warmup
 
     Args:
         df (pd.DataFrame): Original data for plotting
@@ -763,28 +789,85 @@ def create_visualization(df, theta_opt, X, unique_log_omega, config):
         X (jnp.ndarray): Log learning rate range for data
         unique_log_omega (list): Unique log omega values
         config (dict): Configuration with title and filename
+        color_by_host (bool): If True, color by hostname prefix instead of omega
+        color_by_warmup (bool): If True, color by warmup_steps instead of omega
     """
     plt.figure(figsize=(12, 8))
 
-    # Create clipped plasma colormap (avoid too-bright yellow)
-    plasma_cmap = plt.cm.plasma
-    plasma_colors = plasma_cmap(np.linspace(0, 0.85, 256))
-    clipped_plasma = ListedColormap(plasma_colors)
+    if color_by_host:
+        # Use tab10 colormap for hostname prefixes
+        tab10_cmap = plt.cm.tab10
+        unique_hosts = sorted(df['host_prefix'].unique())
+        host_to_color = {host: tab10_cmap(i) for i, host in enumerate(unique_hosts)}
+        print(f"Unique host prefixes: {unique_hosts}")
 
-    # Separate data by dataset for different markers
-    fineweb_data = df[df['dataset'] == 'fineweb']
-    fineweb_100_data = df[df['dataset'] == 'fineweb_100']
+        # Separate data by dataset for different markers
+        fineweb_data = df[df['dataset'] == 'fineweb']
+        fineweb_100_data = df[df['dataset'] == 'fineweb_100']
 
-    # Plot scatter points with dataset-specific markers
-    if len(fineweb_data) > 0:
-        plt.scatter(fineweb_data['lr'], fineweb_data['val_loss'],
-                   c=fineweb_data['log_omega'], cmap=clipped_plasma,
-                   marker='o', s=50, alpha=0.7, label='fineweb')
+        # Plot scatter points with dataset-specific markers, colored by host
+        if len(fineweb_data) > 0:
+            for host in unique_hosts:
+                host_data = fineweb_data[fineweb_data['host_prefix'] == host]
+                if len(host_data) > 0:
+                    plt.scatter(host_data['lr'], host_data['val_loss'],
+                               c=[host_to_color[host]], marker='o', s=50, alpha=0.7,
+                               label=f'{host} (fineweb)')
 
-    if len(fineweb_100_data) > 0:
-        plt.scatter(fineweb_100_data['lr'], fineweb_100_data['val_loss'],
-                   c=fineweb_100_data['log_omega'], cmap=clipped_plasma,
-                   marker='x', s=50, alpha=0.7, label='fineweb_100')
+        if len(fineweb_100_data) > 0:
+            for host in unique_hosts:
+                host_data = fineweb_100_data[fineweb_100_data['host_prefix'] == host]
+                if len(host_data) > 0:
+                    plt.scatter(host_data['lr'], host_data['val_loss'],
+                               c=[host_to_color[host]], marker='x', s=50, alpha=0.7,
+                               label=f'{host} (fineweb_100)')
+    elif color_by_warmup:
+        # Use tab10 colormap for warmup_steps
+        tab10_cmap = plt.cm.tab10
+        unique_warmup = sorted(df['warmup_steps'].unique())
+        warmup_to_color = {warmup: tab10_cmap(i) for i, warmup in enumerate(unique_warmup)}
+        print(f"Unique warmup_steps values: {unique_warmup}")
+
+        # Separate data by dataset for different markers
+        fineweb_data = df[df['dataset'] == 'fineweb']
+        fineweb_100_data = df[df['dataset'] == 'fineweb_100']
+
+        # Plot scatter points with dataset-specific markers, colored by warmup_steps
+        if len(fineweb_data) > 0:
+            for warmup in unique_warmup:
+                warmup_data = fineweb_data[fineweb_data['warmup_steps'] == warmup]
+                if len(warmup_data) > 0:
+                    plt.scatter(warmup_data['lr'], warmup_data['val_loss'],
+                               c=[warmup_to_color[warmup]], marker='o', s=50, alpha=0.7,
+                               label=f'warmup={warmup} (fineweb)')
+
+        if len(fineweb_100_data) > 0:
+            for warmup in unique_warmup:
+                warmup_data = fineweb_100_data[fineweb_100_data['warmup_steps'] == warmup]
+                if len(warmup_data) > 0:
+                    plt.scatter(warmup_data['lr'], warmup_data['val_loss'],
+                               c=[warmup_to_color[warmup]], marker='x', s=50, alpha=0.7,
+                               label=f'warmup={warmup} (fineweb_100)')
+    else:
+        # Create clipped plasma colormap (avoid too-bright yellow)
+        plasma_cmap = plt.cm.plasma
+        plasma_colors = plasma_cmap(np.linspace(0, 0.85, 256))
+        clipped_plasma = ListedColormap(plasma_colors)
+
+        # Separate data by dataset for different markers
+        fineweb_data = df[df['dataset'] == 'fineweb']
+        fineweb_100_data = df[df['dataset'] == 'fineweb_100']
+
+        # Plot scatter points with dataset-specific markers
+        if len(fineweb_data) > 0:
+            plt.scatter(fineweb_data['lr'], fineweb_data['val_loss'],
+                       c=fineweb_data['log_omega'], cmap=clipped_plasma,
+                       marker='o', s=50, alpha=0.7, label='fineweb')
+
+        if len(fineweb_100_data) > 0:
+            plt.scatter(fineweb_100_data['lr'], fineweb_100_data['val_loss'],
+                       c=fineweb_100_data['log_omega'], cmap=clipped_plasma,
+                       marker='x', s=50, alpha=0.7, label='fineweb_100')
 
     # Generate smooth curves for fitted functions
     log_lr_range = jnp.linspace(float(X.min()), float(X.max()), 200)
@@ -818,84 +901,90 @@ def create_visualization(df, theta_opt, X, unique_log_omega, config):
     best_observed = observed_minima[:3]
 
     # Plot fitted curves and minima for each omega
-    for i, log_omega in enumerate(unique_log_omega):
-        # Extract parameters for this omega
-        start_idx = i * 4
-        a, b, c, d = theta_opt[start_idx:start_idx+4]
+    if not color_by_host and not color_by_warmup:
+        for i, log_omega in enumerate(unique_log_omega):
+            # Extract parameters for this omega
+            start_idx = i * 4
+            a, b, c, d = theta_opt[start_idx:start_idx+4]
 
-        # Generate smooth fitted curve
-        loss_pred = softplus_like_function_jax(log_lr_range, a, b, c, d)
+            # Generate smooth fitted curve
+            loss_pred = softplus_like_function_jax(log_lr_range, a, b, c, d)
 
-        # Compute minimum location
-        x_min, y_min = compute_function_minimum(a, b, c, d)
+            # Compute minimum location
+            x_min, y_min = compute_function_minimum(a, b, c, d)
 
-        # Color based on omega value
-        log_omega_min = df['log_omega'].min()
-        log_omega_max = df['log_omega'].max()
-        normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
-        color = clipped_plasma(normalized_log_omega)
+            # Color based on omega value
+            log_omega_min = df['log_omega'].min()
+            log_omega_max = df['log_omega'].max()
+            normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
+            color = clipped_plasma(normalized_log_omega)
 
-        # Plot fitted curve (no labels - we'll add custom legend)
-        plt.plot(np.array(lr_range), np.array(loss_pred), '-',
-                color=color, alpha=0.8, linewidth=2)
+            # Plot fitted curve (no labels - we'll add custom legend)
+            plt.plot(np.array(lr_range), np.array(loss_pred), '-',
+                    color=color, alpha=0.8, linewidth=2)
 
-        # Mark minimum with star (no labels - we'll add custom legend)
-        plt.plot(float(jnp.exp(x_min)), float(y_min), '*',
-                color=color, markersize=12, markeredgecolor='black', markeredgewidth=1)
+            # Mark minimum with star (no labels - we'll add custom legend)
+            plt.plot(float(jnp.exp(x_min)), float(y_min), '*',
+                    color=color, markersize=12, markeredgecolor='black', markeredgewidth=1)
 
-    # Add colorbar for omega values
-    if len(df) > 0:
-        cbar = plt.colorbar(label=config['omega_label'])
+        # Add colorbar for omega values
+        if len(df) > 0:
+            cbar = plt.colorbar(label=config['omega_label'])
 
     # Create custom legend
-    legend_elements = []
+    if color_by_host or color_by_warmup:
+        # When coloring by host or warmup, legend is already created by scatter plots
+        plt.legend(loc='upper right')
+    else:
+        legend_elements = []
 
-    # Add dataset markers if they exist
-    if len(fineweb_data) > 0:
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
-                                        markerfacecolor='gray', markersize=8, alpha=0.7,
-                                        label='fineweb', linestyle='None'))
+        # Add dataset markers if they exist
+        if len(fineweb_data) > 0:
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
+                                            markerfacecolor='gray', markersize=8, alpha=0.7,
+                                            label='fineweb', linestyle='None'))
 
-    if len(fineweb_100_data) > 0:
-        legend_elements.append(plt.Line2D([0], [0], marker='x', color='w',
-                                        markerfacecolor='gray', markersize=8, alpha=0.7,
-                                        label='fineweb_100', linestyle='None'))
+        if len(fineweb_100_data) > 0:
+            legend_elements.append(plt.Line2D([0], [0], marker='x', color='w',
+                                            markerfacecolor='gray', markersize=8, alpha=0.7,
+                                            label='fineweb_100', linestyle='None'))
 
-    # Add best omegas section
-    legend_elements.append(plt.Line2D([0], [0], color='none', label='Best omegas:'))
+        # Add best omegas section
+        legend_elements.append(plt.Line2D([0], [0], color='none', label='Best omegas:'))
 
-    # Add best fitted minimums
-    for i, (log_omega, fitted_min, omega) in enumerate(best_fitted):
-        # Calculate color for this omega
-        log_omega_min = df['log_omega'].min()
-        log_omega_max = df['log_omega'].max()
-        normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
-        color = clipped_plasma(normalized_log_omega)
+        # Add best fitted minimums
+        for i, (log_omega, fitted_min, omega) in enumerate(best_fitted):
+            # Calculate color for this omega
+            log_omega_min = df['log_omega'].min()
+            log_omega_max = df['log_omega'].max()
+            normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
+            color = clipped_plasma(normalized_log_omega)
 
-        legend_elements.append(plt.Line2D([0], [0], marker='*', color='w',
-                                        markerfacecolor=color, markeredgecolor='black',
-                                        markersize=10, markeredgewidth=1,
-                                        label=f'  Fitted: ω={omega:.3f} (min={fitted_min:.3f})',
-                                        linestyle='None'))
+            legend_elements.append(plt.Line2D([0], [0], marker='*', color='w',
+                                            markerfacecolor=color, markeredgecolor='black',
+                                            markersize=10, markeredgewidth=1,
+                                            label=f'  Fitted: ω={omega:.3f} (min={fitted_min:.3f})',
+                                            linestyle='None'))
 
-    # Add best observed minimums
-    for i, (log_omega, observed_min, omega) in enumerate(best_observed):
-        # Calculate color for this omega
-        log_omega_min = df['log_omega'].min()
-        log_omega_max = df['log_omega'].max()
-        normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
-        color = clipped_plasma(normalized_log_omega)
+        # Add best observed minimums
+        for i, (log_omega, observed_min, omega) in enumerate(best_observed):
+            # Calculate color for this omega
+            log_omega_min = df['log_omega'].min()
+            log_omega_max = df['log_omega'].max()
+            normalized_log_omega = (log_omega - log_omega_min) / (log_omega_max - log_omega_min)
+            color = clipped_plasma(normalized_log_omega)
 
-        legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
-                                        markerfacecolor=color, markersize=8,
-                                        label=f'  Observed: ω={omega:.3f} (min={observed_min:.3f})',
-                                        linestyle='None'))
+            legend_elements.append(plt.Line2D([0], [0], marker='o', color='w',
+                                            markerfacecolor=color, markersize=8,
+                                            label=f'  Observed: ω={omega:.3f} (min={observed_min:.3f})',
+                                            linestyle='None'))
+
+        plt.legend(handles=legend_elements, loc='upper right')
 
     # Formatting
     plt.xlabel('Learning Rate (lr)')
     plt.ylabel('Validation Loss (val/loss)')
     plt.title(config['title'])
-    plt.legend(handles=legend_elements, loc='upper right')
     plt.xscale('log')  # Log scale for learning rate axis
     plt.tight_layout()
 
@@ -912,8 +1001,8 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # Load and preprocess data
-    df = load_wandb_data("danastar", config['group'], config['optimizer'])
-    df, X, Y, omega_indices, unique_log_omega_jax = preprocess_data(df, args.maxloss, args.minpoints, args.maxomega)
+    df = load_wandb_data("danastar", config['group'], config['optimizer'], filter_hosts=args.filter_hosts)
+    df, X, Y, omega_indices, unique_log_omega_jax = preprocess_data(df, args.maxloss, args.minpoints, args.maxomega, args.dataset)
 
     # Optimize parameters
     theta_opt = optimize_parameters(X, Y, omega_indices, unique_log_omega_jax, args.lambda_reg)
@@ -922,6 +1011,7 @@ if __name__ == "__main__":
     display_results(theta_opt, list(unique_log_omega_jax))
 
     # Create visualization
-    create_visualization(df, theta_opt, X, list(unique_log_omega_jax), config)
+    create_visualization(df, theta_opt, X, list(unique_log_omega_jax), config,
+                        color_by_host=args.color_by_host, color_by_warmup=args.color_by_warmup)
 
     print("\\nFitting completed successfully!")
