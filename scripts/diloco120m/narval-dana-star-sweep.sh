@@ -69,7 +69,7 @@ torchrun --standalone --nproc_per_node=2 ./src/main.py --config_format base --mo
     --dropout 0.0 --warmup_steps 1127 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
     --opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr 2.0 \
-    --weight_decay 0.1 --wd_decaying --wd_ts $WD_TS \
+    --weight_decay 1.0 --wd_decaying --wd_ts $WD_TS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115 --log_interval 50
