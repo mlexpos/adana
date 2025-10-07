@@ -8,7 +8,7 @@
 #SBATCH --mem=0                    # "alloc as needed" on Alliance
 
 # Hugging Face caches
-export HF_HOME="$HOME/scratc/hf"
+export HF_HOME="$HOME/scratch/hf"
 export WANDB_API_KEY=d2f72ec36001f518a4ecf4fe12149a8267e526b0
 export WANDB_PROJECT=danastar
 export WANDB_RUN_GROUP=AdamW_330M_lr_weight_decay_sweeps
