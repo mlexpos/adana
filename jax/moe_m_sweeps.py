@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-MoE PLRF Training with sweeps over the value of m.
+MoE PLRF Training with sweeps over the value of m, comparing dana_star vs dana_star_mk4.
 
 This script trains Mixture of Experts PLRF models using different optimizers
 (Tanea, TarMSProp-SGD, Adam) and collects tau statistics from TaneaOptimizer.
@@ -18,7 +18,7 @@ import numpy as np
 import argparse
 import os
 
-from optimizers import powerlaw_schedule, GalaxyOptimizerState, get_adam_star, get_adam_nesterov_star, get_dana_star, get_long_adam, get_long_adam_nesterov
+from optimizers import powerlaw_schedule, GalaxyOptimizerState, get_adam_star, get_adam_nesterov_star, get_dana_star, get_dana_star_mk4, get_long_adam, get_long_adam_nesterov
 
 # Import MoE PLRF implementations from installed package
 from moe_plrf import (
@@ -86,7 +86,10 @@ def parse_args():
     parser.add_argument("--disable_adam_nesterov_star", action="store_true", help="Disable Adam Nesterov Star optimizer")
     
     parser.add_argument("--enable_dana_star", action="store_true", default=True, help="Enable DANA Star optimizer")
-    parser.add_argument("--disable_dana_star", action="store_true", help="Disable DANA Star optimizer")                  
+    parser.add_argument("--disable_dana_star", action="store_true", help="Disable DANA Star optimizer")
+    
+    parser.add_argument("--enable_dana_star_mk4", action="store_true", default=True, help="Enable DANA Star MK4 optimizer")
+    parser.add_argument("--disable_dana_star_mk4", action="store_true", help="Disable DANA Star MK4 optimizer")
 
     
     # Output parameters
@@ -457,8 +460,8 @@ def get_Long_adam_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, tr
 def get_long_adam_nesterov_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):
     """Get Long-Adam-Nesterov optimizer with hyperparameters based on Tanea/Adam settings."""
     # Get Adam LR for Dana g2
-    adam_lr = get_adam_lr(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent)
-    long_adam_nesterov_opt = get_long_adam_nesterov(adam_lr)
+    adam_lr_val = jnp.minimum(1.0, jnp.float32(batch_size) / traceK) * 0.2  # Use default adam_lr of 0.2
+    long_adam_nesterov_opt = get_long_adam_nesterov(adam_lr_val)
    
     return long_adam_nesterov_opt
 
@@ -467,7 +470,7 @@ def get_adam_star_lr(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, t
     return adam_star_lr * jnp.minimum(1.0, jnp.float32(batch_size) / traceK) #get_adam_lr(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent)
 
 def get_dana_star_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent, tanea_kappa=None):
-    """Get Adam Star learning rate same as Adam"""
+    """Get Dana Star optimizer"""
     kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
     learning_rate_g2 = g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)
     g2_constant = tanea_lr_scalar *learning_rate_g2
@@ -476,44 +479,18 @@ def get_dana_star_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, tr
     optimizer = get_dana_star(g2_constant, g3_constant, kappa_exponent, 1.0) # This is on the g2 schedule
     return optimizer
 
-def get_adam_nesterov_star_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent):
+def get_dana_star_mk4_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent, tanea_kappa=None):
+    """Get Dana Star MK4 optimizer"""
+    kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
+    learning_rate_g2 = g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)
+    g2_constant = tanea_lr_scalar *learning_rate_g2
+    g3_constant = g3_over_g2 * learning_rate_g2 * tanea_lr_scalar
+    optimizer = get_dana_star_mk4(g2_constant, g3_constant, 1.0) # This is on the g2 schedule
+    return optimizer
+
+def get_adam_nesterov_star_lr(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):
     """Get Adam Nesterov Star learning rate same as Adam"""
-    return get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent)
-
-
-# def get_rmsprop_dana_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent, adam_beta2):
-#     """Get RMSprop+Dana optimizer with hyperparameters based on Tanea/Adam settings."""
-#     # Get Adam LR for Dana g2
-#     adam_lr = get_adam_lr(alpha, beta, d, batch_size, g2_scale, traceK, tanea_lr_scalar, tanea_global_exponent)
-    
-#     # # Get Tanea hyperparameters for kappa (delta parameter)
-#     # tanea_hparams = get_tanea_hparams(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent)
-    
-#     # RMSprop decay (same as Adam beta2)
-#     rms_decay = adam_beta2
-    
-#     # Dana parameters
-#     dana_g2 = adam_lr
-#     dana_g3 = g3_over_g2 * adam_lr
-
-#     kappa_b = jnp.log(batch_size) / jnp.log(d)  # exponent for batch wrt d
-    
-#     # Create Dana optimizer schedules
-#     g1 = powerlaw_schedule(1.0, 0.0, 0.0, 1)
-#     g2 = powerlaw_schedule(dana_g2, 0.0, 0.0, 1)
-#     g3 = powerlaw_schedule(dana_g3, 0.0, -1.0*(1.0 - kappa_b) / (2 * alpha), 1)
-#     Delta = powerlaw_schedule(1.0, 0.0, -1.0, 4.0+2*(alpha+beta)/(2*alpha))
-    
-#     # Create Dana optimizer
-#     dana_opt = dana_optimizer(g1=g1, g2=g2, g3=g3, Delta=Delta)
-    
-#     # Chain RMSProp and Dana optimizers
-#     optimizer = optax.chain(
-#         optax.scale_by_rms(decay=rms_decay, eps=1e-8, bias_correction=True),
-#         dana_opt
-#     )
-    
-#     return optimizer
+    return jnp.minimum(1.0, jnp.float32(batch_size) / traceK) * 0.2  # Use default adam_lr of 0.2
 
 
 def main():
@@ -530,43 +507,19 @@ def main():
     m_list = [int(m.strip()) for m in args.m_range.split(',')]
     
     # Process optimizer flags (disable flags override enable flags)
-    # enable_tanea = args.enable_tanea and not args.disable_tanea
-    # enable_tanea_theory = args.enable_tanea_theory
-    # enable_tanea_always_on = args.enable_tanea_always_on and not args.disable_tanea_always_on
-    # enable_tanea_strong_clip = args.enable_tanea_strong_clip
-    # enable_tanea_first_moment = args.enable_tanea_first_moment and not args.disable_tanea_first_moment
-    # enable_tanea_mk2 = args.enable_tanea_mk2 and not args.disable_tanea_mk2
-    # enable_tanea_always_on_mk2 = args.enable_tanea_always_on_mk2 and not args.disable_tanea_always_on_mk2
-    # enable_tanea_mk3 = args.enable_tanea_mk3 and not args.disable_tanea_mk3
-    # enable_tanea_kappa1 = args.enable_tanea_kappa1 and not args.disable_tanea_kappa1
-    # enable_tanea_g3zero = args.enable_tanea_g3zero and not args.disable_tanea_g3zero
-    # enable_rmsprop_dana = args.enable_rmsprop_dana and not args.disable_rmsprop_dana
     enable_adam = args.enable_adam and not args.disable_adam
     enable_long_adam = args.enable_long_adam and not args.disable_long_adam
     enable_long_adam_nesterov = args.enable_long_adam_nesterov and not args.disable_long_adam_nesterov
     enable_adam_star = args.enable_adam_star and not args.disable_adam_star
     enable_adam_nesterov_star = args.enable_adam_nesterov_star and not args.disable_adam_nesterov_star
     enable_dana_star = args.enable_dana_star and not args.disable_dana_star
+    enable_dana_star_mk4 = args.enable_dana_star_mk4 and not args.disable_dana_star_mk4
 
     # Create results directory
     os.makedirs(args.results_dir, exist_ok=True)
     
     # Compute traceK for hyperparameter scaling
     traceK = get_traceK(args.alpha, args.v)
-
-    # print("="*60)
-    # print("Label Noise Experiment")
-    # print("="*60)
-    # print(f"Model parameters: α={args.alpha}, β={beta_list}, V={args.v}, D={args.d}")
-    # print(f"MoE parameters: M={args.m}, ζ={args.zeta}")
-    # print(f"Training parameters: STEPS={args.steps}, BATCH_SIZE={args.batch_size}")
-    # print(f"Label noise parameters: Student-t DOF={args.student_t_dof}, σ={args.sigma}")
-    # print(f"Enabled optimizers: Tanea={enable_tanea}, TaneaTheory={enable_tanea_theory}, TaneaAlwaysOn={enable_tanea_always_on}")
-    # print(f"                   TaneaStrongClip={enable_tanea_strong_clip}, TaneaFirstMoment={enable_tanea_first_moment}, TaneaMk2={enable_tanea_mk2}")
-    # print(f"                   TaneaAlwaysOnMk2={enable_tanea_always_on_mk2}, TaneaMk3={enable_tanea_mk3}, TaneaKappa1={enable_tanea_kappa1}")
-    # print(f"                   TaneaG3Zero={enable_tanea_g3zero}, RMSpropDana={enable_rmsprop_dana}, Adam={enable_adam}")
-    # print(f"Results directory: {args.results_dir}")
-    # print("="*60)
 
     # Main training experiment loop
     moe_results = []
@@ -594,49 +547,6 @@ def main():
         # Create hyperparameters
         optimizers_dict = {}
         
-        # if enable_tanea:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta)
-        
-        # if enable_tanea_theory:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_theory'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="theory")
-        
-        # if enable_tanea_always_on:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_always_on'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on")
-        
-        # if enable_tanea_strong_clip:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_strong_clip'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="strong-clip")
-        
-        # if enable_tanea_first_moment:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_first_moment'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, tau_flavor="first-moment")
-        
-        # if enable_tanea_mk2:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_mk2'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="mk2")
-        
-        # if enable_tanea_always_on_mk2:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_always_on_mk2'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="always-on-mk2")
-        
-        # if enable_tanea_mk3:
-        #     tanea_hparams = get_tanea_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_mk3'] = tanea_optimizer(tanea_hparams.g2, tanea_hparams.g3, tanea_hparams.delta, momentum_flavor="mk3")
-        
-        # if enable_tanea_kappa1:
-        #     tanea_kappa1_hparams = get_tanea_kappa1_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
-        #     optimizers_dict['tanea_kappa1'] = tanea_optimizer(tanea_kappa1_hparams.g2, tanea_kappa1_hparams.g3, tanea_kappa1_hparams.delta)
-        
-        # if enable_tanea_g3zero:
-        #     tanea_g3zero_hparams = get_tarmsprop_sgd_hparams(args.alpha, beta, args.d, args.batch_size, args.g2_scale, traceK, args.tanea_lr_scalar, args.tanea_global_exponent)
-        #     optimizers_dict['tanea_g3zero'] = tanea_optimizer(tanea_g3zero_hparams.g2, tanea_g3zero_hparams.g3, tanea_g3zero_hparams.delta)
-        
-        # if enable_rmsprop_dana:
-        #     optimizers_dict['rmsprop_dana'] = get_rmsprop_dana_optimizer(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.adam_beta2)
-        
         if enable_adam:
             optimizers_dict['adam'] = optax.adam(get_adam_lr(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.adam_lr), b1=args.adam_beta1, b2=args.adam_beta2)
 
@@ -654,6 +564,9 @@ def main():
 
         if enable_dana_star:
             optimizers_dict['tanea_dana_star'] = get_dana_star_optimizer(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
+
+        if enable_dana_star_mk4:
+            optimizers_dict['tanea_dana_star_mk4'] = get_dana_star_mk4_optimizer(args.alpha, beta, args.d, args.batch_size, args.g2_scale, args.g3_over_g2, traceK, args.tanea_lr_scalar, args.tanea_global_exponent, args.tanea_kappa)
 
         # Run training experiments for enabled optimizers
         results_dict = {'beta': beta, 'zeta': zeta, 'm': m, 'model': model}
@@ -700,7 +613,8 @@ def main():
             'tanea_long_adam_nesterov': 'indigo', #'2ca02c',  # tab:green (same as long_adam)
             'tanea_adam_star': 'tab:green', #'#ff7f0e',   # tab:orange
             'tanea_adam_nesterov_star': 'navy', #'#d62728',  # tab:red
-            'tanea_dana_star': 'tab:blue' #9467bd'    # tab:purple
+            'tanea_dana_star': 'tab:blue', #9467bd'    # tab:purple
+            'tanea_dana_star_mk4': 'tab:purple' # New color for mk4
         }
 
         # Define linestyles for m values
@@ -734,6 +648,8 @@ def main():
                             display_name = f'Adam-Nesterov-Star (m={m})'
                         elif optimizer_name == 'tanea_dana_star':
                             display_name = f'Dana-Star (m={m})'
+                        elif optimizer_name == 'tanea_dana_star_mk4':
+                            display_name = f'Dana-Star-MK4 (m={m})'
                         else:
                             display_name = f'{optimizer_name} (m={m})'
 
@@ -745,7 +661,7 @@ def main():
 
         ax.set_xlabel('Training Iteration', fontsize=14)
         ax.set_ylabel('Population Risk', fontsize=14)
-        ax.set_title(f'Learning Curves \nα={args.alpha}, ζ={zeta}, d={args.d}, β={beta}, Adam learning rate = {args.adam_lr},\n β_1 = {args.adam_beta1}, β_2 = {args.adam_beta2}, κ = {args.tanea_kappa}, batch={args.batch_size}, steps={args.steps}', fontsize=16)
+        ax.set_title(f'Learning Curves (Dana-Star vs Dana-Star-MK4)\nα={args.alpha}, ζ={zeta}, d={args.d}, β={beta}, Adam learning rate = {args.adam_lr},\n β_1 = {args.adam_beta1}, β_2 = {args.adam_beta2}, κ = {args.tanea_kappa}, batch={args.batch_size}, steps={args.steps}', fontsize=16)
         ax.grid(True, alpha=0.3)
         ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left',
                  handlelength=6, handletextpad=0.8, columnspacing=2)
@@ -754,7 +670,7 @@ def main():
 
         # Save learning curves PDF
         m_str = "_".join([f"m{m}" for m in m_list])
-        curves_filename = f"{args.output_prefix}_m_sweeps_alpha{args.alpha}_zeta{zeta}_D{args.d}_{m_str}_beta{beta}_steps{args.steps}.pdf"
+        curves_filename = f"{args.output_prefix}_mk4_comparison_alpha{args.alpha}_zeta{zeta}_D{args.d}_{m_str}_beta{beta}_steps{args.steps}.pdf"
         curves_filepath = os.path.join(args.results_dir, curves_filename)
         plt.savefig(curves_filepath, dpi=300, bbox_inches='tight')
         print(f"Training loss curves saved to: {curves_filepath}")
