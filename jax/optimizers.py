@@ -664,7 +664,7 @@ def tanea_optimizer(
     elif momentum_flavor == "mk3":
         g3_momentum_term = lambda u, v, tau, t, m: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     elif momentum_flavor == "mk4":
-        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( u**2/(t*m**2+epsilon)**2, 1.0) * (tau**(3.0/2.0)) / (jnp.sqrt(v)+epsilon) * t
+        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( u**2/(t*jnp.abs(m)+epsilon)**2, 1.0) * (root_tau_reg(tau, t)**3) / (jnp.sqrt(v)+epsilon) * t
     else:
         raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'adam', 'always-on', 'always-on-mk2', 'strong-clip', 'mk2', 'mk3', or 'mk4'")  
 
