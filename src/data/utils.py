@@ -562,12 +562,15 @@ class DataReader:
         # - self.step goes from 0 to 30 for each worker
         if self.world_size > 1:
             # In distributed training, each worker processes every world_size-th batch
-            total_possible_local_batches = len(self.order) // self.local_batch_size
+            self.total_possible_local_batches = len(self.order) // self.local_batch_size
             # Each worker gets every world_size-th batch, so divide by world_size
-            self.num_batches_of_seqlen = total_possible_local_batches // self.world_size
+            self.num_batches_of_seqlen = self.total_possible_local_batches // self.world_size
+            #print(f"Shuffling. Rank {self.rank}. length of order: {len(self.order)}, total_possible_local_batches: {self.total_possible_local_batches}, num_batches_of_seqlen: {self.num_batches_of_seqlen}, sequence_length: {self.sequence_length}")
         else:
             # Single worker case: process all possible batches
-            self.num_batches_of_seqlen = len(self.order) // self.local_batch_size
+            #print(f"single worker case, world_size: {self.world_size}, local_batch_size: {self.local_batch_size}, sequence_length: {self.sequence_length}")
+            self.total_possible_local_batches = len(self.order) // self.local_batch_size
+            self.num_batches_of_seqlen = self.total_possible_local_batches
 
     def _sample_without_replacement(self, step):
         # Return an array of token indices of length self.local_batch_size
@@ -580,17 +583,19 @@ class DataReader:
         # - Worker 1 gets batches 1, world_size+1, 2*world_size+1, ...
         # - This ensures no overlap between workers
         batch_idx = self.world_size * step + self.rank
-        # epoch_length is the number of local batches this worker processes per epoch
+        
+        # epoch_length must be the GLOBAL number of batches in an epoch across all ranks
         # When batch_idx exceeds this, we move to the next epoch (reshuffle data)
-        epoch_length = self.num_batches_of_seqlen
-
+        epoch_length = self.total_possible_local_batches
         epoch = batch_idx // epoch_length
         if epoch != self.last_epoch:
+            #print(f"Shuffling. Rank {self.rank}.")
             self._shuffle_epoch(epoch)
         epoch_idx = batch_idx % epoch_length
 
         start = epoch_idx * self.local_batch_size
         end = start + self.local_batch_size
+        #print(f"rank: {self.rank}, epoch: {epoch}, epoch_length: {epoch_length}, epoch_idx: {epoch_idx}, start: {start}, end: {end}")
         return self.order[start:end] * self.sequence_length + self.epoch_offset
 
     def num_batches(self):
