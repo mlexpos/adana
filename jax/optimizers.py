@@ -365,10 +365,11 @@ def get_dana_star_mk4(
     g2 = powerlaw_schedule(g2_constant, 0.0, 0.0, 1.0)
     g3 = powerlaw_schedule(g3_constant, 0.0, 0.0, 1.0)
     beta_m=powerlaw_schedule(1.0, 0.0, -1.0, 6.0)
+    g1 = beta_m
     Delta = powerlaw_schedule(1.0, 0.0, -1.0, 4.0)  # Use same Delta as other optimizers
 
     optimizer = optax.chain(
-        tanea_optimizer(g2, g3, Delta, epsilon=epsilon, beta_m=beta_m, momentum_flavor="mk4", y_dtype=y_dtype),
+        tanea_optimizer(g2, g3, Delta, epsilon=epsilon, beta_m=beta_m, g1=g1, momentum_flavor="mk4", y_dtype=y_dtype),
         optax.scale_by_learning_rate(learning_rate, flip_sign = False)
     )
     return optimizer
@@ -664,7 +665,17 @@ def tanea_optimizer(
     elif momentum_flavor == "mk3":
         g3_momentum_term = lambda u, v, tau, t, m: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     elif momentum_flavor == "mk4":
-        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( u**2/(t*jnp.abs(m)+epsilon)**2, 1.0) * (root_tau_reg(tau, t)**3) / (jnp.sqrt(v)+epsilon) * t
+        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( 1.0/(4.0*t*jnp.abs(m)+epsilon)**2, 1.0) / (jnp.sqrt(v)+epsilon) * t
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum(t*u**2/(2.0*t*jnp.abs(m)+epsilon)**2/(jnp.sqrt(v)+epsilon), jnp.abs(u)/(jnp.abs(m)+epsilon)/(jnp.sqrt(v)+epsilon)) 
+
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( v/(t*jnp.abs(m)+epsilon)**2, t) / (jnp.sqrt(v)+epsilon)
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( 1.0/(jnp.sqrt(t)*jnp.abs(m)+epsilon)**2, 0.5*jnp.abs(u)/(jnp.abs(m)+epsilon)) / (jnp.sqrt(v)+epsilon)        
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( t/(t*jnp.abs(m)+epsilon)**2, 10.0)/(jnp.sqrt(v)+epsilon)
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( 1.0/(t*jnp.abs(m)+epsilon)**2, 1.0) * (root_tau_reg(tau, t)**3) / (jnp.sqrt(v)+epsilon) * t
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( 1.0/(jnp.abs(m)+epsilon)**2, root_tau_reg(tau,t)/(jnp.sqrt(v)+epsilon)) * (tau_reg(tau, t)) * t
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( root_tau_reg(tau,t)/(jnp.sqrt(v)+epsilon)/(jnp.abs(m)+epsilon), root_tau_reg(tau,t)/(jnp.sqrt(v)+epsilon)) * (tau_reg(tau, t)) * t
+
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( u**2/(t*(m**2)+epsilon)**2, 1.0) * (root_tau_reg(tau, t)**3) / (jnp.sqrt(v)+epsilon) * t
     else:
         raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'adam', 'always-on', 'always-on-mk2', 'strong-clip', 'mk2', 'mk3', or 'mk4'")  
 
