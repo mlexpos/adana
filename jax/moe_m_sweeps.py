@@ -670,7 +670,7 @@ def main():
 
         # Save learning curves PDF
         m_str = "_".join([f"m{m}" for m in m_list])
-        curves_filename = f"{args.output_prefix}_mk4_comparison_alpha{args.alpha}_zeta{zeta}_D{args.d}_{m_str}_beta{beta}_steps{args.steps}.pdf"
+        curves_filename = f"{args.output_prefix}_mk4_comparison_alpha{args.alpha}_zeta{zeta}_D{args.d}_{m_str}_beta{beta}_steps{args.steps}_batch{args.batch_size}.pdf"
         curves_filepath = os.path.join(args.results_dir, curves_filename)
         plt.savefig(curves_filepath, dpi=300, bbox_inches='tight')
         print(f"Training loss curves saved to: {curves_filepath}")
