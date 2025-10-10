@@ -366,7 +366,7 @@ def get_dana_star_mk4(
     g3 = powerlaw_schedule(g3_constant, 0.0, 0.0, 1.0)
     beta_m=powerlaw_schedule(1.0, 0.0, -1.0, 6.0)
     g1 = beta_m
-    Delta = powerlaw_schedule(1.0, 0.0, -1.0, 4.0)  # Use same Delta as other optimizers
+    Delta = powerlaw_schedule(1.0, 0.0, -1.0, 6.0)  # Use same Delta as other optimizers
 
     optimizer = optax.chain(
         tanea_optimizer(g2, g3, Delta, epsilon=epsilon, beta_m=beta_m, g1=g1, momentum_flavor="mk4", y_dtype=y_dtype),
@@ -665,7 +665,8 @@ def tanea_optimizer(
     elif momentum_flavor == "mk3":
         g3_momentum_term = lambda u, v, tau, t, m: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     elif momentum_flavor == "mk4":
-        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( 1.0/(4.0*t*jnp.abs(m)+epsilon)**2, 1.0) / (jnp.sqrt(v)+epsilon) * t
+        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( v**(3/2)/(t*jnp.abs(m)+epsilon)**2, 1.0) / (jnp.sqrt(v)+epsilon) * t
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( 1.0/(4.0*t*jnp.abs(m)+epsilon)**2, 1.0) / (jnp.sqrt(v)+epsilon) * t
         #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum(t*u**2/(2.0*t*jnp.abs(m)+epsilon)**2/(jnp.sqrt(v)+epsilon), jnp.abs(u)/(jnp.abs(m)+epsilon)/(jnp.sqrt(v)+epsilon)) 
 
         #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum( v/(t*jnp.abs(m)+epsilon)**2, t) / (jnp.sqrt(v)+epsilon)

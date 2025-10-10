@@ -45,15 +45,16 @@ ALPHA = 1.0                   # Fixed alpha value
 BETA = 0.5                    # Fixed beta value
 V = 4000                      # Number of features
 D = 1000                      # Number of parameters
-h = 0.0
+h = 0.5
 SGDBATCH = jnp.int32(D**h)
 STEPS = 10**4                 # Number of steps
 DT = 10**(-3)                 # ODE time step
 NUM_KAPPA = 30                # Number of kappa values to test
 KAPPA_MIN = -1.5              # Minimum kappa value
-KAPPA_MAX = -0.8              # Maximum kappa value
+KAPPA_MAX = -0.2              # Maximum kappa value
 OUTPUT_FILE = 'kappa_sweep.pdf'
 OUTPUT_FILE_RATIO = 'kappa_sweep_ratio.pdf'
+OUTPUT_FILE_RATIO_GRID = 'kappa_sweep_ratio_grid.pdf'
 
 # Plotting parameters
 FIGURE_SIZE = (25, 6.5)
@@ -259,7 +260,7 @@ def main():
 
 
         g3constant = 1.0
-        #g3constant = LRscalar * 0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace)
+        #g3constant = LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace)
         # Create g3 schedule with current kappa
         g3 = optimizers.powerlaw_schedule(
             g3constant,
@@ -429,7 +430,7 @@ def main():
         # Compute (log(risk) - log(||y||²)) / log(T)
         log_risk = jnp.log(checkpoint_risks[T])
         log_momentum = jnp.log(checkpoint_momentum[T])
-        ratio = (log_risk - log_momentum) / jnp.log(T)
+        ratio = (1.5*log_risk - log_momentum) / jnp.log(T)
 
         # Add y=x line in dotted black
         ax.plot(kappa_values, kappa_values, 'k:', linewidth=1.5, label='y=x', zorder=0)
@@ -448,11 +449,57 @@ def main():
             ax.plot([], [], 'k:', linewidth=1.5, label='y=x')
             ax.legend(fontsize=12)
 
-    fig2.suptitle(f'DanaStar: Risk-Momentum Ratio vs κ (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
+    fig2.suptitle(f'DanaStar: Risk^1.5-Momentum Ratio vs κ (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
                   fontsize=20)
     fig2.tight_layout()
     fig2.savefig(OUTPUT_FILE_RATIO)
     print(f"\nRatio figure saved to {OUTPUT_FILE_RATIO}")
+    print(f"{'='*60}")
+
+    # ========================================================================
+    # Create third figure with grid of (A*log(risk) - B*log(||y||²))/log(T)
+    # ========================================================================
+
+    import numpy as np
+    A_values = np.arange(0.5, 1.75, 0.25)
+    B_values = np.arange(0.5, 1.75, 0.25)
+    num_A = len(A_values)
+    num_B = len(B_values)
+
+    # Create grid of subplots for each checkpoint
+    for T in iteration_checkpoints:
+        fig3 = plt.figure(figsize=(num_B * 4, num_A * 3.5))
+
+        for i, A in enumerate(A_values):
+            for j, B in enumerate(B_values):
+                ax = plt.subplot(num_A, num_B, i * num_B + j + 1)
+
+                # Compute (A*log(risk) - B*log(||y||²)) / log(T)
+                log_risk = jnp.log(checkpoint_risks[T])
+                log_momentum = jnp.log(checkpoint_momentum[T])
+                ratio = (A * log_risk - B * log_momentum) / jnp.log(T)
+
+                # Add y=x line in dotted black
+                ax.plot(kappa_values, kappa_values, 'k:', linewidth=1.5, zorder=0)
+
+                # Plot the ratio
+                ax.plot(kappa_values, ratio, 'o-', linewidth=2,
+                        markersize=6, color='tab:purple')
+
+                ax.set_xlabel('κ', fontsize=12)
+                ax.set_ylabel(f'({A:.2f}·log(R) - {B:.2f}·log(||y||²))/log(T)', fontsize=10)
+                ax.set_title(f'A={A:.2f}, B={B:.2f}', fontsize=12)
+                ax.grid(True, alpha=0.3)
+
+        fig3.suptitle(f'DanaStar: Weighted Ratio Grid at T={T:.0e} (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
+                      fontsize=18)
+        fig3.tight_layout()
+
+        # Save with checkpoint-specific filename
+        output_file_grid = OUTPUT_FILE_RATIO_GRID.replace('.pdf', f'_T{T:.0e}.pdf')
+        fig3.savefig(output_file_grid)
+        print(f"\nRatio grid figure for T={T:.0e} saved to {output_file_grid}")
+
     print(f"{'='*60}")
 
 

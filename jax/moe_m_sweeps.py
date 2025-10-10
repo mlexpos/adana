@@ -485,7 +485,7 @@ def get_dana_star_mk4_optimizer(alpha, beta, d, batch_size, g2_scale, g3_over_g2
     learning_rate_g2 = g2_scale * jnp.minimum(1.0, jnp.float32(batch_size) / traceK)
     g2_constant = tanea_lr_scalar *learning_rate_g2
     g3_constant = g3_over_g2 * learning_rate_g2 * tanea_lr_scalar
-    optimizer = get_dana_star_mk4(learning_rate_g2, learning_rate_g2, tanea_lr_scalar) # This is on the g2 schedule
+    optimizer = get_dana_star_mk4(g2_constant, 0.25, 1.0) # This is on the g2 schedule
     return optimizer
 
 def get_adam_nesterov_star_lr(alpha, beta, d, batch_size, g2_scale, g3_over_g2, traceK, tanea_lr_scalar, tanea_global_exponent):

@@ -166,7 +166,7 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
         if g3_mode == 'dynamic':
             # g3 = g2 * min(risk/||y||^2, 1)
             risk_ratio = twice_risk / ( 2.0 * momentum_norm + 1e-10)  # Add small epsilon for numerical stability
-            g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( risk_ratio, 1.0)
+            g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( risk_ratio*jnp.sqrt(twice_risk), 1.0)
             #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum(momentum_norm**2, twice_risk) #jnp.minimum( momentum_norm**2, 1.0)
             #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( jnp.maximum( risk_ratio, momentum_norm**2), 0.2)
             #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.maximum( 1.0/(momentum_norm + 1e-10), 1e-3)
