@@ -315,10 +315,13 @@ def log_optimizer_schedules(optimizer, optimizer_name):
             logs["optimizer/alpha_schedule"] = torch.tensor(alpha_values).mean().item()
             logs["optimizer/one_minus_beta3_schedule"] = torch.tensor(one_minus_beta3_values).mean().item()
     
-    elif optimizer_name in ["dana", "dana_star"]:
+    elif optimizer_name in ["dana", "dana_star", "auto_dana", "auto-dana"]:
         # Log DANA schedules: alpha factor and (1+t)**(1-kappa)
         alpha_values = []
         kappa_factor_values = []
+        auto_factor_values = []
+        g2_gradient_norm_values = []
+        m_norm_values = []
         
         for group in optimizer.param_groups:
             for param in group["params"]:
@@ -326,9 +329,21 @@ def log_optimizer_schedules(optimizer, optimizer_name):
                     state = optimizer.state[param]
                     alpha_values.append(state["current_alpha"])
                     kappa_factor_values.append(state["current_kappa_factor"])
+                    if "auto_factor_mean" in state:
+                        auto_factor_values.append(state["auto_factor_mean"])  # tensor scalar
+                    if "g2_gradient_norm" in state:
+                        g2_gradient_norm_values.append(state["g2_gradient_norm"])
+                    if "m_norm" in state:
+                        m_norm_values.append(state["m_norm"])
         
         if alpha_values:
             logs["optimizer/alpha_schedule"] = torch.tensor(alpha_values).mean().item()
             logs["optimizer/kappa_factor_schedule"] = torch.tensor(kappa_factor_values).mean().item()
+            if auto_factor_values:
+                logs["optimizer/auto_factor"] = torch.stack(auto_factor_values).mean().item()
+            if g2_gradient_norm_values:
+                logs["optimizer/g2_gradient_norm"] = torch.stack(g2_gradient_norm_values).mean().item()
+            if m_norm_values:
+                logs["optimizer/m_norm"] = torch.stack(m_norm_values).mean().item()
     
     return logs
