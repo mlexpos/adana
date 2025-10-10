@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Compare fixed g3 schedules with dynamical g3 schedule.
+Compare fixed g3 schedules with dynamical g3 schedule using DanaStar scaling.
+DanaStar: ODE updates scaled by 1/sqrt(twice_risk)
 Dynamical g3 is computed as: g3 = g2 * min(risk/||y||^2, 1)
 """
 
@@ -43,17 +44,18 @@ class ODEInputs:
 # GLOBAL PARAMETERS (modify these for different experiments)
 # ============================================================================
 ALPHA_VALUES = [0.3, 0.7, 1.0, 1.3]  # List of alpha values to test
+#ALPHA_VALUES = [1.0]
 BETA = 0.5                            # Fixed beta value
 V = 4000                             # Number of features
 D = 1000                              # Number of parameters
            # Batch size
-h = 0.5 #jnp.float32(SGDBATCH / D)
-SGDBATCH = jnp.int32(D**h)               
+h = 0.0 #jnp.float32(SGDBATCH / D)
+SGDBATCH = jnp.int32(D**h)
 #SGDBATCH = 50
 STEPS = 10**7                    # Number of steps
 DT = 10**(-3)                         # ODE time step
-OUTPUT_FILE_RISK = 'dynamical_schedule_risk.pdf'           # Output for risk plots
-OUTPUT_FILE_RATIO = 'dynamical_schedule_risk_ratio.pdf'    # Output for risk/||y||^2 plots
+OUTPUT_FILE_RISK = 'danastar_schedule_risk.pdf'           # Output for risk plots
+OUTPUT_FILE_RATIO = 'danastar_schedule_risk_ratio.pdf'    # Output for risk/||y||^2 plots
 
 
 # Plotting parameters
@@ -62,7 +64,7 @@ FONT_SIZE = 16
 LINE_WIDTH = 2.5
 
 # ============================================================================
-# DYNAMICAL ODE SOLVER
+# DANASTAR ODE SOLVER
 # ============================================================================
 
 def ode_resolvent_log_implicit_and_momentum_dynamic(
@@ -75,7 +77,8 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
     g3_mode: str = 'fixed',  # 'fixed' or 'dynamic'
 ):
     """
-    ODE solver with optional dynamic g3 schedule.
+    DanaStar ODE solver with optional dynamic g3 schedule.
+    ODE updates scaled by 1/sqrt(twice_risk).
     When g3_mode='dynamic', g3 is computed as: g3 = g2 * min(risk/||y||^2, 1)
     """
     g1_fn, g2_fn, g3_fn_fixed, delta_fn = opt_hparams.g1, opt_hparams.g2, opt_hparams.g3, opt_hparams.delta
@@ -112,10 +115,10 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
 
         return jnp.array(inv)
 
-    def omega_full(time_plus, g3):
-        g1 = g1_fn(time_plus)
-        g2 = g2_fn(time_plus)
-        delta = delta_fn(time_plus)
+    def omega_full(time_plus, g1,g2,g3,delta):
+        # g1 = g1_fn(time_plus)
+        # g2 = g2_fn(time_plus)
+        # delta = delta_fn(time_plus)
 
         # Row 1: Evolution of rho
         omega_11 = -2.0 * (g2 + g1 * g3) * eigs_K + \
@@ -140,9 +143,9 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
         omega = jnp.array([omega_1, omega_2, omega_3])  # 3 x 3 x d
         return omega
 
-    def forcing_term(time_plus, g3):
-        g1 = g1_fn(time_plus)
-        g2 = g2_fn(time_plus)
+    def forcing_term(time_plus, g1,g2,g3, delta):
+        # g1 = g1_fn(time_plus)
+        # g2 = g2_fn(time_plus)
 
         Gamma = jnp.array([
             (g2**2 + 2.0 * g1 * g2 * g3 + g1**2 * g3**2) / batch,
@@ -156,30 +159,47 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
         time_plus = jnp.exp(time + dt)
         time_plus_minus_one = time_plus - 1.0
 
+        # DanaStar scaling: 1/sqrt(twice_risk)
+        risk_scaling = 1.0 / jnp.sqrt(twice_risk + 1e-10)
+
         # Compute g3 based on mode
         if g3_mode == 'dynamic':
             # g3 = g2 * min(risk/||y||^2, 1)
             risk_ratio = twice_risk / ( 2.0 * momentum_norm + 1e-10)  # Add small epsilon for numerical stability
             g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( risk_ratio, 1.0)
+            #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum(momentum_norm**2, twice_risk) #jnp.minimum( momentum_norm**2, 1.0)
+            #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( jnp.maximum( risk_ratio, momentum_norm**2), 0.2)
+            #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.maximum( 1.0/(momentum_norm + 1e-10), 1e-3)
+
         else:
             g3 = g3_fn_fixed(time_plus_minus_one)
 
-        omega = omega_full(time_plus_minus_one, g3)
+        # DanaStar: scale g2,g3 by risk_scaling
+        g1 = g1_fn(time_plus)
+        g2 = g2_fn(time_plus) * risk_scaling
+        delta = delta_fn(time_plus)
+        g3 = g3 * risk_scaling
+
+        omega = omega_full(time_plus_minus_one, g1,g2,g3,delta)
         identity = jnp.tensordot(jnp.eye(3), jnp.ones_like(eigs_K), 0)
 
-        A = inverse_3x3(identity - (dt * time_plus) * omega)  # 3 x 3 x d
+        scaled_dt = dt * time_plus
+
+        A = inverse_3x3(identity - scaled_dt * omega)  # 3 x 3 x d
 
         z = jnp.einsum('i, j -> ij', jnp.array([1.0, 0.0, 0.0]), eigs_K)
 
-        G_lambda = forcing_term(time_plus_minus_one, g3)
-        x_temp = v + dt * time_plus * twice_risk_infinity * G_lambda
+        G_lambda = forcing_term(time_plus_minus_one, g1,g2,g3,delta)
+        # DanaStar: scale update by risk_scaling
+        x_temp = v + scaled_dt * twice_risk_infinity * G_lambda
 
         x = jnp.einsum('ijk, jk -> ik', A, x_temp)
 
         y = jnp.einsum('ijk, jk -> ik', A, G_lambda)
 
-        v_new = x + (dt * time_plus * y * jnp.sum(x * z) /
-                    (1.0 - dt * time_plus * jnp.sum(y * z)))
+        # DanaStar: scale update by risk_scaling
+        v_new = x + (scaled_dt * y * jnp.sum(x * z) /
+                    (1.0 - scaled_dt * jnp.sum(y * z)))
 
         twice_risk_new = twice_risk_infinity + jnp.sum(eigs_K * v_new[0])
         momentum_norm_new = jnp.sum(v_new[1])
@@ -227,14 +247,18 @@ def main():
         key, subkey = random.split(key)
         problem = PowerLawRF.initialize_random(alpha=alpha, beta=BETA, v=V, d=D, key=subkey)
 
+        # Learning rate scalar
+        LRscalar = 0.1 / jnp.sqrt(jnp.float32(problem.d))
+
         # Set up DANA optimizer schedules
         g1 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
-        g2 = optimizers.powerlaw_schedule(0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
+        g2 = optimizers.powerlaw_schedule(LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
 
         # Two fixed g3 schedules
-        g3_fixed1 = optimizers.powerlaw_schedule(0.1 * jnp.float32(SGDBATCH) / problem.d * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
-        g3_fixed2 = optimizers.powerlaw_schedule(0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, -(1.0-h)/(2*alpha), 1)
-        g3_fixed3 = optimizers.powerlaw_schedule(0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
+        g3_fixed1 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.float32(SGDBATCH) / problem.d * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
+        g3_fixed2 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, -(1.0-h)/(2*alpha), 1)
+#        g3_fixed3 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
+        g3_fixed3 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
         g3_sgd = optimizers.powerlaw_schedule(0.0, 0.0, 0.0, 1)
 
         delta_constant = 4.0 + 2*(alpha + BETA)/(2*alpha)
@@ -258,7 +282,7 @@ def main():
         )
 
         # Run ODE with fixed g3 (version 1: exponent 0.0, small g3)
-        print("  Running DANA-Constant (exp=0.0)...")
+        print("  Running DanaStar-Constant (exp=0.0)...")
         dana_hparams_fixed1 = DanaHparams(g1, g2, g3_fixed1, Delta)
         times_fixed1, risks_fixed1, momentum_fixed1 = ode_resolvent_log_implicit_and_momentum_dynamic(
             ode_inputs_deterministic,
@@ -274,17 +298,17 @@ def main():
         # #Runs the stochastic version of dana-constant
         # danaconstantopt = optimizers.dana_optimizer(g1,g2,g3_fixed1,Delta)
         # key, newkey = random.split(key)
-        # danaconstanttimes,danaconstantlosses = lsq_streaming_optax_simple(newkey, 
-        #                         problem.get_data, 
-        #                         SGDBATCH, 
-        #                         STEPS, 
-        #                         danaconstantopt, 
-        #                         jnp.zeros((problem.d,1)), 
+        # danaconstanttimes,danaconstantlosses = lsq_streaming_optax_simple(newkey,
+        #                         problem.get_data,
+        #                         SGDBATCH,
+        #                         STEPS,
+        #                         danaconstantopt,
+        #                         jnp.zeros((problem.d,1)),
         #                         problem.get_population_risk)
 
 
         # Run ODE with fixed g3 (version 2: exponent -1/(2*alpha))
-        print("  Running fixed g3 (exp=-1/(2α))...")
+        print("  Running DanaStar-Decaying (exp=-1/(2α))...")
         dana_hparams_fixed2 = DanaHparams(g1, g2, g3_fixed2, Delta)
         times_fixed2, risks_fixed2, momentum_fixed2 = ode_resolvent_log_implicit_and_momentum_dynamic(
             ode_inputs_deterministic,
@@ -300,16 +324,16 @@ def main():
         #Runs the stochastic version of dana-decaying
         # danadecayingopt = optimizers.dana_optimizer(g1,g2,g3_fixed2,Delta)
         # key, newkey = random.split(key)
-        # danadecayingtimes,danadecayinglosses = lsq_streaming_optax_simple(newkey, 
-        #                         problem.get_data, 
-        #                         SGDBATCH, 
-        #                         STEPS, 
-        #                         danadecayingopt, 
-        #                         jnp.zeros((problem.d,1)), 
+        # danadecayingtimes,danadecayinglosses = lsq_streaming_optax_simple(newkey,
+        #                         problem.get_data,
+        #                         SGDBATCH,
+        #                         STEPS,
+        #                         danadecayingopt,
+        #                         jnp.zeros((problem.d,1)),
         #                         problem.get_population_risk)
 
         # Run ODE with dynamic g3
-        print("  Running dynamic g3...")
+        print("  Running DanaStar-Auto...")
         # Use fixed1 as base for dynamic (the g3 function won't be used in dynamic mode)
         dana_hparams_dynamic = DanaHparams(g1, g2, g3_fixed3, Delta)
         times_dynamic, risks_dynamic, momentum_dynamic = ode_resolvent_log_implicit_and_momentum_dynamic(
@@ -326,15 +350,15 @@ def main():
         #Runs the stochastic version of Auto-dana
         # danaautoopt = optimizers.auto_dana_optimizer(g1, g2, g3_fixed3, Delta)
         # key, newkey = random.split(key)
-        # danaautotimes,danaautolosses = lsq_streaming_optax_simple(newkey, 
-        #                         problem.get_data, 
-        #                         SGDBATCH, 
-        #                         STEPS, 
-        #                         danaautoopt, 
-        #                         jnp.zeros((problem.d,1)), 
+        # danaautotimes,danaautolosses = lsq_streaming_optax_simple(newkey,
+        #                         problem.get_data,
+        #                         SGDBATCH,
+        #                         STEPS,
+        #                         danaautoopt,
+        #                         jnp.zeros((problem.d,1)),
         #                         problem.get_population_risk)
 
-        print("  Running fixed SGD...")
+        print("  Running SGD...")
         dana_hparams_sgd = DanaHparams(g1, g2, g3_sgd, Delta)
         times_sgd, risks_sgd, momentum_sgd = ode_resolvent_log_implicit_and_momentum_dynamic(
             ode_inputs_deterministic,
@@ -350,29 +374,29 @@ def main():
         #Runs the stochastic version of SGD
         # sgdopt = optimizers.dana_optimizer(g1,g2,g3_sgd,Delta)
         # key, newkey = random.split(key)
-        # sgdtimes, sgdlosses = lsq_streaming_optax_simple(newkey, 
-        #                         problem.get_data, 
-        #                         SGDBATCH, 
-        #                         STEPS, 
-        #                         sgdopt, 
-        #                         jnp.zeros((problem.d,1)), 
+        # sgdtimes, sgdlosses = lsq_streaming_optax_simple(newkey,
+        #                         problem.get_data,
+        #                         SGDBATCH,
+        #                         STEPS,
+        #                         sgdopt,
+        #                         jnp.zeros((problem.d,1)),
         #                         problem.get_population_risk)
 
         # Debug: Print some statistics
-        print(f"    Fixed1: risk range [{jnp.min(risks_fixed1):.2e}, {jnp.max(risks_fixed1):.2e}], momentum range [{jnp.min(momentum_fixed1):.2e}, {jnp.max(momentum_fixed1):.2e}]")
-        print(f"    Fixed2: risk range [{jnp.min(risks_fixed2):.2e}, {jnp.max(risks_fixed2):.2e}], momentum range [{jnp.min(momentum_fixed2):.2e}, {jnp.max(momentum_fixed2):.2e}]")
-        print(f"    Dynamic: risk range [{jnp.min(risks_dynamic):.2e}, {jnp.max(risks_dynamic):.2e}], momentum range [{jnp.min(momentum_dynamic):.2e}, {jnp.max(momentum_dynamic):.2e}]")
+        print(f"    DanaStar-Constant: risk range [{jnp.min(risks_fixed1):.2e}, {jnp.max(risks_fixed1):.2e}], momentum range [{jnp.min(momentum_fixed1):.2e}, {jnp.max(momentum_fixed1):.2e}]")
+        print(f"    DanaStar-Decaying: risk range [{jnp.min(risks_fixed2):.2e}, {jnp.max(risks_fixed2):.2e}], momentum range [{jnp.min(momentum_fixed2):.2e}, {jnp.max(momentum_fixed2):.2e}]")
+        print(f"    DanaStar-Auto: risk range [{jnp.min(risks_dynamic):.2e}, {jnp.max(risks_dynamic):.2e}], momentum range [{jnp.min(momentum_dynamic):.2e}, {jnp.max(momentum_dynamic):.2e}]")
         print(f"    SGD: risk range [{jnp.min(risks_sgd):.2e}, {jnp.max(risks_sgd):.2e}], momentum range [{jnp.min(momentum_sgd):.2e}, {jnp.max(momentum_sgd):.2e}]")
 
         # Plot risks
         ax_risk = axes_risk[idx]
-        ax_risk.loglog(times_fixed1, risks_fixed1, label='Fixed DANA-Constant (exp=0.0)',
+        ax_risk.loglog(times_fixed1, risks_fixed1, label='DanaStar-Constant (exp=0.0)',
                        color='tab:blue', linewidth=LINE_WIDTH, alpha=0.8)
-        ax_risk.loglog(times_fixed2, risks_fixed2, label='Fixed g3 (exp=-1/(2α))',
+        ax_risk.loglog(times_fixed2, risks_fixed2, label='DanaStar-Decaying (exp=-1/(2α))',
                        color='tab:orange', linewidth=LINE_WIDTH, alpha=0.8)
-        ax_risk.loglog(times_sgd, risks_sgd, label='sgd',
+        ax_risk.loglog(times_sgd, risks_sgd, label='SGD',
                        color='tab:red', linewidth=LINE_WIDTH, alpha=0.8)
-        ax_risk.loglog(times_dynamic, risks_dynamic, label='Dynamic g3',
+        ax_risk.loglog(times_dynamic, risks_dynamic, label='DanaStar-Auto',
                        color='tab:green', linewidth=LINE_WIDTH, alpha=0.8, linestyle='--')
 
         # ax_risk.loglog(danaconstanttimes, danaconstantlosses, label='Fixed g3 (exp=-1.0)',
@@ -406,13 +430,13 @@ def main():
         mask_dynamic = jnp.isfinite(ratio_dynamic) & (ratio_dynamic > 0)
         mask_sgd = jnp.isfinite(ratio_sgd) & (ratio_sgd > 0)
 
-        ax_ratio.loglog(times_fixed1[mask_fixed1], ratio_fixed1[mask_fixed1], label='DANA-Constant (exp=0.0)',
+        ax_ratio.loglog(times_fixed1[mask_fixed1], ratio_fixed1[mask_fixed1], label='DanaStar-Constant (exp=0.0)',
                         color='tab:blue', linewidth=LINE_WIDTH)
-        ax_ratio.loglog(times_fixed2[mask_fixed2], ratio_fixed2[mask_fixed2], label='Fixed g3 (exp=-1/(2α))',
+        ax_ratio.loglog(times_fixed2[mask_fixed2], ratio_fixed2[mask_fixed2], label='DanaStar-Decaying (exp=-1/(2α))',
                         color='tab:orange', linewidth=LINE_WIDTH)
-        ax_ratio.loglog(times_sgd[mask_sgd], ratio_sgd[mask_sgd], label='sgd',
+        ax_ratio.loglog(times_sgd[mask_sgd], ratio_sgd[mask_sgd], label='SGD',
                         color='tab:red', linewidth=LINE_WIDTH)
-        ax_ratio.loglog(times_dynamic[mask_dynamic], ratio_dynamic[mask_dynamic], label='Dynamic g3',
+        ax_ratio.loglog(times_dynamic[mask_dynamic], ratio_dynamic[mask_dynamic], label='DanaStar-Auto',
                         color='tab:green', linewidth=LINE_WIDTH, linestyle='--')
 
 
@@ -425,12 +449,12 @@ def main():
         ax_ratio.set_ylim(None, 1)
 
     # Finalize and save plots
-    fig_risk.suptitle(f'Risk Comparison: Fixed vs Dynamic g3 (β={BETA})', fontsize=24)
+    fig_risk.suptitle(f'Risk Comparison: DanaStar with Fixed vs Auto g3 (β={BETA})', fontsize=24)
     fig_risk.tight_layout()
     fig_risk.savefig(OUTPUT_FILE_RISK)
     print(f"\nRisk figure saved to {OUTPUT_FILE_RISK}")
 
-    fig_ratio.suptitle(f'Risk/||y||² Comparison: Fixed vs Dynamic g3 (β={BETA})', fontsize=24)
+    fig_ratio.suptitle(f'Risk/||y||² Comparison: DanaStar with Fixed vs Auto g3 (β={BETA})', fontsize=24)
     fig_ratio.tight_layout()
     fig_ratio.savefig(OUTPUT_FILE_RATIO)
     print(f"Ratio figure saved to {OUTPUT_FILE_RATIO}")
