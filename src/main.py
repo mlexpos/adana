@@ -30,6 +30,7 @@ from optim.sign import Signum
 from optim.soap import SOAP
 from optim.sophia import SophiaG
 from optim.dana_star import DANA_STAR, DANA
+from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
 
@@ -290,6 +291,17 @@ def main(args, parser):
             lr=args.lr,
             delta=args.delta,
             kappa=args.kappa,
+            weight_decay=args.weight_decay,
+            clipsnr=args.clipsnr,
+            weight_time=args.weight_time,
+            wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
+        )
+    elif args.opt == "dana-star-mk4":
+        opt = DANA_STAR_MK4(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
             weight_decay=args.weight_decay,
             clipsnr=args.clipsnr,
             weight_time=args.weight_time,
