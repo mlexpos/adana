@@ -7,14 +7,15 @@
 #SBATCH --gpus=1
 #SBATCH --propagate=NONE 
 #SBATCH --account=paquettee-2025
-#SBATCH -o slurm.%N.%j.out # STDOUT
-#SBATCH -e slurm.%N.%j.err # STDERR
+#SBATCH -o logs/slurm.%N.%j.out # STDOUT
+#SBATCH -e logs/slurm.%N.%j.err # STDERR
 #SBATCH --signal=B:TERM@60
 
 #export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=03c99521910548176ebfa4f418db1c9602e2afa3
 export WANDB_PROJECT=danastar
 export WANDB_ENTITY="ep-rmt-ml-opt"
+export DATASETS_DIR="/home/math/elliot.paquette@MCGILL.CA/danastar/src/data/datasets"
 
 #module load cuda/cuda-12.6
 module load miniconda/miniconda-winter2025
@@ -30,13 +31,18 @@ cd /home/math/elliot.paquette@MCGILL.CA/danastar/
 
 cd /home/math/elliot.paquette@MCGILL.CA/danastar/
 
-#bash ./scripts/diloco35m/adamw.sh
-#bash ./scripts/diloco35m/dana-star.sh
-bash ./scripts/diloco90m/adamw.sh
-bash ./scripts/diloco90m/dana-star.sh
-bash ./scripts/diloco180m/adamw.sh
-bash ./scripts/diloco180m/dana-star.sh
-bash ./scripts/diloco330m/adamw.sh
-bash ./scripts/diloco330m/dana-star.sh
-bash ./scripts/diloco550m/adamw.sh
-bash ./scripts/diloco550m/dana-star.sh
+bash ./scripts/diloco-small/dana-star-mk4.sh
+#bash ./scripts/diloco35m/adamw-nozloss.sh
+#bash ./scripts/diloco35m/dana-star-nozloss_2.sh
+#bash ./scripts/diloco90m/adamw-nozloss.sh
+#bash ./scripts/diloco90m/dana-star-nozloss_2.sh
+#bash ./scripts/diloco180m/dana-star-nozloss_2.sh
+#bash ./scripts/diloco180m/adamw-nozloss.sh
+#bash ./scripts/diloco180m/dana-star-nozloss.sh
+#bash ./scripts/diloco90m/dana-star.sh
+#bash ./scripts/diloco180m/adamw.sh
+#bash ./scripts/diloco180m/dana-star.sh
+#bash ./scripts/diloco330m/adamw.sh
+#bash ./scripts/diloco330m/dana-star.sh
+#bash ./scripts/diloco550m/adamw.sh
+#bash ./scripts/diloco550m/dana-star.sh
