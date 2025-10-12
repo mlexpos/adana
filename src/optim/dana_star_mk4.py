@@ -173,12 +173,45 @@ class DANA_STAR_MK4(Optimizer):
                 #state["current_kappa_factor"] = (1 + effective_time)**(1-kappa)
                 # Compute momentum terms
                 norm_term = self._norm_term(v, tau, step, epsilon)
-                clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, step) * torch.abs(grad) + epsilon), max=1.0)
+                #0. clip_g3_term = torch.minimum(clipsnr * m**2/((self._tau_reg(tau, step))*torch.sqrt(v) + epsilon),effective_time)
+                #0a.clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #0b. no-norm
+                #1. clip_g3_term = torch.minimum(m**2/(torch.sqrt(v) + epsilon),effective_time)
+                #1a. clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #1b ?no-norm?
+                #2. clip_g3_term = torch.minimum(m**2/((self._tau_reg(tau, step))*torch.sqrt(v) + epsilon),effective_time)
+                #2a.clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #2b. no-norm
+                #3. clip_g3_term = torch.minimum(m**2/((self._tau_reg(tau, step)**(1.5))*torch.sqrt(v) + epsilon),effective_time)
+                #3a.clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #3b.norm-term
+                #4. clip_g3_term = torch.minimum(torch.abs(m)/ (torch.sqrt(v) + epsilon),self._root_tau_reg(tau, step)*effective_time)
+                #5. clip_g3_term = torch.minimum(torch.abs(m)/ (torch.sqrt(v) + epsilon),effective_time)
+
+                #WORKS LIKE CRAP  ##FP16??ERRORS
+                #clip_g3_term = torch.minimum(clipsnr*torch.sqrt((effective_time)*(m**2/(self._tau_reg(tau, step)*v+epsilon))),effective_time)
+                #WORKS GREAT ##FP16??ERRORS
+#                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/(torch.sqrt(v)+epsilon)),effective_time)
+#                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/(self._root_tau_reg(tau, step)*torch.sqrt(v)+epsilon)),effective_time)
+                #clip_g3_term = torch.clamp(clipsnr*(m**2)/(v+epsilon**2)/self._tau_reg(tau, step), max=1.0)*effective_time
+                #clip_g3_term = torch.clamp(clipsnr*(m**2)/(v+epsilon**2)/(self._tau_reg(tau, step)**2), max=1.0)*effective_time
+              
+#  clip_g3_term = torch.minimum(clipsnr*(effective_time)*(torch.abs(m)/(self._root_tau_reg(tau, step)*torch.sqrt(v)+epsilon))**2,effective_time)
+                #clip_g3_term = torch.minimum(clipsnr*(effective_time)*torch.sqrt((m**2/(self._tau_reg(tau, step)*v+epsilon))),effective_time)
+                #clip_g3_term = torch.minimum((effective_time)*clipsnr*(m**2/(self._tau_reg(tau, step)*v+epsilon)),effective_time)
                 
+                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/((torch.sqrt(v)+epsilon)*self._root_tau_reg(tau, step))),effective_time)
+                clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #clip_g3_term = effective_time**0.25
+                #clip_g3_term = effective_time
                 # Compute parameter updates using effective time for g2 and g3 scheduling
-                g2_term = g2 * grad * norm_term * clip_g2_term
-                g3_term = g3 * torch.abs(m) * m / (v + epsilon) 
-                
+                g2_term = g2 * grad * norm_term #* clip_g2_term
+                #g3_term = g3 * torch.abs(m) * m / (v + epsilon) 
+                #clip_g3_term = 0.0*torch.sqrt(torch.mean(m**2))/torch.sqrt(torch.mean(v))
+                g3_term = g3 * clip_g3_term * m * norm_term
+                #g3_term = g3 * clip_g3_term * m / (torch.sqrt(v)+epsilon)
+
                 # Apply the main update
                 update = -(g2_term + g3_term)
 
