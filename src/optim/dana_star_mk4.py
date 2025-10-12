@@ -201,21 +201,20 @@ class DANA_STAR_MK4(Optimizer):
                 #clip_g3_term = torch.minimum((effective_time)*clipsnr*(m**2/(self._tau_reg(tau, step)*v+epsilon)),effective_time)
                 
                 #formula 1
-#                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/((torch.sqrt(v)+epsilon)*self._root_tau_reg(tau, step))),effective_time)
-                
-                #formula 2
-                clip_g3_term = torch.minimum((effective_time)*clipsnr*(torch.abs(m)/(self._tau_reg(tau, step))),effective_time**0.5)
-
-                clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/((torch.sqrt(v)+epsilon)*self._root_tau_reg(tau, step))),effective_time)
                 #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #clip_g3_term = effective_time**0.25
-                #clip_g3_term = effective_time
+                #g3_term = g3 * clip_g3_term * m * norm_term
+
+                #formula 2
+                #clip_g3_term = torch.minimum((effective_time)*clipsnr*(m**2/(self._tau_reg(tau, step)**2)),effective_time)
+                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #g3_term = g3 * clip_g3_term * m * norm_term
+
+                #formula 3 (CORRESPONDS to A,B 0.5/-0.5/KAPPA0.0)
+                g3_term = g3 * torch.sign(m) * self._tau_reg(tau, step)
+                
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term #* clip_g2_term
-                #g3_term = g3 * torch.abs(m) * m / (v + epsilon) 
-                #clip_g3_term = 0.0*torch.sqrt(torch.mean(m**2))/torch.sqrt(torch.mean(v))
-                g3_term = g3 * clip_g3_term * m * norm_term
-                #g3_term = g3 * clip_g3_term * m / (torch.sqrt(v)+epsilon)
 
                 # Apply the main update
                 update = -(g2_term + g3_term)
