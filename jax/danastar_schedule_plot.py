@@ -164,9 +164,10 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
 
         # Compute g3 based on mode
         if g3_mode == 'dynamic':
+            g3 = g3_fn_fixed(time_plus_minus_one)/jnp.sqrt(twice_risk)
             # g3 = g2 * min(risk/||y||^2, 1)
-            risk_ratio = twice_risk / ( 2.0 * momentum_norm + 1e-10)  # Add small epsilon for numerical stability
-            g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( risk_ratio*jnp.sqrt(twice_risk), 1.0)
+            #risk_ratio = twice_risk / ( 2.0 * momentum_norm + 1e-10)  # Add small epsilon for numerical stability
+            #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( risk_ratio*jnp.sqrt(twice_risk), 1.0)
             #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum(momentum_norm**2, twice_risk) #jnp.minimum( momentum_norm**2, 1.0)
             #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.minimum( jnp.maximum( risk_ratio, momentum_norm**2), 0.2)
             #g3 =  g3_fn_fixed(time_plus_minus_one) * jnp.maximum( 1.0/(momentum_norm + 1e-10), 1e-3)
@@ -251,18 +252,19 @@ def main():
         LRscalar = 0.1 / jnp.sqrt(jnp.float32(problem.d))
 
         # Set up DANA optimizer schedules
-        g1 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
+        #g1 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
         g2 = optimizers.powerlaw_schedule(LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
 
         # Two fixed g3 schedules
-        g3_fixed1 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.float32(SGDBATCH) / problem.d * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
-        g3_fixed2 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, -(1.0-h)/(2*alpha), 1)
-#        g3_fixed3 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
-        g3_fixed3 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
+        g3_fixed1 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.float32(SGDBATCH) / problem.d * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 1.0, 1)
+        g3_fixed2 = optimizers.powerlaw_schedule(LRscalar * 0.1 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 1.0-(1.0-h)/(2*alpha), 1)
+        g3_fixed3 = optimizers.powerlaw_schedule(LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace ), 0.0, 0.0, 1)
+        #g3_fixed3 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
         g3_sgd = optimizers.powerlaw_schedule(0.0, 0.0, 0.0, 1)
 
         delta_constant = 4.0 + 2*(alpha + BETA)/(2*alpha)
         Delta = optimizers.powerlaw_schedule(1.0, 0.0, -1.0, delta_constant)
+        g1=Delta
 
         # Get theory parameters
         Keigs_theory, rho_weights = theory.theory_rhos(alpha, BETA, D)

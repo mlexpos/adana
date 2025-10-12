@@ -41,20 +41,26 @@ class ODEInputs:
 # ============================================================================
 # GLOBAL PARAMETERS
 # ============================================================================
-ALPHA = 1.0                   # Fixed alpha value
-BETA = 0.5                    # Fixed beta value
-V = 4000                      # Number of features
-D = 1000                      # Number of parameters
-h = 0.5
+ALPHA = 0.9                    # Fixed alpha value
+BETA = 0.3                     # Fixed beta value
+V = 2000                       # Number of features
+D = 500                        # Number of parameters
+h = 0.0
 SGDBATCH = jnp.int32(D**h)
-STEPS = 10**4                 # Number of steps
+STEPS = 10**5                 # Number of steps
 DT = 10**(-3)                 # ODE time step
 NUM_KAPPA = 30                # Number of kappa values to test
-KAPPA_MIN = -1.5              # Minimum kappa value
-KAPPA_MAX = -0.2              # Maximum kappa value
+#KAPPA_MIN = -1.5             # Minimum kappa value
+#KAPPA_MAX = -0.2             # Maximum kappa value
+KAPPA_MIN = 0.0               # Minimum kappa value
+KAPPA_MAX = 1.0               # Maximum kappa value
 OUTPUT_FILE = 'kappa_sweep.pdf'
 OUTPUT_FILE_RATIO = 'kappa_sweep_ratio.pdf'
 OUTPUT_FILE_RATIO_GRID = 'kappa_sweep_ratio_grid.pdf'
+
+BASE_KAPPA = 1.00          #Schedule looks like t^BASE_KAPPA *gradient-norm-squared^(A) *momentum-norm-squared^(B), clipped to [t^0,t^1]
+A=-1.00                      #Heuristic, power on twice-risk
+B=1.00                      #Heuristic, power on momentum-squared
 
 # Plotting parameters
 FIGURE_SIZE = (25, 6.5)
@@ -73,6 +79,10 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
     D: int,
     t_max: float,
     dt: float,
+    g3_mode: str = 'fixed',  # 'fixed' or 'dynamic'
+    power_A: float = A,  # Power on twice-risk for dynamic mode
+    power_B: float = B,  # Power on momentum-squared for dynamic mode
+    base_kappa: float = BASE_KAPPA, # Base kappa value for dynamic mode
 ):
     """
     DanaStar ODE solver with fixed g3 schedule.
@@ -152,7 +162,14 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
         # DanaStar scaling: 1/sqrt(twice_risk)
         risk_scaling = 1.0 / jnp.sqrt(twice_risk + 1e-10)
 
-        g3 = g3_fn(time_plus_minus_one)
+        # Compute g3 based on mode
+        if g3_mode == 'dynamic':
+            momentum_norm = jnp.where(momentum_norm == 0.0, 1.0, momentum_norm)
+            factor = jnp.power(twice_risk, power_A) * jnp.power(momentum_norm, power_B)
+            factor = jnp.minimum(jnp.maximum(factor*jnp.exp(base_kappa*time), 1.0),jnp.exp(time))
+            g3 = g3_fn(time_plus_minus_one) * factor
+        else:
+            g3 = g3_fn(time_plus_minus_one)
 
         # DanaStar: scale g2,g3 by risk_scaling
         g1 = g1_fn(time_plus)
@@ -205,6 +222,9 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
 # ============================================================================
 
 def main():
+    # Access global constants
+    global A, B, BASE_KAPPA
+
     # Set up plotting style
     style.use('default')
     plt.rcParams['font.weight'] = 'light'
@@ -241,10 +261,11 @@ def main():
     )
 
     # Set up fixed g1, g2, and delta schedules
-    g1 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
+    #g1 = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
     g2 = optimizers.powerlaw_schedule(LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace), 0.0, 0.0, 1)
     delta_constant = 4.0 + 2*(ALPHA + BETA)/(2*ALPHA)
     Delta = optimizers.powerlaw_schedule(1.0, 0.0, -1.0, delta_constant)
+    g1=Delta
 
     # Generate kappa values (excluding endpoints)
     kappa_values = jnp.linspace(KAPPA_MIN, KAPPA_MAX, NUM_KAPPA, endpoint=False)
@@ -259,8 +280,8 @@ def main():
         print(f"\n  [{i+1}/{NUM_KAPPA}] Running kappa = {kappa:.4f}...")
 
 
-        g3constant = 1.0
-        #g3constant = LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace)
+        #g3constant = 1.0
+        g3constant = LRscalar * 0.5 * jnp.minimum(1.0, jnp.float32(SGDBATCH) / problem.population_trace)
         # Create g3 schedule with current kappa
         g3 = optimizers.powerlaw_schedule(
             g3constant,
@@ -279,7 +300,8 @@ def main():
             SGDBATCH,
             num_grid_points,
             STEPS,
-            DT
+            DT,
+            g3_mode='fixed'
         )
 
         # Convert to risk (from twice_risk)
@@ -291,6 +313,23 @@ def main():
         all_momentum_squared.append(momentum_norms)
 
         print(f"      Final risk: {risks[-1]:.6e}, Final ||y||²: {momentum_norms[-1]:.6e}")
+
+    # Run dynamic g3 schedule
+    print(f"\n  Running dynamic g3 schedule...")
+    #g3_dynamic = optimizers.powerlaw_schedule(1.0, 0.0, 0.0, 1)
+    g3_dynamic = optimizers.powerlaw_schedule(g3constant, 0.0, 0.0, 1)
+    dana_hparams_dynamic = DanaHparams(g1, g2, g3_dynamic, Delta)
+    times_dynamic, twice_risks_dynamic, momentum_norms_dynamic = ode_resolvent_log_implicit_and_momentum_dynamic(
+        ode_inputs_deterministic,
+        dana_hparams_dynamic,
+        SGDBATCH,
+        num_grid_points,
+        STEPS,
+        DT,
+        g3_mode='dynamic'
+    )
+    risks_dynamic = 0.5 * twice_risks_dynamic
+    print(f"      Final risk: {risks_dynamic[-1]:.6e}, Final ||y||²: {momentum_norms_dynamic[-1]:.6e}")
 
     # Extract values at specific iteration counts
     # Generate checkpoints: 10^k for k=1,2,3,...,N where 10^N <= STEPS
@@ -304,6 +343,9 @@ def main():
     # For each checkpoint, find the closest time index and extract risk/momentum values
     checkpoint_risks = {T: [] for T in iteration_checkpoints}
     checkpoint_momentum = {T: [] for T in iteration_checkpoints}
+    # Also extract from dynamic run for heuristic calculation
+    checkpoint_risks_dynamic = {}
+    checkpoint_momentum_dynamic = {}
 
     for times, risks, momentum in zip(all_times, all_risks, all_momentum_squared):
         for T in iteration_checkpoints:
@@ -311,6 +353,12 @@ def main():
             idx = jnp.argmin(jnp.abs(times - T))
             checkpoint_risks[T].append(risks[idx])
             checkpoint_momentum[T].append(momentum[idx])
+
+    # Extract from dynamic run
+    for T in iteration_checkpoints:
+        idx = jnp.argmin(jnp.abs(times_dynamic - T))
+        checkpoint_risks_dynamic[T] = risks_dynamic[idx]
+        checkpoint_momentum_dynamic[T] = momentum_norms_dynamic[idx]
 
     # Convert to arrays
     for T in iteration_checkpoints:
@@ -346,18 +394,26 @@ def main():
     # Plot 1: Risk curves (no legend, will add colorbar)
     for i, (times, risks, kappa) in enumerate(zip(all_times, all_risks, kappa_values)):
         ax1.loglog(times, risks, linewidth=LINE_WIDTH, color=colors[i], alpha=0.8)
+    # Add dynamic curve in red
+    ax1.loglog(times_dynamic, risks_dynamic, linewidth=LINE_WIDTH + 0.5, color='red',
+               alpha=0.9, linestyle='--', label='Dynamic g3')
     ax1.set_xlabel('Iterations', fontsize=16)
     ax1.set_ylabel('Risk', fontsize=16)
     ax1.set_title('Risk Curves', fontsize=18)
+    ax1.legend(fontsize=12, loc='best')
     ax1.grid(True, alpha=0.3)
     ax1.set_xlim(1, None)
 
     # Plot 2: Momentum-squared curves (no legend, will add colorbar)
     for i, (times, momentum_sq, kappa) in enumerate(zip(all_times, all_momentum_squared, kappa_values)):
         ax2.loglog(times, momentum_sq, linewidth=LINE_WIDTH, color=colors[i], alpha=0.8)
+    # Add dynamic curve in red
+    ax2.loglog(times_dynamic, momentum_norms_dynamic, linewidth=LINE_WIDTH + 0.5, color='red',
+               alpha=0.9, linestyle='--', label='Dynamic g3')
     ax2.set_xlabel('Iterations', fontsize=16)
     ax2.set_ylabel('||y||²', fontsize=16)
     ax2.set_title('Momentum² Curves', fontsize=18)
+    ax2.legend(fontsize=12, loc='best')
     ax2.grid(True, alpha=0.3)
     ax2.set_xlim(1, None)
 
@@ -376,12 +432,36 @@ def main():
     for idx, (ax, T) in enumerate(zip(checkpoint_axes, iteration_checkpoints)):
         ax_twin = ax.twinx()
 
-        # Compute log(risk) / log(T)
+        # Compute log(risk) / log(T) and log(momentum) / log(T)
         risk_ratio = jnp.log(checkpoint_risks[T]) / jnp.log(T)
         momentum_ratio = jnp.log(checkpoint_momentum[T]) / jnp.log(T)
 
+        # Compute difference ratio: (log(risk) - log(||y||²)) / log(T)
+        log_risk = jnp.log(checkpoint_risks[T])
+        log_momentum = jnp.log(checkpoint_momentum[T])
+        diff_ratio = (A*log_risk + B*log_momentum) / jnp.log(T) + BASE_KAPPA
+
+        # Find kappa that minimizes risk
+        min_risk_idx = jnp.argmin(checkpoint_risks[T])
+        optimal_kappa = kappa_values[min_risk_idx]
+
         # Add y=x line in dotted black
         ax.plot(kappa_values, kappa_values, 'k:', linewidth=1.5, label='y=x', zorder=0)
+
+        # Add vertical line at optimal kappa (blue like risk curve)
+        ax.axvline(x=optimal_kappa, color='blue', linestyle='-', linewidth=2,
+                   label=f'Min Risk κ={optimal_kappa:.3f}', zorder=5)
+
+        # Compute effective kappa from dynamic algorithm at this checkpoint
+        # effective_kappa = (A*log(twice_risk) + B*log(momentum_norm²))/log(T)
+        twice_risk_dynamic = checkpoint_risks_dynamic[T] * 2.0
+        momentum_norm_sq_dynamic = checkpoint_momentum_dynamic[T]
+        effective_kappa = (A * jnp.log(twice_risk_dynamic) + B * jnp.log(momentum_norm_sq_dynamic)) / jnp.log(T)
+        effective_kappa = jnp.minimum(jnp.maximum(effective_kappa+BASE_KAPPA, 0), 1.0)
+
+        # Add effective kappa vertical line (red, dashed)
+        ax.axvline(x=effective_kappa, color='red', linestyle='--', linewidth=2,
+                   label=f'Effective κ={effective_kappa:.3f}', zorder=5)
 
         line1 = ax.plot(kappa_values, risk_ratio, 'o-', linewidth=LINE_WIDTH,
                         markersize=8, color='tab:blue', label='log(Risk)/log(T)')
@@ -395,11 +475,18 @@ def main():
         ax_twin.set_ylabel('log(||y||²)/log(T)', fontsize=14, color='tab:orange')
         ax_twin.tick_params(axis='y', labelcolor='tab:orange')
 
+        # Add the difference ratio on the main axis
+        line3 = ax.plot(kappa_values, diff_ratio, 'D-', linewidth=LINE_WIDTH,
+                       markersize=6, color='tab:green', label=f'{A:.2f}·log(R)+{B:.2f}·log(||y||²))/log(T)', alpha=0.7)
+
         ax.set_title(f'T = {T:.0e}', fontsize=18)
 
         # Add legend only to first checkpoint
         if idx == 0:
-            lines = line1 + line2
+            # Include both vertical lines in legend (min risk and effective kappa)
+            vline_min_risk = ax.get_lines()[1]  # The min risk vertical line (blue)
+            vline_effective = ax.get_lines()[2]  # The effective kappa vertical line (red, dashed)
+            lines = line1 + line3 + line2 + [vline_min_risk, vline_effective]
             labels = [l.get_label() for l in lines]
             ax.legend(lines, labels, fontsize=10, loc='upper left')
 
@@ -413,7 +500,7 @@ def main():
     print(f"{'='*60}")
 
     # ========================================================================
-    # Create second figure with ratio (log risk - log ||y||²)/log(T)
+    # Create second figure with ratio (A*log risk + B*log ||y||²)/log(T)
     # ========================================================================
 
     fig2_width = 5 * num_checkpoints
@@ -430,26 +517,33 @@ def main():
         # Compute (log(risk) - log(||y||²)) / log(T)
         log_risk = jnp.log(checkpoint_risks[T])
         log_momentum = jnp.log(checkpoint_momentum[T])
-        ratio = (1.5*log_risk - log_momentum) / jnp.log(T)
+        ratio = (A*log_risk + B*log_momentum) / jnp.log(T) + BASE_KAPPA
+
+        # Find kappa that minimizes risk
+        min_risk_idx = jnp.argmin(checkpoint_risks[T])
+        optimal_kappa = kappa_values[min_risk_idx]
 
         # Add y=x line in dotted black
         ax.plot(kappa_values, kappa_values, 'k:', linewidth=1.5, label='y=x', zorder=0)
+
+        # Add vertical line at optimal kappa (blue like risk curve)
+        ax.axvline(x=optimal_kappa, color='blue', linestyle='-', linewidth=2,
+                   label=f'Min Risk κ={optimal_kappa:.3f}', zorder=5)
 
         # Plot the ratio
         ax.plot(kappa_values, ratio, 'o-', linewidth=LINE_WIDTH,
                 markersize=8, color='tab:green')
 
         ax.set_xlabel('κ', fontsize=16)
-        ax.set_ylabel('(log(Risk) - log(||y||²))/log(T)', fontsize=14)
+        ax.set_ylabel(f'({A:.2f}·log(Risk) - {B:.2f}·log(||y||²))/log(T)', fontsize=14)
         ax.set_title(f'T = {T:.0e}', fontsize=18)
         ax.grid(True, alpha=0.3)
 
-        # Add y=x label only to first plot
+        # Add legend only to first plot
         if idx == 0:
-            ax.plot([], [], 'k:', linewidth=1.5, label='y=x')
             ax.legend(fontsize=12)
 
-    fig2.suptitle(f'DanaStar: Risk^1.5-Momentum Ratio vs κ (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
+    fig2.suptitle(f'DanaStar: Risk^(0.25)+Momentum Ratio vs κ (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
                   fontsize=20)
     fig2.tight_layout()
     fig2.savefig(OUTPUT_FILE_RATIO)
@@ -457,12 +551,12 @@ def main():
     print(f"{'='*60}")
 
     # ========================================================================
-    # Create third figure with grid of (A*log(risk) - B*log(||y||²))/log(T)
+    # Create third figure with grid of (A*log(risk) + B*log(||y||²))/log(T)
     # ========================================================================
 
     import numpy as np
-    A_values = np.arange(0.5, 1.75, 0.25)
-    B_values = np.arange(0.5, 1.75, 0.25)
+    A_values = np.arange(0.0, 1.25, 0.25)
+    B_values = np.arange(0.0, 1.25, 0.25)
     num_A = len(A_values)
     num_B = len(B_values)
 
@@ -470,25 +564,32 @@ def main():
     for T in iteration_checkpoints:
         fig3 = plt.figure(figsize=(num_B * 4, num_A * 3.5))
 
-        for i, A in enumerate(A_values):
-            for j, B in enumerate(B_values):
+        for i, A_val in enumerate(A_values):
+            for j, B_val in enumerate(B_values):
                 ax = plt.subplot(num_A, num_B, i * num_B + j + 1)
 
-                # Compute (A*log(risk) - B*log(||y||²)) / log(T)
+                # Compute (A*log(risk) + B*log(||y||²)) / log(T)
                 log_risk = jnp.log(checkpoint_risks[T])
                 log_momentum = jnp.log(checkpoint_momentum[T])
-                ratio = (A * log_risk - B * log_momentum) / jnp.log(T)
+                ratio = (A_val * log_risk + B_val * log_momentum) / jnp.log(T) + BASE_KAPPA
+
+                # Find kappa that minimizes risk
+                min_risk_idx = jnp.argmin(checkpoint_risks[T])
+                optimal_kappa = kappa_values[min_risk_idx]
 
                 # Add y=x line in dotted black
                 ax.plot(kappa_values, kappa_values, 'k:', linewidth=1.5, zorder=0)
+
+                # Add vertical line at optimal kappa (blue like risk curve)
+                ax.axvline(x=optimal_kappa, color='blue', linestyle='-', linewidth=1.5, zorder=5)
 
                 # Plot the ratio
                 ax.plot(kappa_values, ratio, 'o-', linewidth=2,
                         markersize=6, color='tab:purple')
 
                 ax.set_xlabel('κ', fontsize=12)
-                ax.set_ylabel(f'({A:.2f}·log(R) - {B:.2f}·log(||y||²))/log(T)', fontsize=10)
-                ax.set_title(f'A={A:.2f}, B={B:.2f}', fontsize=12)
+                ax.set_ylabel(f'({A_val:.2f}·log(R) - {B_val:.2f}·log(||y||²))/log(T)', fontsize=10)
+                ax.set_title(f'A={A_val:.2f}, B={B_val:.2f}', fontsize=12)
                 ax.grid(True, alpha=0.3)
 
         fig3.suptitle(f'DanaStar: Weighted Ratio Grid at T={T:.0e} (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
