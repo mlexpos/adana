@@ -59,7 +59,7 @@ done
 
 echo "Using lr=$LR and wd_ts=$WD_TS"
 
-torchrun --standalone --nproc_per_node=2 ./src/main.py --config_format base --model diloco \
+torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
     --n_embd 896 --qkv_dim 64 --n_head 14 --n_layer 10 \
