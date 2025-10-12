@@ -212,6 +212,10 @@ class DANA_STAR_MK4(Optimizer):
 
                 #formula 3 (CORRESPONDS to A,B 0.5/-0.5/KAPPA0.0)
                 g3_term = g3 * clipsnr * torch.sign(m) * self._tau_reg(tau, step)
+
+                #formula 4 (CORRESPONDS to A,B 0.0/0.5/KAPPA0.0)
+                g3_term = g3 * ( 0.125*torch.sign(m) * self._tau_reg(tau, step) + clipsnr * m * norm_term)
+
                 
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term #* clip_g2_term
