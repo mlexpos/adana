@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=aip-gidelgau
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
@@ -11,7 +11,7 @@ export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=bece9f2099e3e85e0ae9922002616cf20bd26946
 export WANDB_PROJECT=danastar
 export WANDB_ENTITY=ep-rmt-ml-opt
-export WANDB_RUN_GROUP=Ademamix_dana_330M_lr_weight_decay_gamma3factor_sweeps
+export WANDB_RUN_GROUP=Ademamix_dana_180M_lr_wd_sweep_new
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
 
 module load arrow/21.0.0
@@ -41,11 +41,11 @@ srun --ntasks=4 --cpus-per-task=$SLURM_CPUS_PER_GPU \
      bash -c '
         i=$SLURM_LOCALID                 # 0..3
         # Define learning rates for each GPU (4 values)
-        lrs=(1e-5 2e-5 4e-5 8e-5)
+        lrs=(1e-4 2e-4 4e-4 7e-4)
         
         # Define grid parameters
-        opts=("dana")
-        w=(2.0 4.0 8.0)             # 3 values
+        opts=("dana" "ademamix")
+        w=(3.0 4.0 5.0)             # 3 values
         
         # Parse GRID_BATCH tuple
         IFS=',' read -r wd_idx opt_idx <<< "$GRID_BATCH"
@@ -57,22 +57,25 @@ srun --ntasks=4 --cpus-per-task=$SLURM_CPUS_PER_GPU \
         
         echo "GRID_BATCH=$GRID_BATCH, GPU $i: opt=$opt, wd=$wd, lr=$lr"
         
-        wd=$(awk "BEGIN {print $w / $lr / 129312}")
+        # lr=$(awk "BEGIN {print $lr / 2}")
+        wd=$(awk "BEGIN {print $w / $lr / 77527}")
 
         DATASETS_DIR="$HOME/links/scratch/fineweb"
 
         uv run torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --model diloco \
                 --distributed_backend nccl --compile \
-                --n_embd 1280 --qkv_dim 64 --n_head 20 --n_layer 15 \
-                --mlp_hidden_dim 5120 \
+                --n_embd 1024 --qkv_dim 64 --n_head 16 --n_layer 12 \
+                --mlp_hidden_dim 4096 \
                 --batch_size 32 --sequence_length 2048 --acc_steps 1 \
                 --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
-                --iterations 129312 \
-                --dropout 0.0 --warmup_steps 2586 --grad_clip 0.5 --seed 0 \
+                --iterations 77527 \
+                --dropout 0.0 --warmup_steps 1551 --grad_clip 0.5 --seed 0 \
                 --z_loss_coeff 0.0 \
-                --opt $opt --lr $lr --delta 8 --kappa 0.75 --weight_decay $wd \
-                --beta1 0.9 --use_v_ema --v_ema_beta 0.999 --gamma_3_factor 1.0\
+                --opt $opt --lr $lr --weight_decay $wd \
+                --beta1 0.9 --beta2 0.999 --use_v_ema --v_ema_beta 0.999 \
                 --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
+                --delta 8 --kappa 0.75 --gamma_3_factor 1.0 \
+                --adema_beta3_warmup 77527 --adema_alpha_warmup 77527 \
                 --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
                 --eval_interval 115
         '

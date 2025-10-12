@@ -51,6 +51,10 @@ parser.add_argument('--learning-rate', type=float, default=0.1,
                     help='Optimizer learning rate for power law fitting (default: 0.1)')
 parser.add_argument('--exclude-small', action='store_true',
                     help='Exclude small model size (4 layers) from the fit')
+parser.add_argument('--fit-total-params', action='store_true',
+                    help='Include fit using total non-normalization parameters (default: off)')
+parser.add_argument('--fit-compute', action='store_true',
+                    help='Include fit using compute: (non-emb)*(total_params)*20/(32*2048) (default: off)')
 args = parser.parse_args()
 
 # Map optimizer abbreviations
@@ -61,10 +65,27 @@ optimizer_type = optimizer_map[args.optimizer]
 # DIRECT POWER LAW FITTING FUNCTIONS
 # =============================================================================
 
+def compute_non_embedding_params(n_head, qkv_dim, n_layer):
+    """Compute non-embedding parameters: (H*Q)*(Q*H)*(3+8)*L"""
+    return (n_head * qkv_dim) * (qkv_dim * n_head) * (3 + 8) * n_layer
+
+def compute_total_non_norm_params(n_head, qkv_dim, n_layer):
+    """Compute total non-normalization parameters: (H*Q)*(Q*H)*(3+8)*L + (H*Q*2*50340)"""
+    non_emb = compute_non_embedding_params(n_head, qkv_dim, n_layer)
+    return non_emb + (n_head * qkv_dim * 2 * 50340)
+
+def compute_compute(n_head, qkv_dim, n_layer):
+    """Compute compute metric: (non-emb) * (total_params) * 20 / (32 * 2048)"""
+    non_emb = compute_non_embedding_params(n_head, qkv_dim, n_layer)
+    total_params = compute_total_non_norm_params(n_head, qkv_dim, n_layer)
+    return non_emb * total_params * 20 / (32 * 2048)
+
 @jit
-def power_law_function(n_layer, A, B):
-    """Power law function: LR = A * (n_layer)^B"""
-    return A * (n_layer ** B)
+def power_law_function(params, A, B):
+    """Power law function: LR = A * (params)^B"""
+    # Ensure params is float to avoid int32 overflow
+    params_float = jnp.asarray(params, dtype=jnp.float32)
+    return A * (params_float ** B)
 
 def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1):
     """
@@ -161,12 +182,12 @@ def load_wandb_data_simple(project_name, group_name, optimizer_type, dataset_fil
 # DIRECT WEIGHTED POWER LAW FITTING
 # =============================================================================
 
-def fit_power_law_weighted(n_layers_list, lrs_list, weights_list, n_steps=5000, learning_rate=0.1):
+def fit_power_law_weighted(params_list, lrs_list, weights_list, n_steps=5000, learning_rate=0.1):
     """
-    Fit power law LR = A * (n_layer)^B using weighted MSE loss with Adagrad optimization.
+    Fit power law LR = A * (params)^B using weighted MSE loss with Adagrad optimization.
 
     Args:
-        n_layers_list: List of n_layer values
+        params_list: List of parameter count values (non-embedding or total non-norm)
         lrs_list: List of corresponding LRs
         weights_list: List of weights for each data point
         n_steps: Number of optimization steps
@@ -176,57 +197,57 @@ def fit_power_law_weighted(n_layers_list, lrs_list, weights_list, n_steps=5000, 
         (A, B): Fitted parameters
     """
     # Convert to JAX arrays
-    n_layers = jnp.array(n_layers_list, dtype=jnp.float32)
+    params_arr = jnp.array(params_list, dtype=jnp.float32)
     lrs = jnp.array(lrs_list, dtype=jnp.float32)
     weights = jnp.array(weights_list, dtype=jnp.float32)
 
     # Take log of LRs for log-space fitting
     log_lrs = jnp.log(lrs)
-    log_n_layers = jnp.log(n_layers)
+    log_params = jnp.log(params_arr)
 
     # Initialize parameters
-    # log(LR) = log(A) + B * log(n_layer)
+    # log(LR) = log(A) + B * log(params)
     # Initial guess: log(A) ≈ log(1e-3), B ≈ -0.5
-    params = jnp.array([jnp.log(1e-3), -0.5])
+    fit_params = jnp.array([jnp.log(1e-3), -0.5])
 
     @jit
-    def loss_fn(params):
-        log_A, B = params
+    def loss_fn(fit_params):
+        log_A, B = fit_params
 
         # Predictions in log space
-        # log(LR) = log(A) + B * log(n_layer)
-        pred_log_lrs = log_A + B * log_n_layers
+        # log(LR) = log(A) + B * log(params)
+        pred_log_lrs = log_A + B * log_params
 
-        # Weighted MSE loss in log space (multiply weights by n_layer)
+        # Weighted MSE loss in log space (multiply weights by params)
         residuals = (log_lrs - pred_log_lrs) ** 2
-        combined_weights = weights * n_layers
+        combined_weights = weights * params_arr
         weighted_loss = jnp.sum(combined_weights * residuals) / jnp.sum(combined_weights)
 
         return weighted_loss
 
     # Set up optimizer
     optimizer = optax.adagrad(learning_rate)
-    opt_state = optimizer.init(params)
+    opt_state = optimizer.init(fit_params)
 
     # JIT compile gradient
     grad_fn = jit(grad(loss_fn))
 
     # Optimization loop
     best_loss = float('inf')
-    best_params = params
+    best_params = fit_params
 
     for step in range(n_steps):
-        grads = grad_fn(params)
+        grads = grad_fn(fit_params)
         updates, opt_state = optimizer.update(grads, opt_state)
-        params = optax.apply_updates(params, updates)
+        fit_params = optax.apply_updates(fit_params, updates)
 
-        current_loss = float(loss_fn(params))
+        current_loss = float(loss_fn(fit_params))
         if current_loss < best_loss:
             best_loss = current_loss
-            best_params = params
+            best_params = fit_params
 
         if step % 1000 == 0 or step == n_steps - 1:
-            log_A, B = params
+            log_A, B = fit_params
             A = float(jnp.exp(log_A))
             print(f"  Step {step:5d}: loss={current_loss:.6e}, A={A:.6e}, B={B:.4f}")
 
@@ -240,17 +261,21 @@ def fit_power_law_weighted(n_layers_list, lrs_list, weights_list, n_steps=5000, 
 def collect_weighted_data_for_models(optimizer_type, target_omega, top_k, dataset, project, exclude_small=False):
     """
     Collect top-K LRs for each model size at target omega, with weights.
-    Returns lists of n_layers, lrs, and weights for power law fitting.
+    Returns lists of non-embedding params, total non-norm params, compute, lrs, and weights for power law fitting.
 
     Args:
         exclude_small: If True, exclude small model (n_layer=4) from fitting data
     """
     model_configs = get_models_by_optimizer(optimizer_type)
 
-    all_n_layers = []
+    all_non_emb_params = []
+    all_total_params = []
+    all_compute = []
     all_lrs = []
     all_weights = []
-    all_n_layers_excluded = []  # For plotting excluded points
+    all_non_emb_params_excluded = []  # For plotting excluded points
+    all_total_params_excluded = []
+    all_compute_excluded = []
     all_lrs_excluded = []
     all_weights_excluded = []
     results = {}
@@ -280,32 +305,54 @@ def collect_weighted_data_for_models(optimizer_type, target_omega, top_k, datase
         if len(top_k_data) == 0:
             continue
 
-        # Add to global lists (or excluded lists if small model and exclude_small=True)
+        # Compute parameter counts
         n_layer = model_info['n_layer']
+        n_head = model_info['n_head']
+        qkv_dim = model_info['qkv_dim']
+        non_emb_params = compute_non_embedding_params(n_head, qkv_dim, n_layer)
+        total_params = compute_total_non_norm_params(n_head, qkv_dim, n_layer)
+        compute_metric = compute_compute(n_head, qkv_dim, n_layer)
+
+        print(f"  Non-embedding params: {non_emb_params:,}")
+        print(f"  Total non-norm params: {total_params:,}")
+        print(f"  Compute: {compute_metric:.2e}")
+
+        # Add to global lists (or excluded lists if small model and exclude_small=True)
         is_small = (n_layer == 4)
 
         if exclude_small and is_small:
             print(f"  Excluding small model (n_layer=4) from fit")
             for item in top_k_data:
-                all_n_layers_excluded.append(n_layer)
+                all_non_emb_params_excluded.append(non_emb_params)
+                all_total_params_excluded.append(total_params)
+                all_compute_excluded.append(compute_metric)
                 all_lrs_excluded.append(item['lr'])
                 all_weights_excluded.append(item['weight'])
         else:
             for item in top_k_data:
-                all_n_layers.append(n_layer)
+                all_non_emb_params.append(non_emb_params)
+                all_total_params.append(total_params)
+                all_compute.append(compute_metric)
                 all_lrs.append(item['lr'])
                 all_weights.append(item['weight'])
 
         # Store for plotting
         results[model_key] = {
             'n_layer': n_layer,
+            'n_head': n_head,
+            'qkv_dim': qkv_dim,
+            'non_emb_params': non_emb_params,
+            'total_params': total_params,
+            'compute': compute_metric,
             'closest_omega': closest_omega,
             'top_k_data': top_k_data,
             'data_df': data_df,
             'excluded': exclude_small and is_small
         }
 
-    return all_n_layers, all_lrs, all_weights, all_n_layers_excluded, all_lrs_excluded, all_weights_excluded, results
+    return (all_non_emb_params, all_total_params, all_compute, all_lrs, all_weights,
+            all_non_emb_params_excluded, all_total_params_excluded, all_compute_excluded,
+            all_lrs_excluded, all_weights_excluded, results)
 
 # =============================================================================
 # MAIN EXECUTION
@@ -322,7 +369,8 @@ if __name__ == '__main__':
     print("="*70)
 
     # Collect weighted data from all model sizes
-    n_layers, lrs, weights, n_layers_exc, lrs_exc, weights_exc, model_results = collect_weighted_data_for_models(
+    (non_emb_params, total_params, compute, lrs, weights,
+     non_emb_params_exc, total_params_exc, compute_exc, lrs_exc, weights_exc, model_results) = collect_weighted_data_for_models(
         optimizer_type=optimizer_type,
         target_omega=args.target_omega,
         top_k=args.top_k,
@@ -331,80 +379,195 @@ if __name__ == '__main__':
         exclude_small=args.exclude_small
     )
 
-    if len(n_layers) == 0:
+    if len(non_emb_params) == 0:
         print("No data collected. Exiting.")
         exit(1)
 
     print(f"\n{'='*70}")
     print("Collected Data Summary")
     print(f"{'='*70}")
-    print(f"Total data points: {len(n_layers)}")
-    print(f"Model sizes (n_layer): {sorted(set(n_layers))}")
+    print(f"Total data points: {len(non_emb_params)}")
+    print(f"Non-embedding params range: {min(non_emb_params):,} to {max(non_emb_params):,}")
+    print(f"Total non-norm params range: {min(total_params):,} to {max(total_params):,}")
+    print(f"Compute range: {min(compute):.2e} to {max(compute):.2e}")
     print(f"LR range: {min(lrs):.6e} to {max(lrs):.6e}")
     print(f"Weight range: {min(weights)} to {max(weights)}")
 
-    # Fit power law using weighted optimization
+    # Fit power law using non-embedding parameters (always on)
     print(f"\n{'='*70}")
-    print("Fitting Power Law: LR = A * (n_layer)^B")
+    print("Fitting Power Law 1: LR = A * (non_emb_params)^B")
     print(f"{'='*70}")
-    A_fit, B_fit = fit_power_law_weighted(n_layers, lrs, weights,
-                                          n_steps=args.n_steps,
-                                          learning_rate=args.learning_rate)
+    A_fit1, B_fit1 = fit_power_law_weighted(non_emb_params, lrs, weights,
+                                             n_steps=args.n_steps,
+                                             learning_rate=args.learning_rate)
 
-    print(f"\nFitted parameters:")
-    print(f"  A = {A_fit:.6e}")
-    print(f"  B = {B_fit:.4f}")
-    print(f"Power law: LR = {A_fit:.6e} * (n_layer)^{B_fit:.4f}")
+    print(f"\nFitted parameters (non-embedding):")
+    print(f"  A = {A_fit1:.6e}")
+    print(f"  B = {B_fit1:.4f}")
+    print(f"Power law: LR = {A_fit1:.6e} * (non_emb_params)^{B_fit1:.4f}")
+
+    # Optionally fit power law using total non-norm parameters
+    A_fit2, B_fit2 = None, None
+    if args.fit_total_params:
+        print(f"\n{'='*70}")
+        print("Fitting Power Law 2: LR = A * (total_non_norm_params)^B")
+        print(f"{'='*70}")
+        A_fit2, B_fit2 = fit_power_law_weighted(total_params, lrs, weights,
+                                                 n_steps=args.n_steps,
+                                                 learning_rate=args.learning_rate)
+
+        print(f"\nFitted parameters (total non-norm):")
+        print(f"  A = {A_fit2:.6e}")
+        print(f"  B = {B_fit2:.4f}")
+        print(f"Power law: LR = {A_fit2:.6e} * (total_non_norm_params)^{B_fit2:.4f}")
+
+    # Optionally fit power law using compute
+    A_fit3, B_fit3 = None, None
+    if args.fit_compute:
+        print(f"\n{'='*70}")
+        print("Fitting Power Law 3: LR = A * (compute)^B")
+        print(f"{'='*70}")
+        A_fit3, B_fit3 = fit_power_law_weighted(compute, lrs, weights,
+                                                 n_steps=args.n_steps,
+                                                 learning_rate=args.learning_rate)
+
+        print(f"\nFitted parameters (compute):")
+        print(f"  A = {A_fit3:.6e}")
+        print(f"  B = {B_fit3:.4f}")
+        print(f"Power law: LR = {A_fit3:.6e} * (compute)^{B_fit3:.4f}")
 
     # =============================================================================
     # VISUALIZATION
     # =============================================================================
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(12, 7))
 
     # Plot all data points with size proportional to weight
-    all_unique_n_layers = sorted(set(n_layers) | set(n_layers_exc))
-    colors = cm.viridis(np.linspace(0, 1, len(all_unique_n_layers)))
-    color_map = {n: colors[i] for i, n in enumerate(all_unique_n_layers)}
+    all_unique_params = sorted(set(non_emb_params) | set(non_emb_params_exc))
+    colors = cm.viridis(np.linspace(0, 1, len(all_unique_params)))
+    color_map = {p: colors[i] for i, p in enumerate(all_unique_params)}
 
     # Plot included points (used in fit)
-    for n, lr, w in zip(n_layers, lrs, weights):
-        ax.scatter(n, lr, s=w*50, c=[color_map[n]], alpha=0.6, edgecolors='black', linewidths=0.5)
+    for p, lr, w in zip(non_emb_params, lrs, weights):
+        ax.scatter(p, lr, s=w*50, c=[color_map[p]], alpha=0.6, edgecolors='black', linewidths=0.5)
 
     # Plot excluded points (grayed out with 'x' marker)
-    if len(n_layers_exc) > 0:
-        for n, lr, w in zip(n_layers_exc, lrs_exc, weights_exc):
-            ax.scatter(n, lr, s=w*50, c='gray', alpha=0.3, marker='x', linewidths=1.5,
-                      label='Excluded (not in fit)' if n == n_layers_exc[0] and lr == lrs_exc[0] else '')
+    if len(non_emb_params_exc) > 0:
+        for p, lr, w in zip(non_emb_params_exc, lrs_exc, weights_exc):
+            ax.scatter(p, lr, s=w*50, c='gray', alpha=0.3, marker='x', linewidths=1.5,
+                      label='Excluded (not in fit)' if p == non_emb_params_exc[0] and lr == lrs_exc[0] else '')
 
-    # Plot power law fit line and extrapolation
-    unique_n_layers = sorted(set(n_layers))
-    n_layer_range = np.linspace(min(unique_n_layers), 30, 100)
-    lr_fit = power_law_function(n_layer_range, A_fit, B_fit)
-    ax.plot(n_layer_range, lr_fit, 'r--', linewidth=2.5,
-            label=f'Power Law Fit: {A_fit:.2e} × $n_{{layer}}^{{{B_fit:.3f}}}$', zorder=10)
+    # Plot power law fit lines and extrapolation
+    unique_params = sorted(set(non_emb_params))
+    params_range = np.linspace(min(unique_params) * 0.5, max(unique_params) * 2.5, 200)
+
+    # Fit 1: Non-embedding parameters (always shown)
+    lr_fit1 = power_law_function(params_range, A_fit1, B_fit1)
+    ax.plot(params_range, lr_fit1, 'r--', linewidth=2.5,
+            label=f'Fit 1 (Non-emb): {A_fit1:.2e} × $P^{{{B_fit1:.3f}}}$', zorder=10)
+
+    # Fit 2: Total non-norm parameters (optional)
+    # Note: For total params fit, we need to plot it correctly by mapping total params to their
+    # corresponding non-embedding params for the x-axis
+    if args.fit_total_params and A_fit2 is not None:
+        # Create arrays of (non_emb, total_params) pairs from the actual data
+        total_to_nonemb = []
+        for model_key, model_info in model_results.items():
+            if not model_info.get('excluded', False):
+                total_to_nonemb.append((model_info['total_params'], model_info['non_emb_params']))
+
+        # Sort by total params value
+        total_to_nonemb.sort()
+
+        # For plotting, use total params values to predict LR, then plot at corresponding non_emb x values
+        nonemb_vals = [x[1] for x in total_to_nonemb]
+        total_vals = [x[0] for x in total_to_nonemb]
+        lr_vals = [float(power_law_function(t, A_fit2, B_fit2)) for t in total_vals]
+        ax.plot(nonemb_vals, lr_vals, 'b:', linewidth=2.5,
+                label=f'Fit 2 (Total non-norm): {A_fit2:.2e} × $P^{{{B_fit2:.3f}}}$', zorder=10)
+
+    # Fit 3: Compute (optional)
+    # Note: For compute fit, we need to plot it correctly by mapping compute values to their
+    # corresponding non-embedding params for the x-axis
+    if args.fit_compute and A_fit3 is not None:
+        # Create arrays of (non_emb, compute) pairs from the actual data
+        # For each unique model size, compute the relationship
+        compute_to_nonemb = []
+        for model_key, model_info in model_results.items():
+            if not model_info.get('excluded', False):
+                compute_to_nonemb.append((model_info['compute'], model_info['non_emb_params']))
+
+        # Sort by compute value
+        compute_to_nonemb.sort()
+
+        # For plotting, we'll use the compute values to predict LR, then plot at corresponding non_emb x values
+        # This is the correct way since compute and non_emb are related through the model architecture
+        # We'll plot points along the curve
+        for comp, nonemb in compute_to_nonemb:
+            lr_pred = float(power_law_function(comp, A_fit3, B_fit3))
+            ax.plot(nonemb, lr_pred, 'go', markersize=8, zorder=9)
+
+        # Draw a line connecting these points
+        nonemb_vals = [x[1] for x in compute_to_nonemb]
+        comp_vals = [x[0] for x in compute_to_nonemb]
+        lr_vals = [float(power_law_function(c, A_fit3, B_fit3)) for c in comp_vals]
+        ax.plot(nonemb_vals, lr_vals, 'g-.', linewidth=2.5,
+                label=f'Fit 3 (Compute): {A_fit3:.2e} × $C^{{{B_fit3:.3f}}}$', zorder=10)
 
     # Mark and annotate predictions at specific n_layer values
-    prediction_points = [15, 18, 24, 30]
-    for n_pred in prediction_points:
-        lr_pred = float(power_law_function(n_pred, A_fit, B_fit))
-        ax.scatter([n_pred], [lr_pred], s=150, marker='D', c='red',
+    prediction_layers = [15, 18, 24, 30]
+    # Use H = (4/3) * L and Q = 64
+    pred_qkv_dim = 64
+
+    for n_pred in prediction_layers:
+        # Compute n_head using H = (4/3) * L
+        pred_n_head = int(round((4/3) * n_pred))
+
+        # Compute params for this n_layer (convert to float to avoid int32 overflow)
+        non_emb_pred = float(compute_non_embedding_params(pred_n_head, pred_qkv_dim, n_pred))
+        total_pred = float(compute_total_non_norm_params(pred_n_head, pred_qkv_dim, n_pred))
+        compute_pred = float(compute_compute(pred_n_head, pred_qkv_dim, n_pred))
+
+        # LR prediction from fit 1 (always shown)
+        lr_pred1 = float(power_law_function(non_emb_pred, A_fit1, B_fit1))
+        ax.scatter([non_emb_pred], [lr_pred1], s=150, marker='D', c='red',
                   edgecolors='black', linewidths=1.5, zorder=11)
-        ax.text(n_pred, lr_pred * 1.15, f'n={n_pred}\nLR={lr_pred:.2e}',
-               ha='center', va='bottom', fontsize=8,
+        ax.text(non_emb_pred, lr_pred1 * 1.3, f'L={n_pred},H={pred_n_head}\nLR={lr_pred1:.2e}\n(Fit 1)',
+               ha='center', va='bottom', fontsize=7,
                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
 
+        # LR prediction from fit 2 (optional)
+        # Note: Use non_emb_pred for x-coordinate since that's our x-axis
+        if args.fit_total_params and A_fit2 is not None:
+            lr_pred2 = float(power_law_function(total_pred, A_fit2, B_fit2))
+            ax.scatter([non_emb_pred], [lr_pred2], s=150, marker='s', c='blue',
+                      edgecolors='black', linewidths=1.5, zorder=11)
+            ax.text(non_emb_pred, lr_pred2 * 0.7, f'L={n_pred},H={pred_n_head}\nLR={lr_pred2:.2e}\n(Fit 2)',
+                   ha='center', va='top', fontsize=7,
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightblue', alpha=0.7))
+
+        # LR prediction from fit 3 (optional)
+        # Note: Use non_emb_pred for x-coordinate since that's our x-axis
+        if args.fit_compute and A_fit3 is not None:
+            lr_pred3 = float(power_law_function(compute_pred, A_fit3, B_fit3))
+            ax.scatter([non_emb_pred], [lr_pred3], s=150, marker='^', c='green',
+                      edgecolors='black', linewidths=1.5, zorder=11)
+            ax.text(non_emb_pred, lr_pred3 * 1.5, f'L={n_pred},H={pred_n_head}\nLR={lr_pred3:.2e}\n(Fit 3)',
+                   ha='center', va='bottom', fontsize=7,
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='lightgreen', alpha=0.7))
+
     # Formatting
-    ax.set_xlabel('Number of Layers (n_layer)', fontsize=12)
+    ax.set_xlabel('Non-embedding Parameters', fontsize=12)
     ax.set_ylabel('Learning Rate (LR)', fontsize=12)
+    ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_title(f'{args.optimizer} Optimal LR Scaling Law (Direct Weighted Fit)\n(Target ω = {args.target_omega}, Top-K = {args.top_k}, Dataset = {args.dataset})',
                  fontsize=14, fontweight='bold')
-    ax.legend(fontsize=11, loc='best')
+    ax.legend(fontsize=10, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
 
     # Add text annotation showing point size = weight
-    ax.text(0.02, 0.98, 'Point size ∝ weight\n(best LR has largest weight)',
+    ax.text(0.02, 0.98, 'Point size ∝ weight\n(best LR has largest weight)\n\nPredictions use H=(4/3)L, Q=64',
             transform=ax.transAxes, fontsize=9, verticalalignment='top',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
@@ -423,9 +586,25 @@ if __name__ == '__main__':
     print(f"\nPlot saved to: {output_file}")
 
     # Print extrapolations
-    print(f"\nExtrapolated optimal LRs:")
-    for n_pred in [15, 18, 24, 30]:
-        lr_pred = float(power_law_function(n_pred, A_fit, B_fit))
-        print(f"  n_layer={n_pred}: LR={lr_pred:.6e}")
+    print(f"\nExtrapolated optimal LRs (using H=(4/3)L, Q=64):")
+    for n_pred in prediction_layers:
+        pred_n_head = int(round((4/3) * n_pred))
+        non_emb_pred = float(compute_non_embedding_params(pred_n_head, pred_qkv_dim, n_pred))
+        total_pred = float(compute_total_non_norm_params(pred_n_head, pred_qkv_dim, n_pred))
+        compute_pred = float(compute_compute(pred_n_head, pred_qkv_dim, n_pred))
+
+        lr_pred1 = float(power_law_function(non_emb_pred, A_fit1, B_fit1))
+
+        output = f"  n_layer={n_pred}, n_head={pred_n_head}: LR={lr_pred1:.6e} (Fit 1)"
+
+        if args.fit_total_params and A_fit2 is not None:
+            lr_pred2 = float(power_law_function(total_pred, A_fit2, B_fit2))
+            output += f", LR={lr_pred2:.6e} (Fit 2)"
+
+        if args.fit_compute and A_fit3 is not None:
+            lr_pred3 = float(power_law_function(compute_pred, A_fit3, B_fit3))
+            output += f", LR={lr_pred3:.6e} (Fit 3)"
+
+        print(output)
 
     plt.show()

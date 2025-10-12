@@ -355,6 +355,25 @@ def get_dana_star(
     )
     return optimizer
 
+def get_dana_star_mk4(
+    g2_constant: float,
+    g3_constant: float,
+    learning_rate: base.ScalarOrSchedule, #outer learning rate
+    epsilon: float = 1e-8,
+    y_dtype: Optional[chex.ArrayDType] = None
+):
+    g2 = powerlaw_schedule(g2_constant, 0.0, 0.0, 1.0)
+    g3 = powerlaw_schedule(g3_constant, 0.0, 0.0, 1.0)
+    beta_m=powerlaw_schedule(1.0, 0.0, -1.0, 6.0)
+    g1 = beta_m
+    Delta = powerlaw_schedule(1.0, 0.0, -1.0, 6.0)  # Use same Delta as other optimizers
+
+    optimizer = optax.chain(
+        tanea_optimizer(g2, g3, Delta, epsilon=epsilon, beta_m=beta_m, g1=g1, momentum_flavor="mk4", y_dtype=y_dtype),
+        optax.scale_by_learning_rate(learning_rate, flip_sign = False)
+    )
+    return optimizer
+
 def galaxy_optimizer(
     g2: base.ScalarOrSchedule,
     g3: base.ScalarOrSchedule,
@@ -626,27 +645,31 @@ def tanea_optimizer(
     ## 4. The "strong-clip" version is similar to the 'effective-clip'  This is actually a misnomer.  Effective-clip penalizes large 'u' more strongly than strong-clip.
     ## 5. The "mk2" version scales down the momentum term by a factor of sqrt(tau_reg), which accounts for higher noise in the low-probability directions, but is akin to the 'strong-clip' version.
     ## 6. The "mk3" version includes the scaled-down momentum from mk2, but also includes the implied clipping behavior of mk2.  The "mk2" version had uncontrolled loss spikes on nanogpt, which do not appear in the 'effective-clip' version.
-    g3_momentum_term = lambda u, v, tau, t: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
+    g3_momentum_term = lambda u, v, tau, t, m: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     # Create lambda function for g3 momentum term based on flavor
     if momentum_flavor == "effective-clip":
-        g3_momentum_term = lambda u, v, tau, t: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
+        g3_momentum_term = lambda u, v, tau, t, m: abs(u)/((u**2) * tau_reg(tau, t)+v+epsilon**2)
     elif momentum_flavor == "theory":
-        g3_momentum_term = lambda u, v, tau, t: abs(u)/((jnp.abs(u)*root_tau_reg(tau, t)+jnp.sqrt(v)+epsilon) * (jnp.sqrt(v)+epsilon) )
+        g3_momentum_term = lambda u, v, tau, t, m: abs(u)/((jnp.abs(u)*root_tau_reg(tau, t)+jnp.sqrt(v)+epsilon) * (jnp.sqrt(v)+epsilon) )
     elif momentum_flavor == "adam":
-        g3_momentum_term = lambda u, v, tau, t: 1.0/((jnp.sqrt(v)+epsilon))
+        g3_momentum_term = lambda u, v, tau, t, m: 1.0/((jnp.sqrt(v)+epsilon))
     elif momentum_flavor == "always-on":
-        g3_momentum_term = lambda u, v, tau, t: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
+        g3_momentum_term = lambda u, v, tau, t, m: root_tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
     elif momentum_flavor == "always-on-mk2":
-        g3_momentum_term = lambda u, v, tau, t: tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
-        #g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))*quarter_root_tau_reg(tau, t)/(v+epsilon**2)
+        g3_momentum_term = lambda u, v, tau, t, m: tau_reg(tau, t)/((jnp.sqrt(v)+epsilon))
+        #g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum(abs(u),(jnp.sqrt(v/tau_reg(tau, t))))*quarter_root_tau_reg(tau, t)/(v+epsilon**2)
     elif momentum_flavor == "strong-clip":
-        g3_momentum_term = lambda u, v, tau, t: ( tau_reg(tau, t) )**(1.5) /((jnp.sqrt(v)+epsilon))
+        g3_momentum_term = lambda u, v, tau, t, m: ( tau_reg(tau, t) )**(1.5) /((jnp.sqrt(v)+epsilon))
     elif momentum_flavor == "mk2":
-        g3_momentum_term = lambda u, v, tau, t: jnp.minimum(abs(u)*root_tau_reg(tau, t),(jnp.sqrt(v)))/(v+epsilon**2)
+        g3_momentum_term = lambda u, v, tau, t, m: jnp.minimum(abs(u)*root_tau_reg(tau, t),(jnp.sqrt(v)))/(v+epsilon**2)
     elif momentum_flavor == "mk3":
-        g3_momentum_term = lambda u, v, tau, t: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
+        g3_momentum_term = lambda u, v, tau, t, m: (abs(u)*root_tau_reg(tau, t))/((u**2) * tau_reg(tau, t)+v+epsilon**2)
+    elif momentum_flavor == "mk4":
+        g3_momentum_term = lambda u, v, tau, t, m: jnp.abs(m)/(v+epsilon)
+        #g3_momentum_term = lambda u, v, tau, t, m: 1.0/(jnp.sqrt(jnp.mean(v)*v)+epsilon)
+
     else:
-        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'adam', 'always-on', 'always-on-mk2', 'strong-clip', 'mk2', or 'mk3'")  
+        raise ValueError(f"Unknown momentum_flavor: {momentum_flavor}. Must be 'effective-clip', 'theory', 'adam', 'always-on', 'always-on-mk2', 'strong-clip', 'mk2', 'mk3', or 'mk4'")  
 
     def init_fn(params):
 
@@ -698,7 +721,7 @@ def tanea_optimizer(
         updates = jax.tree.map(
             lambda m,u,v,tau : -1.0*g2(effective_time(tau, state.count))*u 
             if m is None 
-            else -1.0*(g2(effective_time(tau, state.count))*u*g2_momentum_term(u, m*new_beta_m, v, tau, state.count))-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
+            else -1.0*(g2(effective_time(tau, state.count))*u*g2_momentum_term(u, m*new_beta_m, v, tau, state.count))-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count, m)),
             #else -1.0*(g2(effective_time(tau, state.count))*u*root_tau_reg(tau, state.count))/(jnp.sqrt(v)+epsilon)-(g3(effective_time(tau, state.count))*m*g3_momentum_term(u, v, tau, state.count)),
             new_m,
             updates,

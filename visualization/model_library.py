@@ -15,6 +15,8 @@ MODEL_CONFIGS = {
         'optimizer': 'danastar',
         'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
         'n_layer': 4,  # Small model: 4 layers
+        'n_head': 6,
+        'qkv_dim': 64,
         'n_params': 10_000_000  # Approximate parameter count
     },
     'DS35M': {
@@ -24,6 +26,8 @@ MODEL_CONFIGS = {
         'optimizer': 'danastar',
         'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
         'n_layer': 6,  # 35M model: 6 layers
+        'n_head': 8,
+        'qkv_dim': 64,
         'n_params': 35_000_000
     },
     'DS90M': {
@@ -33,7 +37,20 @@ MODEL_CONFIGS = {
         'optimizer': 'danastar',
         'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
         'n_layer': 9,  # 90M model: 9 layers
+        'n_head': 12,
+        'qkv_dim': 64,
         'n_params': 90_000_000
+    },
+    'DS120M': {
+        'group': 'DanaStar_120M_lr_weight_decay_sweeps',
+        'title': 'DanaStar 120M: JAX Softplus-like Fits',
+        'filename': 'danastar_120m_lrwd_sweep_jax.pdf',
+        'optimizer': 'danastar',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 10,  # 120M model: 10 layers
+        'n_head': 14,
+        'qkv_dim': 64,
+        'n_params': 120_000_000
     },
     'DS180M': {
         'group': 'DanaStar_180M_lr_weight_decay_sweeps',
@@ -42,6 +59,8 @@ MODEL_CONFIGS = {
         'optimizer': 'danastar',
         'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
         'n_layer': 12,  # 180M model: 12 layers
+        'n_head': 16,
+        'qkv_dim': 64,
         'n_params': 180_000_000
     },
 
@@ -53,6 +72,8 @@ MODEL_CONFIGS = {
         'optimizer': 'adamw',
         'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
         'n_layer': 4,  # Small model: 4 layers
+        'n_head': 6,
+        'qkv_dim': 64,
         'n_params': 10_000_000
     },
     'AW35M': {
@@ -62,6 +83,8 @@ MODEL_CONFIGS = {
         'optimizer': 'adamw',
         'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
         'n_layer': 6,  # 35M model: 6 layers
+        'n_head': 8,
+        'qkv_dim': 64,
         'n_params': 35_000_000
     },
     'AW90M': {
@@ -71,6 +94,8 @@ MODEL_CONFIGS = {
         'optimizer': 'adamw',
         'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
         'n_layer': 9,  # 90M model: 9 layers
+        'n_head': 12,
+        'qkv_dim': 64,
         'n_params': 90_000_000
     },
     'AW180M': {
@@ -80,7 +105,20 @@ MODEL_CONFIGS = {
         'optimizer': 'adamw',
         'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
         'n_layer': 12,  # 180M model: 12 layers
+        'n_head': 16,
+        'qkv_dim': 64,
         'n_params': 180_000_000
+    },
+    'AW330M': {
+        'group': 'AdamW_330M_lr_weight_decay_sweeps',
+        'title': 'AdamW 330M: JAX Softplus-like Fits',
+        'filename': 'adamw_330m_lrwd_sweep_jax.pdf',
+        'optimizer': 'adamw',
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
+        'n_layer': 15,  # 330M model: 15 layers
+        'n_head': 20,
+        'qkv_dim': 64,
+        'n_params': 330_000_000
     }
 }
 

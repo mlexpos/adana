@@ -112,6 +112,8 @@ def parse_args(base_parser, args, namespace):
             "dana-star",
             "dana",
             "sign_dana",
+            "auto-dana",
+            "dana-star-mk4"
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)
