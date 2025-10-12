@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Define lr values
-lr_values=(8e-4 10e-4 12e-4 14e-4 6e-4)
+lr_values=(8e-4 10e-4 12e-4)
 
 # Define r values for wd_ts calculation
-r_values=(-1 0 1 2)
+r_values=(2 3 4)
 
 # Define clipsnr values
-clipsnr_values=(1.0 2.0 4.0)
+clipsnr_values=(4.0 6.0 8.0 10.0)
 
 echo "Starting grid search over lr, wd_ts, and clipsnr parameters"
 echo "lr values: ${lr_values[@]}"
