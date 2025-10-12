@@ -200,7 +200,12 @@ class DANA_STAR_MK4(Optimizer):
                 #clip_g3_term = torch.minimum(clipsnr*(effective_time)*torch.sqrt((m**2/(self._tau_reg(tau, step)*v+epsilon))),effective_time)
                 #clip_g3_term = torch.minimum((effective_time)*clipsnr*(m**2/(self._tau_reg(tau, step)*v+epsilon)),effective_time)
                 
-                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/((torch.sqrt(v)+epsilon)*self._root_tau_reg(tau, step))),effective_time)
+                #formula 1
+#                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/((torch.sqrt(v)+epsilon)*self._root_tau_reg(tau, step))),effective_time)
+                
+                #formula 2
+                clip_g3_term = torch.minimum((effective_time)*clipsnr*(torch.abs(m)/(self._tau_reg(tau, step))),effective_time**0.5)
+
                 clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
                 #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
                 #clip_g3_term = effective_time**0.25
