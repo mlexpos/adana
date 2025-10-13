@@ -224,6 +224,9 @@ class DANA_STAR_MK4(Optimizer):
                 #formula 6 (CORRESPONDS to A,B 0.5/-0.5/KAPPA0.0) Boosted with a clipped dana-star recipe.
                 #g3_term = g3 * self._tau_reg(tau, step)*(0.125*torch.sign(m))*(1.0 + clipsnr*torch.clamp(effective_time**0.25*(norm_term*torch.abs(m)),max=1.0)) 
 
+                #formula 7 (CORRESPONDS to A,B -1.0/1.0/KAPPA1.0) clipped at one, which appears preferable to the sign mechanism.  
+                # To add the lower clip, we add an m * norm_term.
+                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**3),max=1.0)) + clipsnr * m * norm_term) 
 
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term #* clip_g2_term
