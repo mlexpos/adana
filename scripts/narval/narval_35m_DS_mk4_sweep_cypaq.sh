@@ -44,7 +44,7 @@ for lr in "${lr_values[@]}"; do
             echo "Job $job_count/$total_jobs: lr=$lr, r=$r, wd_ts=$wd_ts, clipsnr=$clipsnr"
 
             # Run the dana-star-mk4 script with current parameters
-            sbatch ./scripts/diloco35m/narval-cypaq-dana-star-mk4-sweep.sh --lr $lr --wd_ts $wd_ts --clipsnr $clipsnr
+            sbatch ./scripts/diloco35m/narval-cypaq-dana-star-mk4.sh --lr $lr --wd_ts $wd_ts --clipsnr $clipsnr
 
             # Check if the job was successful
             if [ $? -eq 0 ]; then
