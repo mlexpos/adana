@@ -237,7 +237,6 @@ class DANA_STAR_MK4(Optimizer):
                 #g3_term = g3 * m * norm_term * clip_g3_term
                 mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
                 g3_term = g3 * ((self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*mfac**2),max=1.0)) + clipsnr * m * norm_term) 
-                state["current_alpha"] = 1.0
                 state["current_kappa_factor"] = (torch.clamp(effective_time*mfac**2),max=1.0).norm().detach()
                 state["gradient_norm"] = grad.norm().detach()
                 state["auto_factor_mean"] = mfac.norm().detach()
