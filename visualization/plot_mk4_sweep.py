@@ -108,16 +108,47 @@ def load_wandb_data(project_name, group_name):
         config = run.config
         summary = run.summary
 
-        # Get fields
-        lr = config.get('lr')
-        wd_ts = config.get('wd_ts')
-        weight_decay = config.get('weight_decay')
-        clipsnr = config.get('clipsnr')
-        dataset = config.get('dataset')
+        # Handle case where config is a JSON string (needs parsing)
+        if isinstance(config, str):
+            try:
+                import json
+                config = json.loads(config)
+            except json.JSONDecodeError as e:
+                print(f"Skipping run {run.name} - failed to parse config JSON: {e}")
+                continue
+
+        # Handle case where config might not be a dictionary after parsing
+        if not isinstance(config, dict):
+            print(f"Skipping run {run.name} - config is not a dictionary (type: {type(config)})")
+            continue
+
+        # Handle case where summary is an HTTPSummary object with _json_dict string attribute
+        if hasattr(summary, '_json_dict') and isinstance(summary._json_dict, str):
+            try:
+                import json
+                summary = json.loads(summary._json_dict)
+            except json.JSONDecodeError as e:
+                print(f"Skipping run {run.name} - failed to parse summary._json_dict: {e}")
+                continue
+        # Handle case where summary is a plain string (needs parsing)
+        elif isinstance(summary, str):
+            try:
+                import json
+                summary = json.loads(summary)
+            except json.JSONDecodeError as e:
+                print(f"Skipping run {run.name} - failed to parse summary JSON: {e}")
+                continue
+
+        # Get fields - WandB config format is {"field": {"desc": ..., "value": actual_value}}
+        lr = config.get('lr', {}).get('value') if isinstance(config.get('lr'), dict) else config.get('lr')
+        wd_ts = config.get('wd_ts', {}).get('value') if isinstance(config.get('wd_ts'), dict) else config.get('wd_ts')
+        weight_decay = config.get('weight_decay', {}).get('value') if isinstance(config.get('weight_decay'), dict) else config.get('weight_decay')
+        clipsnr = config.get('clipsnr', {}).get('value') if isinstance(config.get('clipsnr'), dict) else config.get('clipsnr')
+        dataset = config.get('dataset', {}).get('value') if isinstance(config.get('dataset'), dict) else config.get('dataset')
         val_loss = summary.get('val/loss')
 
         # Get iteration counts to check if run completed
-        iterations_config = config.get('iterations')
+        iterations_config = config.get('iterations', {}).get('value') if isinstance(config.get('iterations'), dict) else config.get('iterations')
         actual_iter = summary.get('iter')
 
         required_fields = [lr, wd_ts, weight_decay, clipsnr, dataset, val_loss, iterations_config, actual_iter]
@@ -172,37 +203,40 @@ def plot_sweep_results(df, output_filename='mk4_sweep_results.pdf'):
     """
     print(f"\nCreating visualization with {len(df)} data points")
 
-    # Get unique omega values and assign colors
+    # Get unique clipsnr values and assign colors
+    unique_clipsnr = sorted(df['clipsnr'].unique())
+    print(f"Unique clipsnr values: {unique_clipsnr}")
+
+    # Use tab10 colormap for clipsnr values
+    tab10_cmap = plt.cm.tab10
+    clipsnr_to_color = {clipsnr: tab10_cmap(i % 10) for i, clipsnr in enumerate(unique_clipsnr)}
+
+    # Get unique omega values for sizing
     unique_omegas = sorted(df['omega_3digits'].unique())
     print(f"Unique omega values: {unique_omegas}")
 
-    # Use tab10 colormap for omega values
-    tab10_cmap = plt.cm.tab10
-    omega_to_color = {omega: tab10_cmap(i % 10) for i, omega in enumerate(unique_omegas)}
+    # Map omega values to marker sizes (linearly spaced)
+    min_size = 50
+    max_size = 200
+    if len(unique_omegas) > 1:
+        omega_to_size = {omega: min_size + (max_size - min_size) * i / (len(unique_omegas) - 1)
+                        for i, omega in enumerate(unique_omegas)}
+    else:
+        omega_to_size = {unique_omegas[0]: (min_size + max_size) / 2}
 
     # Create figure
     plt.figure(figsize=(12, 8))
 
-    # Plot each omega group separately for legend
-    for omega in unique_omegas:
-        omega_data = df[df['omega_3digits'] == omega]
+    # Plot each clipsnr group separately for legend
+    for clipsnr in unique_clipsnr:
+        clipsnr_data = df[df['clipsnr'] == clipsnr]
 
-        # Calculate marker sizes based on log(clipsnr)
-        # Use a base size and scale by log(clipsnr)
-        base_size = 50
-        log_clipsnr = np.log(omega_data['clipsnr'].values)
-        # Normalize to reasonable size range (e.g., 20 to 200)
-        min_log_clipsnr = np.log(df['clipsnr'].min())
-        max_log_clipsnr = np.log(df['clipsnr'].max())
-        if max_log_clipsnr > min_log_clipsnr:
-            normalized_log_clipsnr = (log_clipsnr - min_log_clipsnr) / (max_log_clipsnr - min_log_clipsnr)
-            sizes = base_size + normalized_log_clipsnr * 150  # Range from 50 to 200
-        else:
-            sizes = np.full(len(log_clipsnr), base_size)
+        # Get marker sizes based on omega values
+        sizes = [omega_to_size[omega] for omega in clipsnr_data['omega_3digits']]
 
-        plt.scatter(omega_data['lr'], omega_data['val_loss'],
-                   c=[omega_to_color[omega]], s=sizes, alpha=0.7,
-                   label=f'ω={omega:.3f}', edgecolors='black', linewidths=0.5)
+        plt.scatter(clipsnr_data['lr'], clipsnr_data['val_loss'],
+                   c=[clipsnr_to_color[clipsnr]], s=sizes, alpha=0.7,
+                   label=f'clipsnr={clipsnr:.1f}', edgecolors='black', linewidths=0.5)
 
     # Formatting
     plt.xlabel('Learning Rate (lr)', fontsize=12)
@@ -214,8 +248,9 @@ def plot_sweep_results(df, output_filename='mk4_sweep_results.pdf'):
     plt.grid(True, alpha=0.3, which='both')
     plt.tight_layout()
 
-    # Add note about marker size
-    plt.text(0.02, 0.98, 'Marker size ∝ log(clipsnr)',
+    # Add note about marker size and color
+    note_text = f'Color = clipsnr\nMarker size = ω (wd_ts×lr×weight_decay)'
+    plt.text(0.02, 0.98, note_text,
              transform=plt.gca().transAxes, fontsize=10,
              verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
@@ -226,9 +261,11 @@ def plot_sweep_results(df, output_filename='mk4_sweep_results.pdf'):
     # Print statistics
     print("\nDataset statistics:")
     print(f"Total runs: {len(df)}")
-    print(f"Number of omega bins: {len(unique_omegas)}")
+    print(f"Number of clipsnr values: {len(unique_clipsnr)}")
+    print(f"Number of omega (ω) bins: {len(unique_omegas)}")
     print(f"Learning rate range: {df['lr'].min():.6f} to {df['lr'].max():.6f}")
     print(f"ClipSNR range: {df['clipsnr'].min():.2f} to {df['clipsnr'].max():.2f}")
+    print(f"Omega (ω) range: {df['omega_3digits'].min():.3f} to {df['omega_3digits'].max():.3f}")
     print(f"Validation loss range: {df['val_loss'].min():.4f} to {df['val_loss'].max():.4f}")
 
     # Print best results
