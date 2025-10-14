@@ -214,7 +214,7 @@ class DANA_STAR_MK4(Optimizer):
                 #g3_term = g3 * clipsnr * torch.sign(m) * self._tau_reg(tau, step)
 
                 #formula 4 (CORRESPONDS to A,B 0.0/0.5/KAPPA0.0, but correctly clips from below)
-                g3_term = g3 * ( 0.125*torch.sign(m) * self._tau_reg(tau, step) + clipsnr * m * norm_term)
+                #g3_term = g3 * ( 0.125*torch.sign(m) * self._tau_reg(tau, step) + clipsnr * m * norm_term)
                 #(The above is the best so far LR 1e-3, clipsnr 4.0.  Trying below, to test the 0.125)
                 #g3_term = g3 * ( 0.50*torch.sign(m) * self._tau_reg(tau, step) + clipsnr * m * norm_term)
 
@@ -229,6 +229,13 @@ class DANA_STAR_MK4(Optimizer):
                 #formula 7 (CORRESPONDS to A,B -1.0/1.0/KAPPA1.0) clipped at one, which appears preferable to the sign mechanism.  
                 # To add the lower clip, we add an m * norm_term.
                 #g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**3),max=1.0)) + clipsnr * m * norm_term) 
+
+                #formula 8 (CORRESPONDS to A,B 0.0/0.5/KAPPA1.0) -- Based on the hypothesis that v**2 decays a bit slower than expected.
+                #clip_g3_term = effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**(1.5))
+                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
+                #g3_term = g3 * m * norm_term * clip_g3_term
+                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**2),max=1.0)) + clipsnr * m * norm_term) 
 
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term #* clip_g2_term
