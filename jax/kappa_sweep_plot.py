@@ -47,7 +47,7 @@ V = 2000                       # Number of features
 D = 500                        # Number of parameters
 h = 0.0
 SGDBATCH = jnp.int32(D**h)
-STEPS = 10**5                 # Number of steps
+STEPS = 10**6                 # Number of steps
 DT = 10**(-3)                 # ODE time step
 NUM_KAPPA = 30                # Number of kappa values to test
 #KAPPA_MIN = -1.5             # Minimum kappa value
@@ -55,7 +55,6 @@ NUM_KAPPA = 30                # Number of kappa values to test
 KAPPA_MIN = 0.0               # Minimum kappa value
 KAPPA_MAX = 1.0               # Maximum kappa value
 OUTPUT_FILE = 'kappa_sweep.pdf'
-OUTPUT_FILE_RATIO = 'kappa_sweep_ratio.pdf'
 OUTPUT_FILE_RATIO_GRID = 'kappa_sweep_ratio_grid.pdf'
 
 BASE_KAPPA = 1.0             #Schedule looks like t^BASE_KAPPA *gradient-norm-squared^(A) *momentum-norm-squared^(B), clipped to [t^0,t^1]
@@ -506,57 +505,6 @@ def main():
     print(f"{'='*60}")
 
     # ========================================================================
-    # Create second figure with ratio (A*log risk + B*log ||y||²)/log(T)
-    # ========================================================================
-
-    fig2_width = 5 * num_checkpoints
-    fig2 = plt.figure(figsize=(fig2_width, 5))
-
-    ratio_axes = []
-    for i in range(num_checkpoints):
-        left_pos = 0.08 + i * (0.85 / num_checkpoints)
-        ax = fig2.add_axes([left_pos, 0.2, 0.85/num_checkpoints - 0.03, 0.7])
-        ratio_axes.append(ax)
-
-    # Plot ratio checkpoints
-    for idx, (ax, T) in enumerate(zip(ratio_axes, iteration_checkpoints)):
-        # Compute (log(risk) - log(||y||²)) / log(T)
-        log_risk = jnp.log(checkpoint_risks[T])
-        log_momentum = jnp.log(checkpoint_momentum[T])
-        ratio = (A*log_risk + B*log_momentum) / jnp.log(T) + BASE_KAPPA
-
-        # Find kappa that minimizes risk
-        min_risk_idx = jnp.argmin(checkpoint_risks[T])
-        optimal_kappa = kappa_values[min_risk_idx]
-
-        # Add y=x line in dotted black
-        ax.plot(kappa_values, kappa_values, 'k:', linewidth=1.5, label='y=x', zorder=0)
-
-        # Add vertical line at optimal kappa (blue like risk curve)
-        ax.axvline(x=optimal_kappa, color='blue', linestyle='-', linewidth=2,
-                   label=f'Min Risk κ={optimal_kappa:.3f}', zorder=5)
-
-        # Plot the ratio
-        ax.plot(kappa_values, ratio, 'o-', linewidth=LINE_WIDTH,
-                markersize=8, color='tab:green')
-
-        ax.set_xlabel('κ', fontsize=16)
-        ax.set_ylabel(f'({A:.2f}·log(Risk) - {B:.2f}·log(||y||²))/log(T)', fontsize=14)
-        ax.set_title(f'T = {T:.0e}', fontsize=18)
-        ax.grid(True, alpha=0.3)
-
-        # Add legend only to first plot
-        if idx == 0:
-            ax.legend(fontsize=12)
-
-    fig2.suptitle(f'DanaStar: Risk^(0.25)+Momentum Ratio vs κ (α={ALPHA}, β={BETA}, D={D}, batch={int(SGDBATCH)})',
-                  fontsize=20)
-    fig2.tight_layout()
-    fig2.savefig(OUTPUT_FILE_RATIO)
-    print(f"\nRatio figure saved to {OUTPUT_FILE_RATIO}")
-    print(f"{'='*60}")
-
-    # ========================================================================
     # Create third figure with grid of (A*log(risk) + B*log(||y||²))/log(T)
     # ========================================================================
 
@@ -607,6 +555,149 @@ def main():
         fig3.savefig(output_file_grid)
         print(f"\nRatio grid figure for T={T:.0e} saved to {output_file_grid}")
 
+    print(f"{'='*60}")
+
+    # ========================================================================
+    # Create fourth figure with dynamic schedule diagnostics
+    # ========================================================================
+
+    print(f"\nCreating dynamic schedule diagnostic plots...")
+
+    fig4 = plt.figure(figsize=(25, 5))
+
+    # Create 5 subplots
+    ax1 = plt.subplot(1, 5, 1)
+    ax2 = plt.subplot(1, 5, 2)
+    ax3 = plt.subplot(1, 5, 3)
+    ax4 = plt.subplot(1, 5, 4)
+    ax5 = plt.subplot(1, 5, 5)
+
+    # Compute diagnostics for dynamic schedule
+    # Normalized update factor: sqrt(momentum_norm²) / sqrt(twice_risk)
+    normalized_update_factor = jnp.sqrt(momentum_norms_dynamic) / jnp.sqrt(twice_risks_dynamic + 1e-10)
+
+    # Pre-sign magnitude: T^{BASE_KAPPA} * (twice_risk)^{A} * (momentum_norm²)^{B} * normalized_update_factor
+    # This is the factor before clipping to [1, T]
+    T_array = times_dynamic + 1.0  # times are (T-1), so add 1
+    pre_sign_magnitude = (
+        jnp.power(T_array, BASE_KAPPA) *
+        jnp.power(twice_risks_dynamic + 1e-10, A) *
+        jnp.power(momentum_norms_dynamic + 1e-10, B) *
+        normalized_update_factor
+    )
+
+    # New diagnostic: T * (twice_risk)^{A} * (momentum_norm²)^{B}
+    combined_diagnostic = (
+        T_array *
+        jnp.power(twice_risks_dynamic + 1e-10, A) *
+        jnp.power(momentum_norms_dynamic + 1e-10, B)
+    )
+
+    # Define fitting range: 10^2 to 10^4
+    fit_start = 100.0
+    fit_end = 10000.0
+    fit_mask = (times_dynamic >= fit_start) & (times_dynamic <= fit_end)
+    times_fit = times_dynamic[fit_mask]
+
+    # Helper function to perform log-log linear fit and return fitted line
+    def loglog_fit(times, values, times_fit_range):
+        """Fit log(y) = a*log(x) + b and return fitted values."""
+        mask = (times >= fit_start) & (times <= fit_end)
+        log_times = jnp.log(times[mask])
+        log_values = jnp.log(values[mask] + 1e-10)
+
+        # Linear regression in log-log space
+        coeffs = jnp.polyfit(log_times, log_values, 1)
+        slope, intercept = coeffs[0], coeffs[1]
+
+        # Compute fitted values for the full time range
+        fitted_log = slope * jnp.log(times_fit_range) + intercept
+        fitted_values = jnp.exp(fitted_log)
+
+        return fitted_values, slope
+
+    # Plot 1: Twice-risk (log-log)
+    ax1.loglog(times_dynamic, twice_risks_dynamic, linewidth=LINE_WIDTH, color='tab:blue',
+               label='2×Risk')
+    # Add linear fit
+    fit_twice_risk, slope_risk = loglog_fit(times_dynamic, twice_risks_dynamic, times_fit)
+    ax1.loglog(times_fit, fit_twice_risk, '--', linewidth=LINE_WIDTH-0.5, color='red',
+               label=f'Fit: T^{{{slope_risk:.3f}}} ({fit_start:.0f}-{fit_end:.0f})', alpha=0.8)
+    ax1.set_xlabel('Iterations', fontsize=14)
+    ax1.set_ylabel('2×Risk', fontsize=14)
+    ax1.set_title('Dynamic: Twice-Risk', fontsize=16)
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=10, loc='best')
+    ax1.set_xlim(1, None)
+
+    # Plot 2: Momentum norm squared (log-log)
+    ax2.loglog(times_dynamic, momentum_norms_dynamic, linewidth=LINE_WIDTH, color='tab:orange',
+               label='||y||²')
+    # Add linear fit
+    fit_momentum, slope_momentum = loglog_fit(times_dynamic, momentum_norms_dynamic, times_fit)
+    ax2.loglog(times_fit, fit_momentum, '--', linewidth=LINE_WIDTH-0.5, color='red',
+               label=f'Fit: T^{{{slope_momentum:.3f}}} ({fit_start:.0f}-{fit_end:.0f})', alpha=0.8)
+    ax2.set_xlabel('Iterations', fontsize=14)
+    ax2.set_ylabel('||y||²', fontsize=14)
+    ax2.set_title('Dynamic: Momentum² Norm', fontsize=16)
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(fontsize=10, loc='best')
+    ax2.set_xlim(1, None)
+
+    # Plot 3: Normalized update factor (log-log)
+    ax3.loglog(times_dynamic, normalized_update_factor, linewidth=LINE_WIDTH, color='tab:green',
+               label='√||y||² / √(2R)')
+    # Add linear fit
+    fit_normalized, slope_normalized = loglog_fit(times_dynamic, normalized_update_factor, times_fit)
+    ax3.loglog(times_fit, fit_normalized, '--', linewidth=LINE_WIDTH-0.5, color='red',
+               label=f'Fit: T^{{{slope_normalized:.3f}}} ({fit_start:.0f}-{fit_end:.0f})', alpha=0.8)
+    ax3.set_xlabel('Iterations', fontsize=14)
+    ax3.set_ylabel('√||y||² / √(2R)', fontsize=14)
+    ax3.set_title('Dynamic: Normalized Update Factor', fontsize=16)
+    ax3.grid(True, alpha=0.3)
+    ax3.legend(fontsize=10, loc='best')
+    ax3.set_xlim(1, None)
+
+    # Plot 4: Pre-sign magnitude (log-log)
+    ax4.loglog(times_dynamic, pre_sign_magnitude, linewidth=LINE_WIDTH, color='tab:red',
+               label='Pre-clip factor')
+    # Add linear fit
+    fit_pre_sign, slope_pre_sign = loglog_fit(times_dynamic, pre_sign_magnitude, times_fit)
+    ax4.loglog(times_fit, fit_pre_sign, '--', linewidth=LINE_WIDTH-0.5, color='purple',
+               label=f'Fit: T^{{{slope_pre_sign:.3f}}} ({fit_start:.0f}-{fit_end:.0f})', alpha=0.8)
+    # Add reference lines: upper clip (1) and lower clip (normalized update factor)
+    ax4.loglog(times_dynamic, jnp.ones_like(times_dynamic), 'k--', linewidth=1.5,
+               label='Upper clip (1)', alpha=0.7)
+    ax4.loglog(times_dynamic, normalized_update_factor, 'k:', linewidth=1.5,
+               label='Lower clip (√||y||²/√2R)', alpha=0.7)
+    ax4.set_xlabel('Iterations', fontsize=14)
+    ax4.set_ylabel('Factor Value', fontsize=14)
+    ax4.set_title(f'Dynamic: T^{{{BASE_KAPPA:.2f}}}·(2R)^{{{A:.2f}}}·||y||²^{{{B:.2f}}}·(√||y||²/√2R)', fontsize=14)
+    ax4.grid(True, alpha=0.3)
+    ax4.legend(fontsize=9, loc='best')
+    ax4.set_xlim(1, None)
+
+    # Plot 5: Combined diagnostic T * (twice_risk)^A * (momentum_norm²)^B (log-log)
+    ax5.loglog(times_dynamic, combined_diagnostic, linewidth=LINE_WIDTH, color='tab:purple',
+               label='T·(2R)^A·||y||²^B')
+    # Add linear fit
+    fit_combined, slope_combined = loglog_fit(times_dynamic, combined_diagnostic, times_fit)
+    ax5.loglog(times_fit, fit_combined, '--', linewidth=LINE_WIDTH-0.5, color='red',
+               label=f'Fit: T^{{{slope_combined:.3f}}} ({fit_start:.0f}-{fit_end:.0f})', alpha=0.8)
+    ax5.set_xlabel('Iterations', fontsize=14)
+    ax5.set_ylabel('T·(2R)^A·||y||²^B', fontsize=14)
+    ax5.set_title(f'Dynamic: T·(2R)^{{{A:.2f}}}·||y||²^{{{B:.2f}}}', fontsize=16)
+    ax5.grid(True, alpha=0.3)
+    ax5.legend(fontsize=10, loc='best')
+    ax5.set_xlim(1, None)
+
+    fig4.suptitle(f'DanaStar Dynamic Schedule Diagnostics (α={ALPHA}, β={BETA}, D={D}, A={A}, B={B}, κ_base={BASE_KAPPA})',
+                  fontsize=18)
+    fig4.tight_layout()
+
+    output_file_dynamic = 'kappa_sweep_dynamic_diagnostics.pdf'
+    fig4.savefig(output_file_dynamic)
+    print(f"Dynamic diagnostics figure saved to {output_file_dynamic}")
     print(f"{'='*60}")
 
 
