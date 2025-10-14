@@ -41,7 +41,7 @@ class ODEInputs:
 # ============================================================================
 # GLOBAL PARAMETERS
 # ============================================================================
-ALPHA = 0.9                    # Fixed alpha value
+ALPHA = 0.5                    # Fixed alpha value
 BETA = 0.3                     # Fixed beta value
 V = 2000                       # Number of features
 D = 500                        # Number of parameters
@@ -58,9 +58,11 @@ OUTPUT_FILE = 'kappa_sweep.pdf'
 OUTPUT_FILE_RATIO = 'kappa_sweep_ratio.pdf'
 OUTPUT_FILE_RATIO_GRID = 'kappa_sweep_ratio_grid.pdf'
 
-BASE_KAPPA = 1.00          #Schedule looks like t^BASE_KAPPA *gradient-norm-squared^(A) *momentum-norm-squared^(B), clipped to [t^0,t^1]
-A=-1.00                      #Heuristic, power on twice-risk
-B=1.00                      #Heuristic, power on momentum-squared
+BASE_KAPPA = 1.0             #Schedule looks like t^BASE_KAPPA *gradient-norm-squared^(A) *momentum-norm-squared^(B), clipped to [t^0,t^1]
+A=0.0                        #Heuristic, power on twice-risk
+B=0.75                        #Heuristic, power on momentum-squared
+
+RISK_RENORMALIZED = True
 
 # Plotting parameters
 FIGURE_SIZE = (25, 6.5)
@@ -79,6 +81,7 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
     D: int,
     t_max: float,
     dt: float,
+    risk_renormalized: bool = RISK_RENORMALIZED,
     g3_mode: str = 'fixed',  # 'fixed' or 'dynamic'
     power_A: float = A,  # Power on twice-risk for dynamic mode
     power_B: float = B,  # Power on momentum-squared for dynamic mode
@@ -160,7 +163,10 @@ def ode_resolvent_log_implicit_and_momentum_dynamic(
         time_plus_minus_one = time_plus - 1.0
 
         # DanaStar scaling: 1/sqrt(twice_risk)
-        risk_scaling = 1.0 / jnp.sqrt(twice_risk + 1e-10)
+        if risk_renormalized:
+            risk_scaling = 1.0 / jnp.sqrt(twice_risk + 1e-10)
+        else:
+            risk_scaling = 1.0
 
         # Compute g3 based on mode
         if g3_mode == 'dynamic':
