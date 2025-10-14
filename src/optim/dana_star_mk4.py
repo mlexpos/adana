@@ -235,7 +235,13 @@ class DANA_STAR_MK4(Optimizer):
                 #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
                 #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
                 #g3_term = g3 * m * norm_term * clip_g3_term
-                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**2),max=1.0)) + clipsnr * m * norm_term) 
+                mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
+                g3_term = g3 * ((self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*mfac**2),max=1.0)) + clipsnr * m * norm_term) 
+                state["current_alpha"] = 1.0
+                state["current_kappa_factor"] = (torch.clamp(effective_time*mfac**2),max=1.0).norm().detach()
+                state["gradient_norm"] = grad.norm().detach()
+                state["auto_factor_mean"] = mfac.norm().detach()
+                state["m_norm"] = m.norm().detach()
 
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term #* clip_g2_term

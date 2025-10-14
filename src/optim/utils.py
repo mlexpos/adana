@@ -315,7 +315,7 @@ def log_optimizer_schedules(optimizer, optimizer_name):
             logs["optimizer/alpha_schedule"] = torch.tensor(alpha_values).mean().item()
             logs["optimizer/one_minus_beta3_schedule"] = torch.tensor(one_minus_beta3_values).mean().item()
     
-    elif optimizer_name in ["dana", "dana_star", "auto_dana", "auto-dana"]:
+    elif optimizer_name in ["dana", "dana_star", "auto_dana", "auto-dana", "dana-star-mk4"]:
         # Log DANA schedules: alpha factor and (1+t)**(1-kappa)
         alpha_values = []
         kappa_factor_values = []
