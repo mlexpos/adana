@@ -247,11 +247,24 @@ class DANA_STAR_MK4(Optimizer):
                 #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
                 #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
                 #g3_term = g3 * m * norm_term * clip_g3_term
+                # mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
+                # g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*(mfac**2.5),max=1.0)) + clipsnr * m * norm_term) 
+                # state["current_kappa_factor"] = (torch.clamp(effective_time*(mfac**2),max=1.0)).mean().detach()
+                # state["gradient_norm"] = grad.norm().detach()
+                # state["auto_factor_mean"] = mfac.norm().detach()
+                # state["m_norm"] = m.norm().detach()
+
+                #formula 10 (CORRESPONDS to A,B 1.0/-1.0/KAPPA1.2)
+                #clip_g3_term = effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**(1.5))
+                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
+                #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
+                #g3_term = g3 * m * norm_term * clip_g3_term
                 mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
-                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*(mfac**2.5),max=1.0)) + clipsnr * m * norm_term) 
-                state["current_kappa_factor"] = (torch.clamp(effective_time*(mfac**2),max=1.0)).mean().detach()
+                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp((effective_time**(1.2))*(mfac**3),max=clipsnr)) + 1.0 * m * norm_term) 
+                state["current_alpha"] = (torch.clamp((effective_time**(1.2))*(mfac**3),max=clipsnr)).mean().detach()
+                state["current_kappa_factor"] = ((effective_time**(1.2))*(mfac**2)).mean().detach()
                 state["gradient_norm"] = grad.norm().detach()
-                state["auto_factor_mean"] = mfac.norm().detach()
+                state["auto_factor_mean"] = mfac.mean().detach()
                 state["m_norm"] = m.norm().detach()
 
                 # Compute parameter updates using effective time for g2 and g3 scheduling
