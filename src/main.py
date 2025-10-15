@@ -302,6 +302,7 @@ def main(args, parser):
             group_specs,
             lr=args.lr,
             delta=args.delta,
+            kappa=args.kappa,
             weight_decay=args.weight_decay,
             clipsnr=args.clipsnr,
             weight_time=args.weight_time,
