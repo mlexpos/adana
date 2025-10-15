@@ -189,7 +189,12 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device):
     if isinstance(model, torch.nn.parallel.DistributedDataParallel):
         model = model.module
 
-    ckpt = torch.load(ckpt_path, map_location=device)
+    # PyTorch 2.6 defaults to weights_only=True; our checkpoints include optimizer/scheduler state
+    # Try safe default first, then fall back to weights_only=False if needed
+    try:
+        ckpt = torch.load(ckpt_path, map_location=device)
+    except Exception:
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt["model"])
     opt.load_state_dict(ckpt["optimizer"])
     if scheduler is not None:

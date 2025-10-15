@@ -1,199 +1,159 @@
 #!/usr/bin/env python3
 """
 Plot Training Curves from WandB Run IDs
-
-This script takes a list of WandB run IDs and creates a log-log plot showing
-training curves with tokens on x-axis and validation loss on y-axis.
-Legend shows optimizer, learning rate, and renormalized weight decay.
 """
 
 import wandb
-import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from typing import List
-import warnings
-warnings.filterwarnings('ignore')
+import pandas as pd
 
-# ============================================================================
-# CONFIGURATION SECTION - MODIFY THESE SETTINGS AS NEEDED
-# ============================================================================
-
-# WandB project configuration
+# Configuration
 WANDB_PROJECT = "danastar"
 WANDB_ENTITY = "ep-rmt-ml-opt"
 
-# List of run IDs to plot - ADD YOUR RUN IDs HERE
+# Add your run IDs here
 RUN_IDS = [
-    "76b0qmrg",
-    "7cy9z3c1",
-    # "abc123def456",  # Example run ID
-    # "xyz789uvw012",  # Example run ID
-    # Add your actual run IDs here
+    "0j139dq3", "jgoym1f8", "kpp1308q"
 ]
 
-# Plot configuration
-FIGURE_SIZE = (12, 8)
-DPI = 300
-SAVE_FORMAT = "pdf"  # or "png"
-
-# ============================================================================
-# MAIN PLOTTING FUNCTION
-# ============================================================================
-
-def plot_training_curves(run_ids: List[str], project: str, entity: str):
-    """
-    Plot training curves for given run IDs.
-    
-    Args:
-        run_ids: List of WandB run IDs to plot
-        project: WandB project name
-        entity: WandB entity/team name
-    """
-    print(f"🚀 Plotting training curves for {len(run_ids)} runs")
-    print(f"📊 Project: {entity}/{project}")
-    
-    # Connect to WandB
+def get_run_data(run_id):
+    """Get all data from a WandB run."""
     try:
         api = wandb.Api()
-        print("✓ Successfully connected to WandB API")
+        run = api.run(f"{WANDB_ENTITY}/{WANDB_PROJECT}/{run_id}")
+        
+        # Get configuration
+        config = run.config
+        opt = config.get('opt', 'unknown')
+        lr = config.get('lr', 0)
+        weight_decay = config.get('weight_decay', 0)
+        iterations = config.get('iterations', 1)
+        renorm_wd = weight_decay * lr * iterations
+        
+        # Try different methods to get ALL data
+        print(f"Run {run_id}: Trying different data retrieval methods...")
+        
+        # Method 1: Standard history()
+        history = run.history()
+        print(f"Run {run_id}: Method 1 (history()): {len(history)} points")
+        
+        # Method 2: History with all samples
+        history_all = run.history(samples=10000)  # Large number to get all
+        print(f"Run {run_id}: Method 2 (history(samples=10000)): {len(history_all)} points")
+        
+        # Method 3: Scan history
+        history_scan = run.scan_history()
+        scan_data = list(history_scan)
+        print(f"Run {run_id}: Method 3 (scan_history()): {len(scan_data)} points")
+        
+        # Use the method with most data
+        if len(scan_data) > len(history_all) and len(scan_data) > len(history):
+            print(f"Run {run_id}: Using scan_history() - most data points")
+            df = pd.DataFrame(scan_data)
+        elif len(history_all) > len(history):
+            print(f"Run {run_id}: Using history(samples=10000) - more data points")
+            df = history_all
+        else:
+            print(f"Run {run_id}: Using standard history()")
+            df = history
+        
+        if df.empty:
+            print(f"Run {run_id}: No data found")
+            return None
+            
+        # Check what columns are available
+        print(f"Run {run_id}: Available columns: {list(df.columns)}")
+        print(f"Run {run_id}: First few rows:")
+        print(df.head())
+        
+        # Get tokens and validation loss
+        if 'tokens' in df.columns and 'val/loss' in df.columns:
+            tokens = df['tokens'].values
+            val_loss = df['val/loss'].values
+            
+            print(f"Run {run_id}: Raw data - tokens: {len(tokens)}, val_loss: {len(val_loss)}")
+            
+            # Remove NaN values
+            valid_mask = ~(np.isnan(tokens) | np.isnan(val_loss))
+            tokens = tokens[valid_mask]
+            val_loss = val_loss[valid_mask]
+            
+            print(f"Run {run_id}: After removing NaN: {len(tokens)} points")
+            
+            # Remove invalid values (negative or zero)
+            valid_mask = (tokens > 0) & (val_loss > 0)
+            tokens = tokens[valid_mask]
+            val_loss = val_loss[valid_mask]
+            
+            print(f"Run {run_id}: After removing invalid values: {len(tokens)} points")
+            if len(tokens) > 0:
+                print(f"Run {run_id}: Token range: {tokens.min():.2e} to {tokens.max():.2e}")
+                print(f"Run {run_id}: Loss range: {val_loss.min():.4f} to {val_loss.max():.4f}")
+                print(f"Run {run_id}: First 5 points: tokens={tokens[:5]}, loss={val_loss[:5]}")
+            
+            return {
+                'tokens': tokens,
+                'val_loss': val_loss,
+                'opt': opt,
+                'lr': lr,
+                'renorm_wd': renorm_wd,
+                'run_id': run_id
+            }
+        else:
+            print(f"Run {run_id}: Missing required columns")
+            return None
+            
     except Exception as e:
-        print(f"✗ Failed to connect to WandB API: {e}")
-        return
-    
-    # Set up the plot
-    plt.figure(figsize=FIGURE_SIZE)
-    plt.style.use('default')
+        print(f"Error with run {run_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+def plot_training_curves(run_ids):
+    """Plot training curves for given run IDs."""
+    plt.figure(figsize=(12, 8))
     
     colors = plt.cm.tab10(np.linspace(0, 1, len(run_ids)))
     
     for i, run_id in enumerate(run_ids):
-        try:
-            print(f"\n📥 Fetching run: {run_id}")
-            
-            # Get the run
-            run = api.run(f"{entity}/{project}/{run_id}")
-            
-            # Get run config for legend info
-            config = run.config
-            opt = config.get('opt', 'unknown')
-            lr = config.get('lr', 0)
-            weight_decay = config.get('weight_decay', 0)
-            iterations = config.get('iterations', 1)
-            
-            # Calculate renormalized weight decay
-            renorm_wd = weight_decay * lr * iterations if all(x is not None for x in [weight_decay, lr, iterations]) else 0
-            
-            # Get the history (training data)
-            history = run.history()
-            
-            if history.empty:
-                print(f"  ⚠️  No history data found for run {run_id}")
-                continue
-            
-            # Extract tokens and validation loss
-            if 'tokens' in history.columns and 'val/loss' in history.columns:
-                tokens = history['tokens'].dropna()
-                val_loss = history['val/loss'].dropna()
-                
-                # Align the data (in case of different lengths)
-                min_len = min(len(tokens), len(val_loss))
-                tokens = tokens.iloc[:min_len]
-                val_loss = val_loss.iloc[:min_len]
-                
-                # Remove any remaining NaN or invalid values
-                valid_mask = (tokens > 0) & (val_loss > 0) & np.isfinite(tokens) & np.isfinite(val_loss)
-                tokens = tokens[valid_mask]
-                val_loss = val_loss[valid_mask]
-                
-                if len(tokens) == 0:
-                    print(f"  ⚠️  No valid data points for run {run_id}")
-                    continue
-                
-                # Create legend label
-                legend_label = f"{opt} | lr={lr:.1e} | W={renorm_wd:.1e}"
-                
-                # Plot the curve
-                plt.loglog(tokens, val_loss, 
-                          color=colors[i], 
-                          linewidth=2, 
-                          alpha=0.8,
-                          label=legend_label)
-                
-                print(f"  ✓ Plotted {len(tokens)} points for {run.name}")
-                
-            else:
-                print(f"  ⚠️  Missing 'tokens' or 'val/loss' columns for run {run_id}")
-                continue
-                
-        except Exception as e:
-            print(f"  ✗ Error processing run {run_id}: {e}")
+        print(f"\nProcessing run {run_id}...")
+        data = get_run_data(run_id)
+        
+        if data is None:
             continue
+            
+        # Create legend label
+        legend_label = f"{data['opt']} | lr={data['lr']:.1e} | W={data['renorm_wd']:.1e}"
+        
+        # Plot with all available points
+        print(f"About to plot {len(data['tokens'])} points for {data['opt']}")
+        print(f"Token values: {data['tokens'][:10]}... (showing first 10)")
+        print(f"Loss values: {data['val_loss'][:10]}... (showing first 10)")
+        
+        # Plot clean line without markers
+        plt.loglog(data['tokens'], data['val_loss'], 
+                  color=colors[i], linewidth=2, 
+                  label=legend_label)
+        
+        print(f"Successfully plotted {len(data['tokens'])} points for {data['opt']}")
     
-    # Customize the plot
-    plt.xlabel('Tokens (G)', fontsize=12)
+    # Format plot
+    plt.xlabel('Tokens', fontsize=12)
     plt.ylabel('Validation Loss', fontsize=12)
-    plt.title('Training Curves: Validation Loss vs Tokens', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3, which='both')
-    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
-    
-    # Format x-axis to show M (millions) or G (billions) as appropriate
-    def format_tokens(x, p):
-        if x >= 1e9:
-            return f'{x/1e9:.1f}G'
-        elif x >= 1e6:
-            return f'{x/1e6:.0f}M'
-        else:
-            return f'{x:.0f}'
-    
-    ax = plt.gca()
-    ax.xaxis.set_major_formatter(plt.FuncFormatter(format_tokens))
-    
-    # Let the plot auto-scale to show all data
-    
+    plt.title('Training Curves - All Data Points', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.tight_layout()
     
-    # Save the plot
-    filename = f"visualization/training_curves.{SAVE_FORMAT}"
-    plt.savefig(filename, format=SAVE_FORMAT, dpi=DPI, bbox_inches='tight')
-    print(f"\n💾 Saved plot: {filename}")
-    
+    # Save
+    plt.savefig("visualization/training_curves.pdf", bbox_inches='tight', dpi=300)
+    print("\nPlot saved to visualization/training_curves.pdf")
     plt.show()
-    
-    print(f"\n✅ Successfully plotted training curves!")
-
-def plot_curves_from_ids(run_ids: List[str]):
-    """
-    Convenience function to plot curves from a list of run IDs.
-    
-    Args:
-        run_ids: List of WandB run IDs
-    """
-    if not run_ids:
-        print("❌ No run IDs provided. Please add run IDs to the RUN_IDS list or pass them as argument.")
-        return
-    
-    plot_training_curves(run_ids, WANDB_PROJECT, WANDB_ENTITY)
-
-# ============================================================================
-# EXAMPLE USAGE
-# ============================================================================
-
-def main():
-    """Main function - modify RUN_IDS list above or call plot_curves_from_ids() with your IDs."""
-    
-    # Example: Use the RUN_IDS list defined at the top
-    if RUN_IDS:
-        plot_curves_from_ids(RUN_IDS)
-    else:
-        print("📝 To use this script:")
-        print("1. Add your run IDs to the RUN_IDS list at the top of the file, or")
-        print("2. Call plot_curves_from_ids(['run_id_1', 'run_id_2', ...]) with your run IDs")
-        print("\nExample:")
-        print("plot_curves_from_ids(['abc123def456', 'xyz789uvw012'])")
-        
-        # Example with dummy IDs (will fail but shows the format)
-        # plot_curves_from_ids(['example_run_id_1', 'example_run_id_2'])
 
 if __name__ == "__main__":
-    main()
+    if RUN_IDS:
+        print("Starting training curves plot...")
+        plot_training_curves(RUN_IDS)
+    else:
+        print("Add run IDs to the RUN_IDS list")
