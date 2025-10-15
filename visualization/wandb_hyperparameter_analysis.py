@@ -32,19 +32,22 @@ TARGET_GROUPS = [
     #"AdamW_35M_lr_weight_decay_sweeps",
     #"AdamW_90M_lr_weight_decay_sweeps",
     #"AdamW_180M_lr_weight_decay_sweeps",
-    "AdamW_330M_lr_weight_decay_sweeps",
+    #"AdamW_330M_lr_weight_decay_sweeps",
     #"Ademamix_dana_small_lr_wd_sweep",
     #"Ademamix_dana_35M_lr_wd_gamma3factor_sweep"
     #"Ademamix_dana_90M_lr_wd_sweep_new"
     #"Ademamix_dana_180M_lr_wd_sweep_new"
+    #"Ademamix_dana_180M_gamma3factor_0_5_lr_weight_decay_sweep",
+    #"Ademamix_dana_180M_lr_weight_decay_gamma3factor_0_25_sweeps",
+    "Ademamix_dana_330M_lr_weight_decay_gamma3factor_sweeps"
     # Add more groups as needed
 ]
 
 # Additional filters (optional)
 ADDITIONAL_FILTERS = {
     "config.dataset": "fineweb_100",
-    "config.opt": "adamw",
-    #"config.gamma_3_factor": 0.5,
+    "config.opt": "dana",
+    "config.gamma_3_factor": .5,
     # "config.dataset": "fineweb",  # Uncomment to filter by dataset
     # "state": "finished",  # Only finished runs
     # Add more filters as needed
@@ -83,7 +86,7 @@ COMPUTED_PARAMS = [
 ]
 
 # Number of best runs to highlight
-TOP_N_RUNS = 1
+TOP_N_RUNS = 3
 
 # Visualization settings
 FIGURE_SIZE = (15, 10)

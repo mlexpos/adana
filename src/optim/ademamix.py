@@ -102,7 +102,7 @@ class AdEMAMix(torch.optim.Optimizer):
 
         for group in self.param_groups:
             lr = group["lr"]
-            lmbda = group["weight_decay"]
+            wd = group["weight_decay"]
             eps = group["eps"]
             beta1, beta2, beta3_final = group["betas"]
             beta3_warmup = group["beta3_warmup"]
@@ -188,7 +188,7 @@ class AdEMAMix(torch.optim.Optimizer):
                 ) / denom
 
                 # decay
-                update.add_(p, alpha=lmbda)
+                update.add_(p, alpha=wd)
 
                 p.add_(-lr * update)
 
