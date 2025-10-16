@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define lr values
-lr_values=(2e-5 4e-5 6e-5 8e-5 1e-4)
+lr_values=(6e-5 8e-5 1e-4)
 
 # Define r values for wd_ts calculation
 r_values=( 2 )
