@@ -11,7 +11,7 @@
 export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=d2f72ec36001f518a4ecf4fe12149a8267e526b0
 export WANDB_PROJECT=danastar
-export WANDB_RUN_GROUP=DanaStar_MK4_330M_Sweep_formula12
+export WANDB_RUN_GROUP=Courtney_testing
 export WANDB_ENTITY=ep-rmt-ml-opt
 
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
