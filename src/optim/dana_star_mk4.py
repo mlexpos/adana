@@ -291,16 +291,16 @@ class DANA_STAR_MK4(Optimizer):
                 # THOUGH with a built in clipping, which is stronger than what is in the ODEs
 
                 mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
-                kappa_factor = torch.clamp(
+                alpha_factor = torch.clamp(
                         (effective_time**(1-self.kappa))
-                        *(mfac**(2*self.mk4B))
+                        *(mfac**(2*self.mk4B+1))
                         *(norm_term**(2*(-self.mk4A-self.mk4B)))
                         ,max=clipsnr)
-                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(kappa_factor*mfac) + 1.0 * m * norm_term) 
-                state["current_alpha"] = (kappa_factor*mfac).mean().detach()
-                state["current_kappa_factor"] = (kappa_factor).mean().detach()
+                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(alpha_factor) + 1.0 * m * norm_term) 
+                state["current_alpha"] = (alpha_factor).mean().detach()
                 state["gradient_norm"] = grad.norm().detach()
                 state["auto_factor_mean"] = mfac.mean().detach()
+                state["current_kappa_factor"] = state["current_alpha"]/state["auto_factor_mean"]
                 state["m_norm"] = m.norm().detach()
 
                 # g3_term = g3 * (kappa_factor * mfac)
