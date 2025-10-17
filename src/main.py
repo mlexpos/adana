@@ -303,6 +303,8 @@ def main(args, parser):
             lr=args.lr,
             delta=args.delta,
             kappa=args.kappa,
+            mk4A=args.mk4A,
+            mk4B=args.mk4B,
             weight_decay=args.weight_decay,
             clipsnr=args.clipsnr,
             weight_time=args.weight_time,
