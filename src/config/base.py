@@ -58,7 +58,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument(
         "--scheduler",
         default="cos",
-        choices=["linear", "cos", "wsd", "none", "cos_inf"],
+        choices=["linear", "cos", "wsd", "none", "cos_inf", "powerlaw"],
     )
     parser.add_argument(
         "--div_factor", default=1e2, type=float
@@ -86,6 +86,11 @@ def parse_args(base_parser, args, namespace):
         choices=["linear", "cosine", "exp", "miror_cosine", "square", "sqrt"],
     )
     parser.add_argument("--dd_first_lr_factor", default=1e-2, type=float)
+    # powerlaw
+    parser.add_argument("--powerlaw_init_value", default=1.0, type=float)
+    parser.add_argument("--powerlaw_saturation_value", default=0.0, type=float)
+    parser.add_argument("--powerlaw_power", default=-0.5, type=float)
+    parser.add_argument("--powerlaw_time_scale", default=1.0, type=float)
 
     # Optimization
     parser.add_argument(

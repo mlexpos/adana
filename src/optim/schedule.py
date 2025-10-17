@@ -3,6 +3,70 @@ import math
 import numpy as np
 
 
+def powerlaw_schedule_with_warmup(
+    n_iterations,
+    n_warmup,
+    init_value=1.0,
+    saturation_value=0.0,
+    power=-0.5,
+    time_scale=1.0,
+):
+    """Power-law schedule with linear warmup.
+
+    Args:
+        n_iterations: total number of iterations
+        n_warmup: number of warmup iterations
+        init_value: initial value after warmup
+        saturation_value: minimum/maximum value (depending on power sign)
+        power: exponent for power law (negative for decay, positive for growth)
+        time_scale: scales the rate of change
+
+    Returns:
+        schedule: a function that takes the current iteration and
+                 returns the multiplicative factor for the learning rate
+
+    Examples:
+        # Decay schedule (like 1/sqrt(t))
+        schedule = powerlaw_schedule_with_warmup(
+            n_iterations=10000,
+            n_warmup=1000,
+            init_value=1.0,
+            saturation_value=0.1,
+            power=-0.5,
+            time_scale=1000.0
+        )
+
+        # Growth schedule
+        schedule = powerlaw_schedule_with_warmup(
+            n_iterations=10000,
+            n_warmup=1000,
+            init_value=0.1,
+            saturation_value=1.0,
+            power=0.5,
+            time_scale=1000.0
+        )
+    """
+    def schedule(step):
+        if step < n_warmup:
+            # Linear warmup from 0 to init_value
+            return (step / n_warmup) * init_value
+        else:
+            # Power-law schedule starting from warmup end
+            t = step - n_warmup  # Time since warmup ended
+            frac = 1.0 + t / time_scale
+            value = init_value * (frac ** power)
+
+            # Clamp to saturation value (works for both growth and decay)
+            if power < 0:
+                # Decay: take maximum (don't go below saturation)
+                return max(value, saturation_value)
+            else:
+                # Growth: take minimum (don't go above saturation)
+                return min(value, saturation_value)
+
+    return schedule
+
+
 def cos_inf_schedule(n_iterations, n_warmup, div_factor, final_div_factor, n_inf):
     """Cosine annealing with warmup and _constant_ final_lr after cycle ended.
     Args:

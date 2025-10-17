@@ -24,7 +24,7 @@ from optim.lion import Lion
 from optim.mars import MARS
 from optim.muon import CombinedScheduler, DistributedMuon, Muon
 from optim.prodigy import Prodigy
-from optim.schedule import cos_inf_schedule, wsd_schedule # cosine_wsd_decay_schedule, dd_schedule, DOES NOT EXIST
+from optim.schedule import cos_inf_schedule, wsd_schedule, powerlaw_schedule_with_warmup # cosine_wsd_decay_schedule, dd_schedule, DOES NOT EXIST
 from optim.schedulefree import AdamWScheduleFree, SGDScheduleFree
 from optim.sign import Signum
 from optim.soap import SOAP
@@ -422,6 +422,20 @@ def main(args, parser):
                 init_div_factor=1e2,
                 final_lr_factor=args.wsd_final_lr_scale,  # should be 0 here
                 decay_type=args.decay_type,
+            )
+            scheduler = (
+                torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)
+                if args.opt != "muon"
+                else CombinedScheduler(opt, args)
+            )
+        elif args.scheduler == "powerlaw":
+            lambda_schedule = powerlaw_schedule_with_warmup(
+                n_iterations=args.iterations,
+                n_warmup=args.warmup_steps,
+                init_value=args.powerlaw_init_value,
+                saturation_value=args.powerlaw_saturation_value,
+                power=args.powerlaw_power,
+                time_scale=args.powerlaw_time_scale,
             )
             scheduler = (
                 torch.optim.lr_scheduler.LambdaLR(opt, lambda_schedule)
