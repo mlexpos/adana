@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH --account=aip-gidelgau
-#SBATCH --time=00:10:00
+#SBATCH --account=rrg-bengioy-ad
+#SBATCH --time=167:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
@@ -24,25 +24,25 @@ echo "Activated virtual environment"
 
 DATASETS_DIR="$HOME/scratch/"
 
-lr=0.000151
-iterations=400800
-wd=$(echo "4.0 / $lr / $iterations" | bc -l)
-gamma_3_factor=1.
-printf "Weight decay: %f\n" $wd
-uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
-    --distributed_backend nccl --compile \
-    --n_embd 2048 --qkv_dim 64 --n_head 32 --n_layer 24 \
-    --mlp_hidden_dim 8192 \
-    --batch_size 32 --sequence_length 2048 --acc_steps 8 \
-    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
-    --iterations 400800 \
-    --dropout 0.0 --warmup_steps 8016 --grad_clip 0.5 --seed 0 \
-    --z_loss_coeff 0.0 \
-    --opt adamw --lr $lr --weight_decay $wd \
-    --beta1 0.9 --beta2 0.999 --gamma_3_factor $gamma_3_factor \
-    --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
-    --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-    --eval_interval 115
+# lr=0.000151
+# iterations=400800
+# wd=$(echo "4.0 / $lr / $iterations" | bc -l)
+# gamma_3_factor=1.
+# printf "Weight decay: %f\n" $wd
+# uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
+#     --distributed_backend nccl --compile \
+#     --n_embd 2048 --qkv_dim 64 --n_head 32 --n_layer 24 \
+#     --mlp_hidden_dim 8192 \
+#     --batch_size 4 --sequence_length 2048 --acc_steps 8 \
+#     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+#     --iterations 400800 \
+#     --dropout 0.0 --warmup_steps 8016 --grad_clip 0.5 --seed 0 \
+#     --z_loss_coeff 0.0 \
+#     --opt adamw --lr $lr --weight_decay $wd \
+#     --beta1 0.9 --beta2 0.999 --gamma_3_factor $gamma_3_factor \
+#     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
+#     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
+#     --eval_interval 115
 
 # lr=0.0000142
 # iterations=400800
@@ -53,7 +53,7 @@ uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format ba
 #     --distributed_backend nccl --compile \
 #     --n_embd 2048 --qkv_dim 64 --n_head 32 --n_layer 24 \
 #     --mlp_hidden_dim 8192 \
-#     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
+#     --batch_size 4 --sequence_length 2048 --acc_steps 8 \
 #     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
 #     --iterations 400800 \
 #     --dropout 0.0 --warmup_steps 8016 --grad_clip 0.5 --seed 0 \
@@ -64,23 +64,23 @@ uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format ba
 #     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
 #     --eval_interval 115
 
-# lr=0.0000662
-# iterations=400800
-# wd=$(echo "4.0 / $lr / $iterations" | bc -l)
-# gamma_3_factor=1.
-# printf "Weight decay: %f\n" $wd
-# uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
-#     --distributed_backend nccl --compile \
-#     --n_embd 2048 --qkv_dim 64 --n_head 32 --n_layer 24 \
-#     --mlp_hidden_dim 8192 \
-#     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-#     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
-#     --iterations 400800 \
-#     --dropout 0.0 --warmup_steps 8016 --grad_clip 0.5 --seed 0 \
-#     --z_loss_coeff 0.0 \
-#     --opt ademamix --lr $lr --weight_decay $wd --delta 8 --kappa 0.75 \
-#     --beta1 0.9 --beta2 0.999 --gamma_3_factor $gamma_3_factor \
-#     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
-#     --adema_beta3_warmup 400800 --adema_alpha_warmup 400800 \
-#     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-#     --eval_interval 115
+lr=0.0000662
+iterations=400800
+wd=$(echo "4.0 / $lr / $iterations" | bc -l)
+gamma_3_factor=1.
+printf "Weight decay: %f\n" $wd
+uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
+    --distributed_backend nccl --compile \
+    --n_embd 2048 --qkv_dim 64 --n_head 32 --n_layer 24 \
+    --mlp_hidden_dim 8192 \
+    --batch_size 4 --sequence_length 2048 --acc_steps 8 \
+    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+    --iterations 400800 \
+    --dropout 0.0 --warmup_steps 8016 --grad_clip 0.5 --seed 0 \
+    --z_loss_coeff 0.0 \
+    --opt ademamix --lr $lr --weight_decay $wd --delta 8 --kappa 0.75 \
+    --beta1 0.9 --beta2 0.999 --gamma_3_factor $gamma_3_factor \
+    --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
+    --adema_beta3_warmup 400800 --adema_alpha_warmup 400800 \
+    --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
+    --eval_interval 115
