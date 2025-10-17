@@ -119,6 +119,41 @@ MODEL_CONFIGS = {
         'n_head': 20,
         'qkv_dim': 64,
         'n_params': 330_000_000
+    },
+
+    # Adam-Star configurations
+    'AS35M': {
+        'group': 'AdamStar_35M_lr_weight_decay_sweeps',
+        'title': 'Adam-Star 35M: JAX Softplus-like Fits',
+        'filename': 'adamstar_35m_lrwd_sweep_jax.pdf',
+        'optimizer': 'adamstar',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 6,  # 35M model: 6 layers
+        'n_head': 8,
+        'qkv_dim': 64,
+        'n_params': 35_000_000
+    },
+    'AS90M': {
+        'group': 'AdamStar_90M_lr_weight_decay_sweeps',
+        'title': 'Adam-Star 90M: JAX Softplus-like Fits',
+        'filename': 'adamstar_90m_lrwd_sweep_jax.pdf',
+        'optimizer': 'adamstar',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 9,  # 90M model: 9 layers
+        'n_head': 12,
+        'qkv_dim': 64,
+        'n_params': 90_000_000
+    },
+    'AS180M': {
+        'group': 'AdamStar_180M_lr_weight_decay_sweeps',
+        'title': 'Adam-Star 180M: JAX Softplus-like Fits',
+        'filename': 'adamstar_180m_lrwd_sweep_jax.pdf',
+        'optimizer': 'adamstar',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 12,  # 180M model: 12 layers
+        'n_head': 16,
+        'qkv_dim': 64,
+        'n_params': 180_000_000
     }
 }
 

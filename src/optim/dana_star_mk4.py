@@ -12,6 +12,9 @@ class DANA_STAR_MK4(Optimizer):
         # g2: float = 1e-4,
         # g3: float = 1e-5,
         delta: float = 8.0,
+        kappa: float = 1.0,
+        mk4A: float = 0.0,
+        mk4B: float = 0.0,
         epsilon: float = 1e-8,
         weight_decay: float = 0.0,
         clipsnr: float = 1.0,
@@ -38,6 +41,9 @@ class DANA_STAR_MK4(Optimizer):
             lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, weight_decay=weight_decay, weighted_step_count=0)
         self.lr = lr
         self.delta = delta
+        self.kappa = kappa
+        self.mk4A = mk4A
+        self.mk4B = mk4B
         self.clipsnr = clipsnr
         self.epsilon = epsilon
         self.weight_decay = weight_decay
@@ -272,18 +278,37 @@ class DANA_STAR_MK4(Optimizer):
                 #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
                 #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
                 #g3_term = g3 * m * norm_term * clip_g3_term
-                mfac=(norm_term*m/self._tau_reg(tau, step))
-                mnormsquared = torch.sum((m/self._tau_reg(tau, step))**2)
-                gradnormsquared = torch.sum(v/self._tau_reg(tau, step))
-                kappa_factor = torch.minimum(effective_time**(1.2) * (mnormsquared/(gradnormsquared+epsilon**2)),effective_time)
-                kappa_factor = torch.clamp(kappa_factor, min=1.0)
+                # mfac=(norm_term*m/self._tau_reg(tau, step))
+                # mnormsquared = torch.sum((m/self._tau_reg(tau, step))**2)
+                # gradnormsquared = torch.sum(v/self._tau_reg(tau, step))
+                # kappa_factor = torch.minimum(effective_time**(1.2) * (mnormsquared/(gradnormsquared+epsilon**2)),effective_time)
+                # kappa_factor = torch.clamp(kappa_factor, min=1.0)
 
-                g3_term = g3 * (kappa_factor * mfac)
-                state["current_alpha"] = (torch.abs(kappa_factor * mfac)).mean().detach()
-                state["current_kappa_factor"] = kappa_factor.mean().detach()
+                #formula 12 (CORRESPONDS to A,B 0.0/0.0/KAPPA)  We threshold DanaStar for fixed kappa with a clip,
+                #so the algorithm adjusts automatically between formula4 and DanaStar.
+
+                #formula 13 (CORRESPONDS to A,B mk4A/mk4B/KAPPA)  We use a powerlaw schedule for the kappa factor,
+                # THOUGH with a built in clipping, which is stronger than what is in the ODEs
+
+                mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
+                alpha_factor = torch.clamp(
+                        (effective_time**(1-self.kappa))
+                        *(mfac**(2*self.mk4B+1))
+                        *(norm_term**(2*(-self.mk4A-self.mk4B)))
+                        ,max=clipsnr)
+                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(alpha_factor) + 1.0 * m * norm_term) 
+                state["current_alpha"] = (alpha_factor).mean().detach()
                 state["gradient_norm"] = grad.norm().detach()
-                state["auto_factor_mean"] = (torch.abs(mfac)).mean().detach()
+                state["auto_factor_mean"] = mfac.mean().detach()
+                state["current_kappa_factor"] = state["current_alpha"]/state["auto_factor_mean"]
                 state["m_norm"] = m.norm().detach()
+
+                # g3_term = g3 * (kappa_factor * mfac)
+                # state["current_alpha"] = (torch.abs(kappa_factor * mfac)).mean().detach()
+                # state["current_kappa_factor"] = kappa_factor.mean().detach()
+                # state["gradient_norm"] = grad.norm().detach()
+                # state["auto_factor_mean"] = (torch.abs(mfac)).mean().detach()
+                # state["m_norm"] = m.norm().detach()
 
                 # Compute parameter updates using effective time for g2 and g3 scheduling
                 g2_term = g2 * grad * norm_term #* clip_g2_term

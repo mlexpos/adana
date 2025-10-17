@@ -176,6 +176,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--g3", default=1e-3, type=float)
     parser.add_argument("--delta", default=8.0, type=float)
     parser.add_argument("--kappa", default=1.0, type=float)
+    parser.add_argument("--mk4A", default=0.0, type=float)
+    parser.add_argument("--mk4B", default=0.0, type=float)
     parser.add_argument("--clipsnr", default=1.0, type=float)
     parser.add_argument("--weight_time", default=False, action="store_true")
     parser.add_argument("--wd_decaying", default=False, action="store_true")

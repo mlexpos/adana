@@ -11,7 +11,7 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --iterations 13953 \
     --dropout 0.0 --warmup_steps 280 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt dana-star-mk4 --lr 16e-4 --delta 8 --clipsnr 1.0 \
+    --opt dana-star-mk4 --lr 10e-4 --delta 8 --kappa 0.75 --clipsnr 0.25 \
     --weight_decay 1.0 --wd_decaying --wd_ts 1000 \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \

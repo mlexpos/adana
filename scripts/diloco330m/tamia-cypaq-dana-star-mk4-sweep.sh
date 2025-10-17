@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=8:00:00
+#SBATCH --time=9:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
@@ -11,7 +11,7 @@
 export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=d2f72ec36001f518a4ecf4fe12149a8267e526b0
 export WANDB_PROJECT=danastar
-export WANDB_RUN_GROUP=DanaStar_MK4_330M_Sweep
+export WANDB_RUN_GROUP=DanaStar_MK4_330M_Sweep_formula12
 export WANDB_ENTITY=ep-rmt-ml-opt
 
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
@@ -73,7 +73,7 @@ torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --mo
     --iterations 129312 \
     --dropout 0.0 --warmup_steps 2586 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt dana-star-mk4 --lr $LR --delta 8 --clipsnr $CLIPSNR \
+    --opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR \
     --weight_decay 1.0 --wd_decaying --wd_ts $WD_TS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
