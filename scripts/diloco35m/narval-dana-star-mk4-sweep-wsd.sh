@@ -65,9 +65,6 @@ done
 
 echo "Using lr=$LR, wd_ts=$WD_TS, and clipsnr=$CLIPSNR"
 
-# Calculate decay start: 75% of 21481 iterations = 16110.75 ≈ 16111
-DECAY_START=16111
-
 torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
@@ -77,8 +74,8 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --iterations 21481 \
     --dropout 0.0 --warmup_steps 430 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt dana-star-mk4 --lr $LR --delta 8 --kappa -0.25 --mk4A -1.0 --mk4B 1.0 --clipsnr $CLIPSNR \
+    --opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR \
     --weight_decay 1.0 --wd_decaying --wd_ts $WD_TS \
-    --scheduler wsd --wsd_decay_start $DECAY_START --wsd_final_lr_scale 0.0 \
+    --scheduler wsd --wsd_fract_decay 0.25 --wsd_final_lr_scale 0.0 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115 --log_interval 50
