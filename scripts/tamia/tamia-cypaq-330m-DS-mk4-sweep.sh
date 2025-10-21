@@ -7,7 +7,7 @@ lr_values=(4e-5 6e-5 8e-5)
 r_values=( 2 )
 
 # Define clipsnr values
-clipsnr_values=( 0.5 )
+clipsnr_values=( 0.25 0.5 1.0 )
 
 echo "Starting grid search over lr, wd_ts, and clipsnr parameters"
 echo "lr values: ${lr_values[@]}"
