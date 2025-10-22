@@ -4,7 +4,7 @@
 lr_values=(4e-5 6e-5 8e-5)
 
 # Define r values for wd_ts calculation
-r_values=( 2.5 3 )
+r_values=( 3 )
 
 # Define clipsnr values
 clipsnr_values=( 2.0 )
