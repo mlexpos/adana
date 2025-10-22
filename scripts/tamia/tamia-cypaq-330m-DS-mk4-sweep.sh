@@ -4,10 +4,10 @@
 lr_values=(4e-5 6e-5 8e-5)
 
 # Define r values for wd_ts calculation
-r_values=( 2 )
+r_values=( 2.5 3 )
 
 # Define clipsnr values
-clipsnr_values=( 2.0 4.0 8.0 16.0 )
+clipsnr_values=( 2.0 )
 
 echo "Starting grid search over lr, wd_ts, and clipsnr parameters"
 echo "lr values: ${lr_values[@]}"
