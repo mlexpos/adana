@@ -118,7 +118,8 @@ def parse_args(base_parser, args, namespace):
             "dana",
             "sign_dana",
             "auto-dana",
-            "dana-star-mk4"
+            "dana-star-mk4",
+            "snoo-dana"
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)
@@ -141,8 +142,14 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--nesterov", default=False, type=bool)
     parser.add_argument("--muon_ns_steps", default=5, type=int)
     parser.add_argument("--muon_lr_factor", default=1.0, type=float)
-    #parser.add_argument("--adema_beta3", default=0.9, type=float)
+    parser.add_argument("--adema_beta3", default=None, type=float)
     #parser.add_argument("--adema_alpha", default=2.0, type=float)
+
+    # SNOO-DANA params
+    parser.add_argument("--lr_inner", default=1e-3, type=float)
+    parser.add_argument("--lr_outer", default=0.5, type=float)
+    parser.add_argument("--k", default=1, type=int)
+
     parser.add_argument("--adema_beta3_warmup", default=None, type=int)
     parser.add_argument("--adema_alpha_warmup", default=None, type=int)
     parser.add_argument("--schedulefree_r", default=0.0, type=float)

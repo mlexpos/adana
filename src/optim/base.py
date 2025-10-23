@@ -81,16 +81,22 @@ def train(
             if curr_iter % cfg.permanent_ckpt_interval == 0:
                 ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
                 if distributed_backend.is_master_process():
+                    print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
                 save_worker_state(ckpt_dir)
+                if distributed_backend.is_master_process():
+                    print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
 
         # Save temporary checkpoint for resuming training
         if cfg.latest_ckpt_interval > 0:
             if curr_iter % cfg.latest_ckpt_interval == 0 or curr_iter == cfg.iterations:
                 ckpt_dir = exp_dir / "ckpts" / "latest"
                 if distributed_backend.is_master_process():
+                    print(f"[Checkpoint] START latest    iter={curr_iter} -> {ckpt_dir}")
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
                 save_worker_state(ckpt_dir)
+                if distributed_backend.is_master_process():
+                    print(f"[Checkpoint] END   latest    iter={curr_iter} -> {ckpt_dir}")
 
         ws = distributed_backend.get_world_size()
         tokens = ws * substep * cfg.sequence_length * cfg.batch_size
