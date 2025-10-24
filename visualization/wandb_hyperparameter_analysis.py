@@ -37,26 +37,22 @@ TARGET_GROUPS = [
     #"Ademamix_dana_35M_lr_wd_gamma3factor_sweep"
     #"Ademamix_dana_90M_lr_wd_sweep_new"
     #"Ademamix_dana_180M_lr_wd_sweep_new"
-<<<<<<< Updated upstream
     #"Ademamix_dana_180M_gamma3factor_0_5_lr_weight_decay_sweep",
     #"Ademamix_dana_180M_lr_weight_decay_gamma3factor_0_25_sweeps",
-    "Ademamix_dana_330M_lr_weight_decay_gamma3factor_sweeps"
-=======
-    "Ademamix_small_lr_wd_delta_gamma3factor_sweeps",
->>>>>>> Stashed changes
+    #"Ademamix_dana_330M_lr_weight_decay_gamma3factor_sweeps"
+    #"scaling_experiment_ademamix_dana"
+    "Ademamix_small_plrf_behavior"
+
     # Add more groups as needed
 ]
 
 # Additional filters (optional)
 ADDITIONAL_FILTERS = {
     "config.dataset": "fineweb_100",
-<<<<<<< Updated upstream
-    "config.opt": "dana",
-    "config.gamma_3_factor": .5,
-=======
     "config.opt": "ademamix",
-    #"config.gamma_3_factor": 0.5,
->>>>>>> Stashed changes
+    "config.gamma_3_factor": 1.0,
+    "config.iterations": 13953,
+
     # "config.dataset": "fineweb",  # Uncomment to filter by dataset
     # "state": "finished",  # Only finished runs
     # Add more filters as needed
@@ -97,7 +93,7 @@ COMPUTED_PARAMS = [
 ]
 
 # Number of best runs to highlight
-TOP_N_RUNS = 3
+TOP_N_RUNS = 10
 
 # Visualization settings
 FIGURE_SIZE = (15, 10)
@@ -290,6 +286,86 @@ def find_best_hyperparams(df: pd.DataFrame, top_n: int = 10) -> pd.DataFrame:
     
     return best_runs
 
+def create_all_runs_plot(df: pd.DataFrame, best_runs: pd.DataFrame):
+    """
+    Create a comprehensive plot showing all runs with performance distribution.
+    
+    Args:
+        df: Full dataset
+        best_runs: Top performing runs
+    """
+    print("  📊 Creating all runs overview plot...")
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    
+    # 1. Performance distribution histogram
+    ax1 = axes[0, 0]
+    ax1.hist(df[PRIMARY_METRIC], bins=30, alpha=0.7, color='lightblue', edgecolor='black')
+    ax1.axvline(best_runs[PRIMARY_METRIC].iloc[0], color='red', linestyle='--', linewidth=2, 
+                label=f'Best: {best_runs[PRIMARY_METRIC].iloc[0]:.4f}')
+    ax1.axvline(df[PRIMARY_METRIC].mean(), color='orange', linestyle='--', linewidth=2, 
+                label=f'Mean: {df[PRIMARY_METRIC].mean():.4f}')
+    ax1.set_xlabel(PRIMARY_METRIC)
+    ax1.set_ylabel('Number of Runs')
+    ax1.set_title('Performance Distribution')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # 2. Learning rate vs Performance (if lr is available)
+    ax2 = axes[0, 1]
+    if 'config_lr' in df.columns:
+        # All runs
+        ax2.scatter(df['config_lr'], df[PRIMARY_METRIC], alpha=0.6, s=20, c='lightblue', label='All runs')
+        # Best runs
+        ax2.scatter(best_runs['config_lr'], best_runs[PRIMARY_METRIC], 
+                   alpha=0.8, s=60, c='red', label=f'Top {len(best_runs)}', zorder=5)
+        ax2.set_xlabel('Learning Rate')
+        ax2.set_ylabel(PRIMARY_METRIC)
+        ax2.set_title('Learning Rate vs Performance')
+        ax2.set_xscale('log')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+    else:
+        ax2.text(0.5, 0.5, 'Learning Rate not available', ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_title('Learning Rate vs Performance')
+    
+    # 3. Weight decay vs Performance (if weight_decay is available)
+    ax3 = axes[1, 0]
+    if 'config_weight_decay' in df.columns:
+        # All runs
+        ax3.scatter(df['config_weight_decay'], df[PRIMARY_METRIC], alpha=0.6, s=20, c='lightblue', label='All runs')
+        # Best runs
+        ax3.scatter(best_runs['config_weight_decay'], best_runs[PRIMARY_METRIC], 
+                   alpha=0.8, s=60, c='red', label=f'Top {len(best_runs)}', zorder=5)
+        ax3.set_xlabel('Weight Decay')
+        ax3.set_ylabel(PRIMARY_METRIC)
+        ax3.set_title('Weight Decay vs Performance')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+    else:
+        ax3.text(0.5, 0.5, 'Weight Decay not available', ha='center', va='center', transform=ax3.transAxes)
+        ax3.set_title('Weight Decay vs Performance')
+    
+    # 4. Run count by group
+    ax4 = axes[1, 1]
+    group_counts = df['group'].value_counts()
+    ax4.bar(range(len(group_counts)), group_counts.values, color='lightgreen', edgecolor='black')
+    ax4.set_xlabel('Group')
+    ax4.set_ylabel('Number of Runs')
+    ax4.set_title('Runs by Group')
+    ax4.set_xticks(range(len(group_counts)))
+    ax4.set_xticklabels(group_counts.index, rotation=45, ha='right')
+    ax4.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    filename = f"visualization/all_runs_overview.{SAVE_FORMAT}"
+    plt.savefig(filename, format=SAVE_FORMAT, dpi=DPI, bbox_inches='tight')
+    print(f"  ✓ Saved all runs overview plot: {filename}")
+    
+    plt.show()
+
 def create_hyperparameter_visualization(df: pd.DataFrame, best_runs: pd.DataFrame):
     """
     Create comprehensive visualizations of hyperparameters vs performance.
@@ -299,6 +375,9 @@ def create_hyperparameter_visualization(df: pd.DataFrame, best_runs: pd.DataFram
         best_runs: Top performing runs
     """
     print("\n📈 Creating visualizations...")
+    
+    # Create all runs overview plot first
+    create_all_runs_plot(df, best_runs)
     
     # Set up the plotting style
     plt.style.use('default')

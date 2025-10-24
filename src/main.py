@@ -33,6 +33,7 @@ from optim.dana_star import DANA_STAR, DANA
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
+from optim.snoo_dana import snoo_DANA
 
 
 def get_args():
@@ -46,7 +47,9 @@ def get_args():
     final_args = config.parse_args_with_format(
         format=args.config_format, base_parser=parser, args=rem_args, namespace=args
     )
-    args.adema_beta3 = 1 - args.delta / args.iterations
+    # Use provided beta3 if given, otherwise compute it
+    if args.adema_beta3 is None:
+        args.adema_beta3 = 1 - args.delta / args.iterations
     args.adema_alpha = args.iterations ** (1 - args.kappa)
     
     return final_args, parser
@@ -72,6 +75,19 @@ def main(args, parser):
 
     exp_name = get_exp_name(args, parser, distributed_backend)
     exp_dir = Path(args.results_base_folder) / exp_name
+    # If resuming from a checkpoint, reuse the original experiment directory
+    if args.resume_from is not None:
+        resume_ckpt_dir = Path(args.resume_from)
+        # Allow both checkpoint directory and file path inputs
+        if resume_ckpt_dir.suffix == ".pt":
+            resume_ckpt_dir = resume_ckpt_dir.parent
+        # Typical layout: <exp_dir>/ckpts/<step or latest>
+        if resume_ckpt_dir.parent.name == "ckpts":
+            exp_dir = resume_ckpt_dir.parent.parent
+        else:
+            # If a non-standard path is provided, fall back to its parent as exp_dir
+            exp_dir = resume_ckpt_dir
+        exp_name = exp_dir.name
     if distributed_backend.is_master_process() and args.wandb:
         wandb.init(
             project=args.wandb_project,
@@ -367,6 +383,19 @@ def main(args, parser):
             norm_type=args.norm_type,
             beta1=args.beta1,
         )
+    elif args.opt == "snoo-dana":
+        opt = snoo_DANA(
+            group_specs,
+            lr_inner=args.lr_inner,
+            lr_outer=args.lr_outer,
+            weight_decay=args.weight_decay,
+            beta1=args.beta1,
+            beta2=args.beta2,
+            delta=args.delta,
+            kappa=args.kappa,
+            gamma_3_factor=args.gamma_3_factor,
+            k=args.k,
+        )
     else:
         opt = torch.optim.SGD(
             group_specs,
@@ -447,18 +476,20 @@ def main(args, parser):
     else:
         scheduler = None
 
-    if (exp_dir / "ckpts" / "latest" / "main.pt").exists():
-        if not args.auto_resume:
-            raise ValueError(
-                f"The experiment dir {exp_dir} already exists. "
-                + "To resume training, set auto_resume=True. "
-                + "Otherwise, specify a different experiment name. "
-            )
-        else:
-            # Auto resume overwrites resume_from
-            args.resume_from = str(exp_dir / "ckpts" / "latest")
-    elif distributed_backend.is_master_process():
-        exp_dir.mkdir(parents=True, exist_ok=True)
+    # Only enforce/prepare directory when not explicitly resuming
+    if args.resume_from is None:
+        if (exp_dir / "ckpts" / "latest" / "main.pt").exists():
+            if not args.auto_resume:
+                raise ValueError(
+                    f"The experiment dir {exp_dir} already exists. "
+                    + "To resume training, set auto_resume=True. "
+                    + "Otherwise, specify a different experiment name. "
+                )
+            else:
+                # Auto resume overwrites resume_from
+                args.resume_from = str(exp_dir / "ckpts" / "latest")
+        elif distributed_backend.is_master_process():
+            exp_dir.mkdir(parents=True, exist_ok=True)
 
     stats = train(
         model=model,
