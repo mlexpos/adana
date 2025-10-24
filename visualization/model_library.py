@@ -154,6 +154,52 @@ MODEL_CONFIGS = {
         'n_head': 16,
         'qkv_dim': 64,
         'n_params': 180_000_000
+    },
+
+    # DanaStar MK4 configurations
+    'MK4_35M': {
+        'group': 'DanaStar_MK4_35M_Sweep_formula12',
+        'title': 'DanaStar MK4 35M: JAX Softplus-like Fits',
+        'filename': 'danastar_mk4_35m_lrwd_sweep_jax.pdf',
+        'optimizer': 'mk4',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 6,  # 35M model: 6 layers
+        'n_head': 8,
+        'qkv_dim': 64,
+        'n_params': 35_000_000
+    },
+    'MK4_90M': {
+        'group': 'DanaStar_MK4_90M_Sweep_formula12',
+        'title': 'DanaStar MK4 90M: JAX Softplus-like Fits',
+        'filename': 'danastar_mk4_90m_lrwd_sweep_jax.pdf',
+        'optimizer': 'mk4',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 9,  # 90M model: 9 layers
+        'n_head': 12,
+        'qkv_dim': 64,
+        'n_params': 90_000_000
+    },
+    'MK4_180M': {
+        'group': 'DanaStar_MK4_180M_Sweep_formula12',
+        'title': 'DanaStar MK4 180M: JAX Softplus-like Fits',
+        'filename': 'danastar_mk4_180m_lrwd_sweep_jax.pdf',
+        'optimizer': 'mk4',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 12,  # 180M model: 12 layers
+        'n_head': 16,
+        'qkv_dim': 64,
+        'n_params': 180_000_000
+    },
+    'MK4_330M': {
+        'group': 'DanaStar_MK4_330M_Sweep_formula12',
+        'title': 'DanaStar MK4 330M: JAX Softplus-like Fits',
+        'filename': 'danastar_mk4_330m_lrwd_sweep_jax.pdf',
+        'optimizer': 'mk4',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 15,  # 330M model: 15 layers
+        'n_head': 20,
+        'qkv_dim': 64,
+        'n_params': 330_000_000
     }
 }
 

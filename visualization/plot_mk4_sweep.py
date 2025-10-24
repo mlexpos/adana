@@ -145,7 +145,7 @@ def load_wandb_data(project_name, group_name):
         weight_decay = config.get('weight_decay', {}).get('value') if isinstance(config.get('weight_decay'), dict) else config.get('weight_decay')
         clipsnr = config.get('clipsnr', {}).get('value') if isinstance(config.get('clipsnr'), dict) else config.get('clipsnr')
         dataset = config.get('dataset', {}).get('value') if isinstance(config.get('dataset'), dict) else config.get('dataset')
-        val_loss = summary.get('val/loss')
+        val_loss = summary.get('final-val/loss')
 
         # Get iteration counts to check if run completed
         iterations_config = config.get('iterations', {}).get('value') if isinstance(config.get('iterations'), dict) else config.get('iterations')
@@ -240,7 +240,7 @@ def plot_sweep_results(df, output_filename='mk4_sweep_results.pdf'):
 
     # Formatting
     plt.xlabel('Learning Rate (lr)', fontsize=12)
-    plt.ylabel('Validation Loss (val/loss)', fontsize=12)
+    plt.ylabel('Validation Loss (final-val/loss)', fontsize=12)
     plt.title('Dana-Star-MK4 Sweep: Final Validation Loss vs Learning Rate', fontsize=14)
     plt.xscale('log')
     plt.yscale('log')
