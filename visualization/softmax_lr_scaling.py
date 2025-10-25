@@ -86,12 +86,15 @@ def compute_non_embedding_params(n_head, qkv_dim, n_layer):
     """
     Compute non-embedding parameters based on DiLoCoAttention and DiLoCoMLP.
 
-    (These decisions depend on how the MLP hidden dimension was chosen.)
+    (These decisions depend on how the MLP hidden dimension being 4x embed and head*qkv = embed.)
 
-    Formula: (n_head × qkv_dim)² × (3 + 8) × n_layer
+    qkv -- 3
+    proj -- 1
+    mlp -- 2 x 4
+    Formula: ( (3+1+8) * (n_head × qkv_dim)² +  ) × n_layer
     """
     n_embd = n_head * qkv_dim
-    return n_embd * n_embd * (3 + 8) * n_layer
+    return 12 * n_embd * n_embd * n_layer
 
 def compute_total_non_norm_params(n_head, qkv_dim, n_layer):
     """
@@ -112,7 +115,7 @@ def compute_compute(n_head, qkv_dim, n_layer):
     """Compute compute metric: (non-emb) * (total_params) * 20 / (32 * 2048)"""
     non_emb = compute_non_embedding_params(n_head, qkv_dim, n_layer)
     total_params = compute_total_non_norm_params(n_head, qkv_dim, n_layer)
-    return non_emb * total_params * 20 / (32 * 2048)
+    return 6*non_emb * total_params * 20 / (32 * 2048)
 
 @jit
 def power_law_function(params, A, B):

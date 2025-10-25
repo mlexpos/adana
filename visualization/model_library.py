@@ -63,6 +63,28 @@ MODEL_CONFIGS = {
         'qkv_dim': 64,
         'n_params': 180_000_000
     },
+    'DS550M': {
+        'group': 'DanaStar_550M_lr_weight_decay_sweeps',
+        'title': 'DanaStar 550M: JAX Softplus-like Fits',
+        'filename': 'danastar_550m_lrwd_sweep_jax.pdf',
+        'optimizer': 'danastar',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 18,  # 550M model: 18 layers
+        'n_head': 24,
+        'qkv_dim': 64,
+        'n_params': 550_000_000
+    },
+    'DS13B': {
+        'group': 'DanaStar_13B_lr_weight_decay_sweeps',
+        'title': 'DanaStar 13B: JAX Softplus-like Fits',
+        'filename': 'danastar_13b_lrwd_sweep_jax.pdf',
+        'optimizer': 'danastar',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 24,  # 13B model: 24 layers
+        'n_head': 32,
+        'qkv_dim': 64,
+        'n_params': 13_000_000_000
+    },
 
     # AdamW configurations
     'AWsmall': {
@@ -119,6 +141,28 @@ MODEL_CONFIGS = {
         'n_head': 20,
         'qkv_dim': 64,
         'n_params': 330_000_000
+    },
+    'AW550M': {
+        'group': 'AdamW_550M_lr_weight_decay_sweeps',
+        'title': 'AdamW 550M: JAX Softplus-like Fits',
+        'filename': 'adamw_550m_lrwd_sweep_jax.pdf',
+        'optimizer': 'adamw',
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
+        'n_layer': 18,  # 550M model: 18 layers
+        'n_head': 24,
+        'qkv_dim': 64,
+        'n_params': 550_000_000
+    },
+    'AW13B': {
+        'group': 'AdamW_13B_lr_weight_decay_sweeps',
+        'title': 'AdamW 13B: JAX Softplus-like Fits',
+        'filename': 'adamw_13b_lrwd_sweep_jax.pdf',
+        'optimizer': 'adamw',
+        'omega_label': 'log(ω_T) where ω_T = weight_decay × lr × T',
+        'n_layer': 24,  # 13B model: 24 layers
+        'n_head': 32,
+        'qkv_dim': 64,
+        'n_params': 13_000_000_000
     },
 
     # Adam-Star configurations
@@ -200,6 +244,28 @@ MODEL_CONFIGS = {
         'n_head': 20,
         'qkv_dim': 64,
         'n_params': 330_000_000
+    },
+    'MK4_550M': {
+        'group': 'DanaStar_MK4_550M_Sweep_formula12',
+        'title': 'DanaStar MK4 550M: JAX Softplus-like Fits',
+        'filename': 'danastar_mk4_550m_lrwd_sweep_jax.pdf',
+        'optimizer': 'mk4',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 18,  # 550M model: 18 layers
+        'n_head': 24,
+        'qkv_dim': 64,
+        'n_params': 550_000_000
+    },
+    'MK4_13B': {
+        'group': 'DanaStar_MK4_13B_Sweep_formula12',
+        'title': 'DanaStar MK4 13B: JAX Softplus-like Fits',
+        'filename': 'danastar_mk4_13b_lrwd_sweep_jax.pdf',
+        'optimizer': 'mk4',
+        'omega_label': 'log(ω) where ω = wd_ts × lr × weight_decay',
+        'n_layer': 24,  # 13B model: 24 layers
+        'n_head': 32,
+        'qkv_dim': 64,
+        'n_params': 13_000_000_000
     }
 }
 
