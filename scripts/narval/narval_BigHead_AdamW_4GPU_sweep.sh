@@ -14,7 +14,7 @@ GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0GB = allocate as needed
-TIME_HOURS=16
+TIME_HOURS=32
 
 echo "Starting BigHead AdamW Multi-GPU sweep"
 echo "Depths: ${DEPTHS[@]}"
