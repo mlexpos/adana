@@ -26,7 +26,7 @@ echo "Activated virtual environment"
 
 # Set up directories
 FINEWEB_DIR="$HOME/links/scratch/fineweb"
-DATASETS_DIR="$HOME/scratch/datasets"
+export DATASETS_DIR="$HOME/scratch/datasets"
 
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 
