@@ -3,10 +3,10 @@
 # BigHead MK4 Multi-GPU Sweep for depths {9,10}
 # Uses 4 GPUs per node for larger models
 # For each depth, runs 3 learning rates: 0.75x, 1.0x, and 1.25x the formula prediction
-# Learning rate formula: lr = 4.0e+04 × P^(-0.67) where P = NON_EMB
+# Learning rate formula: lr = 2.0e+01 × P^(-0.67) where P = NON_EMB
 
 OMEGA=4.0
-CLIPSNR=1.0
+CLIPSNR=2.0
 DEPTHS=(8 9 10)
 LR_MULTIPLIERS=(0.75 1.0 1.25)
 
@@ -77,8 +77,8 @@ for DEPTH in "${DEPTHS[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 4.0e+04 * P^(-0.67)
-    BASE_LR=$(python3 -c "print(4.0e+04 * ($NON_EMB ** -0.67))")
+    # Calculate base learning rate using formula: lr = 2.0e+01 * P^(-0.67)
+    BASE_LR=$(python3 -c "print(2.0e+01 * ($NON_EMB ** -0.67))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"

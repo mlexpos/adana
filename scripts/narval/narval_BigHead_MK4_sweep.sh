@@ -6,8 +6,8 @@
 
 OMEGA=4.0
 CLIPSNR=2.0
-DEPTHS=(4 5 6 7)
-LR_MULTIPLIERS=(0.75 1.0 1.25)
+DEPTHS=( 7 )
+LR_MULTIPLIERS=( 0.50 0.375 0.25 1.50 )
 
 echo "Starting BigHead MK4 sweep"
 echo "Depths: ${DEPTHS[@]}"

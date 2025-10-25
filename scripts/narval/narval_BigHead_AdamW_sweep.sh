@@ -5,8 +5,8 @@
 # Learning rate formula: lr = 4.03e+01 × P^(-0.590) where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=(4 5 6 7)
-LR_MULTIPLIERS=(0.75 1.0 1.25)
+DEPTHS=( 8 )
+LR_MULTIPLIERS=(1.5 1.75 1.25 1.0)
 
 echo "Starting BigHead AdamW sweep"
 echo "Depths: ${DEPTHS[@]}"
@@ -64,7 +64,8 @@ for DEPTH in "${DEPTHS[@]}"; do
 
     # Calculate time in hours: C(depth) / C(4) scaled appropriately
     # We'll use this to estimate SLURM time
-    TIME_HOURS=$(python3 -c "import math; print(max(1, int(math.ceil(4.0 * $C / $C_4))))")
+    #TIME_HOURS=$(python3 -c "import math; print(max(1, int(math.ceil($C / $C_4))))")
+    TIME_HOURS=8
 
     # Calculate base learning rate using formula: lr = 4.03e+01 * P^(-0.590)
     BASE_LR=$(python3 -c "print(4.03e+01 * ($NON_EMB ** -0.590))")
