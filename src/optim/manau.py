@@ -324,6 +324,7 @@ class Manau(torch.optim.Optimizer):
             momentum = group["momentum"]
             dana_momentum = group["dana_momentum"]
             delta = group["delta"]
+            kappa = group["kappa"]
             weight_time = group["weight_time"]
             params = group["params"]
 
@@ -365,8 +366,11 @@ class Manau(torch.optim.Optimizer):
 
                 # save to ns input
                 if dana_momentum:
-                    # When using dana_momentum, we don't use nesterov
-                    g = buf
+                    # When using dana_momentum, scale by time-dependent factor: step^(1-kappa)
+                    # This matches DANA-STAR-MK4's momentum scaling philosophy
+                    step = state["step"]
+                    time_scaling = step ** (1 - kappa)
+                    g = g + buf * time_scaling
                 else:
                     g = g.add(buf, alpha=momentum) if group["nesterov"] else buf
                 ns_inputs[p] = g.bfloat16()
