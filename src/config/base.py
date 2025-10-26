@@ -114,6 +114,7 @@ def parse_args(base_parser, args, namespace):
             "adafactor",
             "lamb",
             "d-muon",
+            "manau",
             "dana-star",
             "dana",
             "sign_dana",
@@ -142,6 +143,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--nesterov", default=False, type=bool)
     parser.add_argument("--muon_ns_steps", default=5, type=int)
     parser.add_argument("--muon_lr_factor", default=1.0, type=float)
+    parser.add_argument("--matched_adamw_rms", default=0.2, type=float)
+    parser.add_argument("--dana_momentum", default=False, type=bool)
     parser.add_argument("--adema_beta3", default=None, type=float)
     #parser.add_argument("--adema_alpha", default=2.0, type=float)
 
