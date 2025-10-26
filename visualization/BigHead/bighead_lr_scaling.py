@@ -1,22 +1,30 @@
 #!/usr/bin/env python3
 """
-BigHead Learning Rate Scaling Law Analysis - Direct Power Law Fitting
+Learning Rate Scaling Law Analysis - Saturated Power Law Fitting
 
-This script estimates a power law fit for the optimal learning rate across BigHead model sizes
-using a direct weighted fitting approach. For a fixed omega value, it finds the K best
-LRs for each model depth, weights them (smallest gets weight K, second gets K-1, etc.),
-and fits: LR = A * (parameter_metric)^B using weighted MSE loss with Adagrad optimization.
+This script estimates a saturated power law fit for the optimal learning rate across different
+model scaling rules using a direct weighted fitting approach. For a fixed omega value, it finds
+the K best LRs for each model size, weights them (smallest gets weight K, second gets K-1, etc.),
+and fits: LR = a + b * (parameter_metric)^d using weighted MSE loss with Adagrad optimization.
+Constraints: a, b > 0 (enforced via exponential parameterization).
 
-BigHead Architecture:
-- head_dim = 16 * depth
-- n_embd = 16 * depth^2
-- mlp_hidden = 32 * depth^2
-- n_head = depth
-- n_layer = depth
+Supported Scaling Rules:
+1. BigHead: depth-based scaling
+   - n_layer = depth, n_head = depth
+   - n_embd = 16 * depth^2, mlp_hidden = 32 * depth^2
+
+2. EggHead: heads-based quadratic depth scaling
+   - n_layer = heads * (heads - 1) / 2, n_head = heads
+   - n_embd = 16 * heads^2, mlp_hidden = 32 * heads^2
+
+3. Enoki: heads-based DiLoco scaling
+   - n_layer = 3 * heads / 4, n_head = heads
+   - n_embd = heads * 64, mlp_hidden = 4 * n_embd
 
 Usage:
-    python bighead_lr_scaling.py --optimizer adamw --target-omega 4.0 --top-k 5
-    python bighead_lr_scaling.py --optimizer mk4 --target-omega 4.0 --top-k 5 --target-clipsnr 1.0
+    python bighead_lr_scaling.py --scaling-rule BigHead --optimizer adamw --target-omega 4.0 --top-k 5
+    python bighead_lr_scaling.py --scaling-rule Enoki --optimizer mk4 --target-omega 4.0 --top-k 5
+    python bighead_lr_scaling.py --scaling-rule EggHead --optimizer d-muon --target-omega 4.0 --top-k 5
 """
 
 import wandb
@@ -38,6 +46,28 @@ from scipy.optimize import curve_fit
 
 warnings.filterwarnings('ignore')
 
+# =============================================================================
+# SCALING RULE CONFIGURATION
+# =============================================================================
+
+SCALING_RULE_CONFIG = {
+    'BigHead': {
+        'group': 'DanaStar_MK4_BigHead_Sweep',
+        'extrapolation_sizes': [8, 9, 10, 11, 12, 13, 14, 15],  # Show these if no data
+        'size_step': 1,  # Show all consecutive integers
+    },
+    'EggHead': {
+        'group': 'DanaStar_MK4_EggHead_Sweep',
+        'extrapolation_sizes': [8, 9, 10, 11, 12],  # Show these if no data
+        'size_step': 1,  # Show all consecutive integers
+    },
+    'Enoki': {
+        'group': 'DanaStar_MK4_Enoki_Sweep',
+        'extrapolation_sizes': [8, 12, 16, 20, 24, 28, 32, 36, 40],  # Only multiples of 4
+        'size_step': 4,  # Only show multiples of 4
+    }
+}
+
 # Matplotlib formatting
 style.use('default')
 rc('font', family='sans-serif')
@@ -49,24 +79,26 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 # COMMAND LINE ARGUMENTS
 # =============================================================================
 
-parser = argparse.ArgumentParser(description='Fit power law for optimal LR across BigHead model depths')
-parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix'],
-                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, or ademamix')
+parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
+parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki'],
+                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), or Enoki (DiLoco)')
+parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon'],
+                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, or d-muon')
 parser.add_argument('--target-omega', type=float, default=4.0,
                     help='Target omega value to find optimal LR (default: 4.0)')
 parser.add_argument('--top-k', type=int, default=5,
                     help='Number of best LRs to use for each model size (default: 5)')
 parser.add_argument('--project', type=str, default='danastar',
                     help='WandB project name (default: danastar)')
-parser.add_argument('--group', type=str, default='DanaStar_MK4_BigHead_Sweep',
-                    help='WandB group name (default: DanaStar_MK4_BigHead_Sweep)')
+parser.add_argument('--group', type=str, default=None,
+                    help='WandB group name (default: auto-determined from scaling-rule)')
 parser.add_argument('--entity', type=str, default='ep-rmt-ml-opt',
                     help='WandB entity name (default: ep-rmt-ml-opt)')
 parser.add_argument('--output', type=str, default=None,
                     help='Output filename for plot (default: auto-generated)')
-parser.add_argument('--n-steps', type=int, default=100000,
+parser.add_argument('--n-steps', type=int, default=200000,
                     help='Number of optimization steps for power law fitting (default: 100000)')
-parser.add_argument('--learning-rate', type=float, default=100.0,
+parser.add_argument('--learning-rate', type=float, default=500.0,
                     help='Optimizer learning rate for power law fitting (default: 100.0)')
 parser.add_argument('--exclude-small', action='store_true',
                     help='Exclude small model size (4 layers) from the fit')
@@ -81,61 +113,108 @@ parser.add_argument('--clipsnr-tolerance', type=float, default=0.1,
 args = parser.parse_args()
 
 # Map optimizer abbreviations
-optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix'}
+optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon'}
 optimizer_type = optimizer_map[args.optimizer]
 
+# Get scaling rule configuration
+scaling_config = SCALING_RULE_CONFIG[args.scaling_rule]
+
+# Determine WandB group based on scaling rule if not specified
+if args.group is None:
+    wandb_group = scaling_config['group']
+else:
+    wandb_group = args.group
+
 # =============================================================================
-# PARAMETER CALCULATION FUNCTIONS (Based on BigHead.sh)
+# PARAMETER CALCULATION FUNCTIONS (Support for BigHead, EggHead, and Enoki)
 # =============================================================================
 
-def compute_non_embedding_params(depth):
+def compute_non_embedding_params(size, scaling_rule):
     """
-    Compute non-embedding parameters based on BigHead architecture.
+    Compute non-embedding parameters based on scaling rule.
 
-    From BigHead.sh:
-    head_dim = 16 * depth
-    n_embd = 16 * depth^2
-    mlp_hidden = 32 * depth^2
-    n_head = depth
-    n_layer = depth
+    Args:
+        size: For BigHead, this is depth. For EggHead/Enoki, this is heads.
+        scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki'
 
-    Non-emb = depth * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
+    Returns:
+        int: Number of non-embedding parameters
     """
-    head_dim = 16 * depth
-    n_embd = 16 * depth * depth
-    mlp_hidden = 32 * depth * depth
-    n_head = depth
-    n_layer = depth
+    if scaling_rule == 'BigHead':
+        # BigHead: depth-based scaling
+        depth = size
+        head_dim = 16 * depth
+        n_embd = 16 * depth * depth
+        mlp_hidden = 32 * depth * depth
+        n_head = depth
+        n_layer = depth
+        # Non-emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
+        non_emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd * n_embd + 2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd
 
-    non_emb = depth * (3 * head_dim * n_embd * n_head + n_embd * n_embd + 2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd
+    elif scaling_rule == 'EggHead':
+        # EggHead: heads-based quadratic depth scaling
+        heads = size
+        head_dim = 16 * heads
+        n_embd = 16 * heads * heads
+        mlp_hidden = 32 * heads * heads
+        n_head = heads
+        n_layer = int(heads * (heads - 1) / 2)
+        # Non-emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
+        non_emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd * n_embd + 2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd
+
+    elif scaling_rule == 'Enoki':
+        # Enoki: heads-based DiLoco scaling
+        heads = size
+        head_dim = 64  # Fixed for Enoki
+        n_embd = heads * 64
+        mlp_hidden = 4 * n_embd
+        n_head = heads
+        n_layer = int(3 * heads // 4)
+        # Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
+        non_emb = 12 * n_embd * n_embd * n_layer
+
+    else:
+        raise ValueError(f"Unknown scaling rule: {scaling_rule}")
+
     return int(non_emb)
 
-def compute_total_params(depth):
+def compute_total_params(size, scaling_rule):
     """
     Compute total parameters including embeddings.
-    Total params = non_emb + 2 * n_embd * 50304
+    Total params = non_emb + 2 * n_embd * vocab_size
     """
-    non_emb = compute_non_embedding_params(depth)
-    n_embd = 16 * depth * depth
-    vocab_size = 50304
+    non_emb = compute_non_embedding_params(size, scaling_rule)
+
+    if scaling_rule == 'BigHead':
+        n_embd = 16 * size * size
+        vocab_size = 50304
+    elif scaling_rule == 'EggHead':
+        n_embd = 16 * size * size
+        vocab_size = 50304
+    elif scaling_rule == 'Enoki':
+        n_embd = size * 64
+        vocab_size = 50304
+    else:
+        raise ValueError(f"Unknown scaling rule: {scaling_rule}")
+
     total_params = non_emb + 2 * n_embd * vocab_size
     return int(total_params)
 
-def compute_compute(depth):
+def compute_compute(size, scaling_rule):
     """
-    Compute compute metric: non_emb * total_params * 20 
+    Compute compute metric: non_emb * total_params * 20
     (Based on the iterations calculation: ITERATIONS = 20 * TOTAL_PARAMS )
     """
-    non_emb = compute_non_embedding_params(depth)
-    total_params = compute_total_params(depth)
-    compute = non_emb * total_params * 20 
+    non_emb = compute_non_embedding_params(size, scaling_rule)
+    total_params = compute_total_params(size, scaling_rule)
+    compute = non_emb * total_params * 20
     return compute
 
 @jit
-def power_law_function(params, A, B):
-    """Power law function: LR = A * (params)^B"""
+def saturated_power_law_function(params, a, b, d):
+    """Saturated power law function: LR = a + b * (params)^d"""
     params_float = jnp.asarray(params, dtype=jnp.float32)
-    return A * (params_float ** B)
+    return a + b * (params_float ** d)
 
 def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1):
     """
@@ -168,12 +247,17 @@ def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1)
 
     return results
 
-def load_wandb_data_simple(project_name, group_name, entity, optimizer_type,
+def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, scaling_rule,
                            target_clipsnr=None, clipsnr_tolerance=0.1):
-    """Load data from WandB"""
+    """Load data from WandB
+
+    Args:
+        scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki' to determine size parameter
+    """
     api = wandb.Api()
 
     print(f"Loading data from {group_name}...")
+    print(f"Scaling rule: {scaling_rule}")
 
     runs = api.runs(f"{entity}/{project_name}", filters={"group": group_name})
 
@@ -216,9 +300,23 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type,
             skipped_missing_data += 1
             continue
 
-        # Extract depth (stored as n_layer)
-        depth = config.get('n_layer')
-        if depth is None:
+        # Extract size parameter based on scaling rule
+        if scaling_rule == 'BigHead':
+            # BigHead uses n_layer directly as depth (n_layer == depth)
+            size = config.get('n_layer')
+            size_name = 'depth'
+        elif scaling_rule == 'EggHead':
+            # EggHead uses n_head as heads
+            size = config.get('n_head')
+            size_name = 'heads'
+        elif scaling_rule == 'Enoki':
+            # Enoki uses n_head as heads
+            size = config.get('n_head')
+            size_name = 'heads'
+        else:
+            raise ValueError(f"Unknown scaling rule: {scaling_rule}")
+
+        if size is None:
             skipped_missing_data += 1
             continue
 
@@ -227,13 +325,14 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type,
             wd_ts = config.get('wd_ts', 1.0)
             weight_decay = config.get('weight_decay', 1.0)
             omega = wd_ts * lr * weight_decay
-        else:  # adamw, ademamix
+        else:  # adamw, ademamix, d-muon
             weight_decay = config.get('weight_decay', 0.1)
             iterations = config.get('iterations', 1)
             omega = weight_decay * lr * iterations
 
         data.append({
-            'depth': depth,
+            'size': size,
+            'size_name': size_name,
             'lr': lr,
             'val_loss': val_loss,
             'omega': omega,
@@ -255,33 +354,43 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type,
 # DIRECT WEIGHTED POWER LAW FITTING
 # =============================================================================
 
-def fit_power_law_weighted(params_list, lrs_list, weights_list, n_steps=5000, learning_rate=0.1):
+def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_steps=5000, learning_rate=0.1):
     """
-    Fit power law LR = A * (params)^B using weighted MSE loss with Adagrad optimization.
+    Fit saturated power law LR = a + b * (params)^d using weighted MSE loss with Adagrad optimization.
+    Constraints: a, b > 0
+
+    Uses parameterization:
+    - a_raw -> a = exp(a_raw) to ensure a > 0
+    - b_raw -> b = exp(b_raw) to ensure b > 0
+    - d is unconstrained (typically negative for learning rate scaling)
     """
     # Convert to JAX arrays
     params_arr = jnp.array(params_list, dtype=jnp.float32)
     lrs = jnp.array(lrs_list, dtype=jnp.float32)
     weights = jnp.array(weights_list, dtype=jnp.float32)
 
-    # Take log of LRs for log-space fitting
-    log_lrs = jnp.log(lrs)
-    log_params = jnp.log(params_arr)
-
-    # Initialize parameters
-    # log(LR) = log(A) + B * log(params)
-    # Initial guess: log(A) ≈ log(1e-3), B ≈ -0.5
-    fit_params = jnp.array([jnp.log(1e-3), -0.5])
+    # Initialize parameters: [a_raw, b_raw, d]
+    # Initial guess: a ≈ min(LR)/2, b ≈ 1e-3, d ≈ -0.5
+    min_lr = float(jnp.min(lrs))
+    fit_params = jnp.array([
+        jnp.log(min_lr / 2.0),  # a_raw -> a = exp(a_raw)
+        jnp.log(1e0),          # b_raw -> b = exp(b_raw)
+        -0.5                    # d (unconstrained)
+    ], dtype=jnp.float32)
 
     @jit
     def loss_fn(fit_params):
-        log_A, B = fit_params
+        a_raw, b_raw, d = fit_params
 
-        # Predictions in log space
-        pred_log_lrs = log_A + B * log_params
+        # Apply constraints: a, b > 0
+        a = jnp.exp(a_raw)
+        b = jnp.exp(b_raw)
 
-        # Weighted MSE loss in log space (multiply weights by params)
-        residuals = (log_lrs - pred_log_lrs) ** 2
+        # Predictions: LR = a + b * params^d
+        pred_lrs = a + b * (params_arr ** d)
+
+        # Weighted MSE loss (multiply weights by params for larger model emphasis)
+        residuals = (lrs - pred_lrs) ** 2
         combined_weights = weights * params_arr
         weighted_loss = jnp.sum(combined_weights * residuals) / jnp.sum(combined_weights)
 
@@ -309,33 +418,39 @@ def fit_power_law_weighted(params_list, lrs_list, weights_list, n_steps=5000, le
             best_params = fit_params
 
         if step % 10000 == 0 or step == n_steps - 1:
-            log_A, B = fit_params
-            A = float(jnp.exp(log_A))
-            print(f"  Step {step:5d}: loss={current_loss:.6e}, A={A:.6e}, B={B:.4f}")
+            a_raw, b_raw, d = fit_params
+            a = float(jnp.exp(a_raw))
+            b = float(jnp.exp(b_raw))
+            print(f"  Step {step:5d}: loss={current_loss:.6e}, a={a:.6e}, b={b:.6e}, d={d:.4f}")
 
     # Extract final parameters
-    log_A, B = best_params
-    A = float(jnp.exp(log_A))
-    B = float(B)
+    a_raw, b_raw, d = best_params
+    a = float(jnp.exp(a_raw))
+    b = float(jnp.exp(b_raw))
+    d = float(d)
 
-    return A, B
+    return a, b, d
 
-def collect_weighted_data_for_depths(optimizer_type, target_omega, top_k, project, group, entity,
+def collect_weighted_data_for_depths(optimizer_type, scaling_rule, target_omega, top_k, project, group, entity,
                                       exclude_small=False, target_clipsnr=None, clipsnr_tolerance=0.1):
     """
-    Collect top-K LRs for each depth at target omega, with weights.
+    Collect top-K LRs for each size at target omega, with weights.
+
+    Args:
+        scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki'
     """
     # Load all data for the optimizer
-    data_df = load_wandb_data_simple(project, group, entity, optimizer_type,
+    data_df = load_wandb_data_simple(project, group, entity, optimizer_type, scaling_rule,
                                      target_clipsnr, clipsnr_tolerance)
 
     if len(data_df) == 0:
         print("No data found. Exiting.")
         return None
 
-    # Get unique depths
-    available_depths = sorted(data_df['depth'].unique())
-    print(f"\nAvailable depths: {available_depths}")
+    # Get unique sizes
+    available_sizes = sorted(data_df['size'].unique())
+    size_name = data_df['size_name'].iloc[0] if len(data_df) > 0 else 'size'
+    print(f"\nAvailable {size_name}s: {available_sizes}")
 
     all_non_emb_params = []
     all_total_params = []
@@ -349,44 +464,44 @@ def collect_weighted_data_for_depths(optimizer_type, target_omega, top_k, projec
     all_weights_excluded = []
     results = {}
 
-    for depth in available_depths:
+    for size in available_sizes:
         print(f"\n{'='*70}")
-        print(f"Processing depth={depth}")
+        print(f"Processing {size_name}={size}")
         print(f"{'='*70}")
 
-        # Filter data for this depth
-        depth_data = data_df[data_df['depth'] == depth].copy()
+        # Filter data for this size
+        size_data = data_df[data_df['size'] == size].copy()
 
-        if len(depth_data) == 0:
-            print(f"No data found for depth={depth}")
+        if len(size_data) == 0:
+            print(f"No data found for {size_name}={size}")
             continue
 
         # Find closest omega to target
-        available_omegas = sorted(depth_data['omega'].unique())
+        available_omegas = sorted(size_data['omega'].unique())
         closest_omega = min(available_omegas, key=lambda x: abs(x - target_omega))
 
         print(f"  Target omega: {target_omega:.2f}, Closest: {closest_omega:.2f}")
 
         # Get top K LRs at this omega
-        top_k_data = get_top_k_lrs_for_omega(depth_data, closest_omega, top_k=top_k)
+        top_k_data = get_top_k_lrs_for_omega(size_data, closest_omega, top_k=top_k)
 
         if len(top_k_data) == 0:
             continue
 
         # Compute parameter counts
-        non_emb_params = compute_non_embedding_params(depth)
-        total_params = compute_total_params(depth)
-        compute_metric = compute_compute(depth)
+        non_emb_params = compute_non_embedding_params(size, scaling_rule)
+        total_params = compute_total_params(size, scaling_rule)
+        compute_metric = compute_compute(size, scaling_rule)
 
         print(f"  Non-embedding params: {non_emb_params:,}")
         print(f"  Total params: {total_params:,}")
         print(f"  Compute: {compute_metric:.2e}")
 
         # Add to global lists (or excluded lists if small model and exclude_small=True)
-        is_small = (depth == 4)
+        is_small = (size == 4)
 
         if exclude_small and is_small:
-            print(f"  Excluding depth=4 from fit")
+            print(f"  Excluding {size_name}=4 from fit")
             for item in top_k_data:
                 all_non_emb_params_excluded.append(non_emb_params)
                 all_total_params_excluded.append(total_params)
@@ -402,13 +517,15 @@ def collect_weighted_data_for_depths(optimizer_type, target_omega, top_k, projec
                 all_weights.append(item['weight'])
 
         # Store for plotting
-        results[depth] = {
+        results[size] = {
+            'size': size,
+            'size_name': size_name,
             'non_emb_params': non_emb_params,
             'total_params': total_params,
             'compute': compute_metric,
             'closest_omega': closest_omega,
             'top_k_data': top_k_data,
-            'data_df': depth_data,
+            'data_df': size_data,
             'excluded': exclude_small and is_small
         }
 
@@ -422,23 +539,25 @@ def collect_weighted_data_for_depths(optimizer_type, target_omega, top_k, projec
 
 if __name__ == '__main__':
     print("="*70)
-    print(f"BigHead Learning Rate Scaling Law Analysis")
+    print(f"Learning Rate Scaling Law Analysis - {args.scaling_rule}")
+    print(f"Scaling Rule: {args.scaling_rule}")
     print(f"Optimizer: {args.optimizer} ({optimizer_type})")
     print(f"Target Omega: {args.target_omega}")
     print(f"Top K: {args.top_k}")
-    print(f"Group: {args.group}")
+    print(f"Group: {wandb_group}")
     print(f"Exclude Small: {args.exclude_small}")
     if args.target_clipsnr is not None:
         print(f"Target ClipSNR: {args.target_clipsnr} (tolerance: {args.clipsnr_tolerance})")
     print("="*70)
 
-    # Collect weighted data from all depths
+    # Collect weighted data from all sizes
     result = collect_weighted_data_for_depths(
         optimizer_type=optimizer_type,
+        scaling_rule=args.scaling_rule,
         target_omega=args.target_omega,
         top_k=args.top_k,
         project=args.project,
-        group=args.group,
+        group=wandb_group,
         entity=args.entity,
         exclude_small=args.exclude_small,
         target_clipsnr=args.target_clipsnr,
@@ -465,18 +584,53 @@ if __name__ == '__main__':
     print(f"LR range: {min(lrs):.6e} to {max(lrs):.6e}")
     print(f"Weight range: {min(weights)} to {max(weights)}")
 
-    # Fit power law using non-embedding parameters (always on)
+    # Fit saturated power law using non-embedding parameters (always on)
     print(f"\n{'='*70}")
-    print("Fitting Power Law: LR = A * (non_emb_params)^B")
+    print("Fitting Saturated Power Law: LR = a + b * (non_emb_params)^d")
     print(f"{'='*70}")
-    A_fit, B_fit = fit_power_law_weighted(non_emb_params, lrs, weights,
-                                           n_steps=args.n_steps,
-                                           learning_rate=args.learning_rate)
+    a_fit, b_fit, d_fit = fit_saturated_power_law_weighted(non_emb_params, lrs, weights,
+                                                             n_steps=args.n_steps,
+                                                             learning_rate=args.learning_rate)
 
     print(f"\nFitted parameters (non-embedding):")
-    print(f"  A = {A_fit:.6e}")
-    print(f"  B = {B_fit:.4f}")
-    print(f"Power law: LR = {A_fit:.6e} * (non_emb_params)^{B_fit:.4f}")
+    print(f"  a = {a_fit:.6e}")
+    print(f"  b = {b_fit:.6e}")
+    print(f"  d = {d_fit:.4f}")
+    print(f"Saturated power law: LR = {a_fit:.6e} + {b_fit:.6e} * (non_emb_params)^{d_fit:.4f}")
+
+    # Fit using total parameters if requested
+    a_fit_total, b_fit_total, d_fit_total = None, None, None
+    if args.fit_total_params:
+        print(f"\n{'='*70}")
+        print("Fitting Saturated Power Law: LR = a + b * (total_params)^d")
+        print(f"{'='*70}")
+        a_fit_total, b_fit_total, d_fit_total = fit_saturated_power_law_weighted(
+            total_params, lrs, weights,
+            n_steps=args.n_steps,
+            learning_rate=args.learning_rate)
+
+        print(f"\nFitted parameters (total params):")
+        print(f"  a = {a_fit_total:.6e}")
+        print(f"  b = {b_fit_total:.6e}")
+        print(f"  d = {d_fit_total:.4f}")
+        print(f"Saturated power law: LR = {a_fit_total:.6e} + {b_fit_total:.6e} * (total_params)^{d_fit_total:.4f}")
+
+    # Fit using compute if requested
+    a_fit_compute, b_fit_compute, d_fit_compute = None, None, None
+    if args.fit_compute:
+        print(f"\n{'='*70}")
+        print("Fitting Saturated Power Law: LR = a + b * (compute)^d")
+        print(f"{'='*70}")
+        a_fit_compute, b_fit_compute, d_fit_compute = fit_saturated_power_law_weighted(
+            compute, lrs, weights,
+            n_steps=args.n_steps,
+            learning_rate=args.learning_rate)
+
+        print(f"\nFitted parameters (compute):")
+        print(f"  a = {a_fit_compute:.6e}")
+        print(f"  b = {b_fit_compute:.6e}")
+        print(f"  d = {d_fit_compute:.4f}")
+        print(f"Saturated power law: LR = {a_fit_compute:.6e} + {b_fit_compute:.6e} * (compute)^{d_fit_compute:.4f}")
 
     # =============================================================================
     # VISUALIZATION
@@ -499,29 +653,38 @@ if __name__ == '__main__':
             ax.scatter(p, lr, s=w*50, c='gray', alpha=0.3, marker='x', linewidths=1.5,
                       label='Excluded (not in fit)' if p == non_emb_params_exc[0] and lr == lrs_exc[0] else '')
 
-    # Plot power law fit line and extrapolation
+    # Plot saturated power law fit line and extrapolation
     unique_params = sorted(set(non_emb_params))
-    # Extrapolate to depth 12
-    max_depth = 12
-    max_non_emb = compute_non_embedding_params(max_depth)
+
+    # Get sizes with actual data
+    sizes_with_data = set(model_results.keys())
+
+    # Determine prediction sizes: extrapolation_sizes that don't have data
+    all_prediction_sizes = scaling_config['extrapolation_sizes']
+    prediction_sizes_no_data = [s for s in all_prediction_sizes if s not in sizes_with_data]
+
+    # For plotting the fit line, use max of extrapolation sizes
+    max_size = max(all_prediction_sizes)
+    max_non_emb = compute_non_embedding_params(max_size, args.scaling_rule)
     params_range = np.linspace(min(unique_params) * 0.5, max_non_emb, 200)
 
-    lr_fit = power_law_function(params_range, A_fit, B_fit)
+    lr_fit = saturated_power_law_function(params_range, a_fit, b_fit, d_fit)
     ax.plot(params_range, lr_fit, '--', color='tab:orange', linewidth=3,
-            label=f'Power law: {A_fit:.2e} × $P^{{{B_fit:.3f}}}$', zorder=10)
+            label=f'Saturated: {a_fit:.2e} + {b_fit:.2e} × $P^{{{d_fit:.3f}}}$', zorder=10)
 
-    # Mark predictions at specific depths
-    prediction_depths = [8, 9, 10, 11, 12]
+    # Get size name from results
+    size_name = list(model_results.values())[0]['size_name'] if model_results else 'size'
 
-    for i, depth_pred in enumerate(prediction_depths):
-        non_emb_pred = float(compute_non_embedding_params(depth_pred))
-        lr_pred = float(power_law_function(non_emb_pred, A_fit, B_fit))
+    # Mark predictions at sizes WITHOUT data
+    for i, size_pred in enumerate(prediction_sizes_no_data):
+        non_emb_pred = float(compute_non_embedding_params(size_pred, args.scaling_rule))
+        lr_pred = float(saturated_power_law_function(non_emb_pred, a_fit, b_fit, d_fit))
 
         ax.scatter([non_emb_pred], [lr_pred], s=150, marker='D', c='tab:orange',
                   edgecolors='black', linewidths=1.5, zorder=11)
 
         vertical_offset = 1.5 if i != 1 else 1.3
-        ax.text(non_emb_pred, lr_pred * vertical_offset, f'Depth={depth_pred}\nLR={lr_pred:.2e}',
+        ax.text(non_emb_pred, lr_pred * vertical_offset, f'{size_name.capitalize()}={size_pred}\nLR={lr_pred:.2e}',
                ha='left', va='bottom', fontsize=15,
                bbox=dict(boxstyle='round,pad=0.3', facecolor='tab:orange', alpha=0.2))
 
@@ -531,7 +694,7 @@ if __name__ == '__main__':
     ax.set_xscale('log')
     ax.set_yscale('log')
 
-    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix'}
+    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
     optimizer_title = optimizer_title_map[args.optimizer]
 
     title_parts = [f'ω = {args.target_omega}', f'Top-K = {args.top_k}']
@@ -539,7 +702,7 @@ if __name__ == '__main__':
         title_parts.append(f'ClipSNR = {args.target_clipsnr}')
     title_params = ', '.join(title_parts)
 
-    ax.set_title(f'BigHead {optimizer_title} Optimal Learning Rate Scaling Law\n({title_params})',
+    ax.set_title(f'{args.scaling_rule} {optimizer_title} Optimal Learning Rate Scaling Law\n({title_params})',
                  fontsize=20, fontweight='bold')
     ax.legend(fontsize=15, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
@@ -554,17 +717,42 @@ if __name__ == '__main__':
     if args.output:
         output_file = args.output
     else:
-        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix'}
+        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
         optimizer_name = optimizer_filename_map[args.optimizer]
-        output_file = f'BigHead-{optimizer_name}-lr-extrapolation.pdf'
+        output_file = f'{args.scaling_rule}-{optimizer_name}-lr-extrapolation.pdf'
 
     import os
     plt.savefig(output_file, dpi=300, bbox_inches='tight', transparent=True)
     print(f"\nPlot saved to: {os.path.abspath(output_file)}")
 
-    # Print extrapolations
-    print(f"\nExtrapolated optimal LRs for BigHead architecture:")
-    for depth_pred in prediction_depths:
-        non_emb_pred = float(compute_non_embedding_params(depth_pred))
-        lr_pred = float(power_law_function(non_emb_pred, A_fit, B_fit))
-        print(f"  Depth={depth_pred}: LR={lr_pred:.6e}")
+    # Print extrapolations for ALL sizes (both with and without data)
+    print(f"\n{'='*70}")
+    print(f"Optimal LRs for {args.scaling_rule} Architecture")
+    print(f"{'='*70}")
+
+    # Combine sizes with data and extrapolation sizes, then sort
+    all_sizes_to_show = sorted(set(list(sizes_with_data) + all_prediction_sizes))
+
+    for size_pred in all_sizes_to_show:
+        non_emb_pred = float(compute_non_embedding_params(size_pred, args.scaling_rule))
+        total_pred = float(compute_total_params(size_pred, args.scaling_rule))
+        compute_pred = float(compute_compute(size_pred, args.scaling_rule))
+
+        lr_pred_non_emb = float(saturated_power_law_function(non_emb_pred, a_fit, b_fit, d_fit))
+
+        # Mark whether this size has data or is extrapolated
+        has_data_marker = " [HAS DATA]" if size_pred in sizes_with_data else " [EXTRAPOLATED]"
+
+        print(f"\n{size_name.capitalize()}={size_pred}{has_data_marker}:")
+        print(f"  Non-emb params: {non_emb_pred:,}")
+        print(f"  Total params: {total_pred:,}")
+        print(f"  Compute: {compute_pred:.2e}")
+        print(f"  LR (non-emb fit): {lr_pred_non_emb:.6e}")
+
+        if args.fit_total_params and a_fit_total is not None:
+            lr_pred_total = float(saturated_power_law_function(total_pred, a_fit_total, b_fit_total, d_fit_total))
+            print(f"  LR (total params fit): {lr_pred_total:.6e}")
+
+        if args.fit_compute and a_fit_compute is not None:
+            lr_pred_compute = float(saturated_power_law_function(compute_pred, a_fit_compute, b_fit_compute, d_fit_compute))
+            print(f"  LR (compute fit): {lr_pred_compute:.6e}")

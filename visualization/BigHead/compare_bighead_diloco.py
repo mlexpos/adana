@@ -20,6 +20,8 @@ Usage:
     python compare_bighead_diloco.py --optimizers adamw
     python compare_bighead_diloco.py --optimizers adamw mk4
     python compare_bighead_diloco.py --optimizers adamw mk4 --n-steps 100000 --learning-rate 0.2
+    python compare_bighead_diloco.py --optimizers adamw --min-compute 0.001  # Filter out data with < 0.001 PFH
+    python compare_bighead_diloco.py --optimizers adamw --fit-metric non_emb  # Fit using non-embedding parameters
 """
 
 import wandb
@@ -59,7 +61,7 @@ rcParams['figure.figsize'] = (14, 8)
 
 parser = argparse.ArgumentParser(description='Compare BigHead vs DiLoco scaling performance')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
-                    choices=['adamw', 'mk4', 'dana', 'ademamix'],
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon'],
                     help='Optimizer types to compare (can specify multiple, e.g., --optimizers adamw mk4)')
 parser.add_argument('--project', type=str, default='danastar',
                     help='WandB project name (default: danastar)')
@@ -73,10 +75,15 @@ parser.add_argument('--n-steps', type=int, default=50000,
                     help='Number of optimization steps for joint fitting (default: 50000)')
 parser.add_argument('--learning-rate', type=float, default=0.1,
                     help='Learning rate for Adagrad optimizer (default: 0.1)')
+parser.add_argument('--min-compute', type=float, default=None,
+                    help='Minimum compute threshold in PetaFlop-Hours. Data points with compute below this value will be discarded (default: None)')
+parser.add_argument('--fit-metric', type=str, default='compute',
+                    choices=['compute', 'non_emb'],
+                    help='Metric to use as independent variable for fitting: compute (PFH) or non_emb (non-embedding parameters) (default: compute)')
 args = parser.parse_args()
 
 # Map optimizer names
-optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix'}
+optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon'}
 optimizer_types = [optimizer_map[opt] for opt in args.optimizers]
 
 # =============================================================================
@@ -166,8 +173,16 @@ def compute_diloco_params(n_head, qkv_dim, n_layer):
 # DATA LOADING
 # =============================================================================
 
-def load_bighead_data(project, group, entity, optimizer_type):
-    """Load BigHead data and get best loss for each depth."""
+def load_bighead_data(project, group, entity, optimizer_type, min_compute=None):
+    """Load BigHead data and get best loss for each depth.
+
+    Args:
+        project: WandB project name
+        group: WandB group name
+        entity: WandB entity name
+        optimizer_type: Type of optimizer to filter for
+        min_compute: Minimum compute threshold in PFH (optional)
+    """
     api = wandb.Api()
 
     print(f"Loading BigHead data from {group}...")
@@ -215,6 +230,11 @@ def load_bighead_data(project, group, entity, optimizer_type):
     for _, row in best_by_depth.iterrows():
         depth = row['depth']
         params = compute_bighead_params(depth)
+
+        # Apply minimum compute filter if specified
+        if min_compute is not None and params['compute'] < min_compute:
+            continue
+
         results.append({
             'depth': depth,
             'val_loss': row['val_loss'],
@@ -223,10 +243,21 @@ def load_bighead_data(project, group, entity, optimizer_type):
             'total_params': params['total_params']
         })
 
-    return pd.DataFrame(results)
+    result_df = pd.DataFrame(results)
+    if min_compute is not None and len(result_df) > 0:
+        print(f"  Filtered to {len(result_df)} data points with compute >= {min_compute:.4e} PFH")
 
-def load_diloco_data(project, entity, optimizer_type):
-    """Load DiLoco data from model_library groups and get best loss for each model size."""
+    return result_df
+
+def load_diloco_data(project, entity, optimizer_type, min_compute=None):
+    """Load DiLoco data from model_library groups and get best loss for each model size.
+
+    Args:
+        project: WandB project name
+        entity: WandB entity name
+        optimizer_type: Type of optimizer to filter for
+        min_compute: Minimum compute threshold in PFH (optional)
+    """
     api = wandb.Api()
 
     # Get model configs for this optimizer
@@ -238,6 +269,9 @@ def load_diloco_data(project, entity, optimizer_type):
         model_prefix = 'DS'
     elif optimizer_type == 'ademamix':
         print("Warning: ademamix not in model_library, skipping DiLoco")
+        return pd.DataFrame()
+    elif optimizer_type == 'd-muon':
+        print("Warning: d-muon not in model_library, skipping DiLoco")
         return pd.DataFrame()
 
     diloco_models = {k: v for k, v in MODEL_CONFIGS.items()
@@ -275,6 +309,11 @@ def load_diloco_data(project, entity, optimizer_type):
                 model_info['n_layer']
             )
 
+            # Apply minimum compute filter if specified
+            if min_compute is not None and params['compute'] < min_compute:
+                print(f"    Skipped (compute {params['compute']:.4e} < {min_compute:.4e} PFH)")
+                continue
+
             results.append({
                 'model': model_key,
                 'n_layer': model_info['n_layer'],
@@ -285,7 +324,11 @@ def load_diloco_data(project, entity, optimizer_type):
             })
             print(f"    Best loss: {best_loss:.4f}")
 
-    return pd.DataFrame(results)
+    result_df = pd.DataFrame(results)
+    if min_compute is not None and len(result_df) > 0:
+        print(f"  Filtered to {len(result_df)} data points with compute >= {min_compute:.4e} PFH")
+
+    return result_df
 
 # =============================================================================
 # SATURATED POWER LAW FITTING (JAX-based Joint Fitting)
@@ -488,8 +531,14 @@ def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0
 # VISUALIZATION
 # =============================================================================
 
-def plot_comparison(data_dict, optimizer_names):
-    """Create comparison plot of BigHead vs DiLoco scaling for multiple optimizers."""
+def plot_comparison(data_dict, optimizer_names, fit_metric='compute'):
+    """Create comparison plot of BigHead vs DiLoco scaling for multiple optimizers.
+
+    Args:
+        data_dict: Dictionary containing BigHead and DiLoco data for each optimizer
+        optimizer_names: List of optimizer names
+        fit_metric: Metric to use for fitting ('compute' or 'non_emb')
+    """
     fig, ax = plt.subplots(figsize=(16, 9))
 
     # Color schemes for different optimizers (bighead solid, diloco dashed)
@@ -497,7 +546,8 @@ def plot_comparison(data_dict, optimizer_names):
         'adamw': 'tab:blue',
         'mk4': 'tab:red',
         'dana': 'tab:green',
-        'ademamix': 'tab:purple'
+        'ademamix': 'tab:purple',
+        'd-muon': 'tab:orange'
     }
 
     markers = {'bighead': 'D', 'diloco': 'o'}
@@ -507,25 +557,26 @@ def plot_comparison(data_dict, optimizer_names):
         'adamw': 'AdamW',
         'mk4': 'Dana-Star-MK4',
         'dana': 'Dana-Star',
-        'ademamix': 'AdemaMix'
+        'ademamix': 'AdemaMix',
+        'd-muon': 'D-Muon'
     }
 
-    # Collect all compute values to determine plot range
-    all_compute_values = []
+    # Collect all metric values to determine plot range
+    all_metric_values = []
     for opt_name in optimizer_names:
         bighead_df = data_dict[opt_name]['bighead']
         diloco_df = data_dict[opt_name]['diloco']
         if len(bighead_df) > 0:
-            all_compute_values.extend(bighead_df['compute'].values)
+            all_metric_values.extend(bighead_df[fit_metric].values)
         if len(diloco_df) > 0:
-            all_compute_values.extend(diloco_df['compute'].values)
+            all_metric_values.extend(diloco_df[fit_metric].values)
 
-    if len(all_compute_values) > 0:
-        compute_min = np.min(all_compute_values)
-        compute_max = np.max(all_compute_values)
+    if len(all_metric_values) > 0:
+        metric_min = np.min(all_metric_values)
+        metric_max = np.max(all_metric_values)
         # Set plot range with some padding
-        plot_range = np.logspace(np.log10(compute_min * 0.3),
-                                 np.log10(compute_max * 3.0), 200)
+        plot_range = np.logspace(np.log10(metric_min * 0.3),
+                                 np.log10(metric_max * 3.0), 200)
     else:
         plot_range = None
 
@@ -538,14 +589,14 @@ def plot_comparison(data_dict, optimizer_names):
 
         if len(bighead_df) > 0:
             joint_fit_data.append({
-                'compute': bighead_df['compute'].values,
+                'compute': bighead_df[fit_metric].values,
                 'loss': bighead_df['val_loss'].values,
                 'name': f'{opt_title}_BigHead'
             })
 
         if len(diloco_df) > 0:
             joint_fit_data.append({
-                'compute': diloco_df['compute'].values,
+                'compute': diloco_df[fit_metric].values,
                 'loss': diloco_df['val_loss'].values,
                 'name': f'{opt_title}_DiLoco'
             })
@@ -559,6 +610,9 @@ def plot_comparison(data_dict, optimizer_names):
     else:
         fit_results = None
 
+    # Define variable name for legend based on metric
+    metric_symbol = 'C' if fit_metric == 'compute' else 'P'
+
     # Plot data and fitted curves for each optimizer
     for opt_name in optimizer_names:
         bighead_df = data_dict[opt_name]['bighead']
@@ -569,7 +623,7 @@ def plot_comparison(data_dict, optimizer_names):
 
         # Plot BigHead data
         if len(bighead_df) > 0:
-            ax.scatter(bighead_df['compute'], bighead_df['val_loss'],
+            ax.scatter(bighead_df[fit_metric], bighead_df['val_loss'],
                       s=150, marker='D', c=color, edgecolors='black', linewidths=2,
                       label=f'{opt_title} BigHead (observed)', zorder=10)
 
@@ -585,12 +639,12 @@ def plot_comparison(data_dict, optimizer_names):
                     loss_fit = saturated_power_law(plot_range, a, b, c)
 
                     ax.plot(plot_range, loss_fit, '-', color=color, linewidth=3,
-                           label=f'{opt_title} BigHead: {a:.3f} + {b:.2e} × $C^{{{c:.3f}}}$ ($R^2$={r2:.4f})',
+                           label=f'{opt_title} BigHead: {a:.3f} + {b:.2e} × ${metric_symbol}^{{{c:.3f}}}$ ($R^2$={r2:.4f})',
                            zorder=9)
 
         # Plot DiLoco data
         if len(diloco_df) > 0:
-            ax.scatter(diloco_df['compute'], diloco_df['val_loss'],
+            ax.scatter(diloco_df[fit_metric], diloco_df['val_loss'],
                       s=150, marker='o', c=color, edgecolors='black', linewidths=2,
                       alpha=0.7, label=f'{opt_title} DiLoco (observed)', zorder=10)
 
@@ -606,18 +660,21 @@ def plot_comparison(data_dict, optimizer_names):
                     loss_fit = saturated_power_law(plot_range, a, b, c)
 
                     ax.plot(plot_range, loss_fit, '--', color=color, linewidth=3,
-                           label=f'{opt_title} DiLoco: {a:.3f} + {b:.2e} × $C^{{{c:.3f}}}$ ($R^2$={r2:.4f})',
+                           label=f'{opt_title} DiLoco: {a:.3f} + {b:.2e} × ${metric_symbol}^{{{c:.3f}}}$ ($R^2$={r2:.4f})',
                            zorder=9)
 
     # Formatting
-    ax.set_xlabel('Compute (PetaFlop-Hours)', fontsize=20)
+    if fit_metric == 'compute':
+        ax.set_xlabel('Compute (PetaFlop-Hours)', fontsize=20)
+    else:  # non_emb
+        ax.set_xlabel('Non-Embedding Parameters', fontsize=20)
     ax.set_ylabel('Final Validation Loss', fontsize=20)
     ax.set_xscale('log')
     ax.set_yscale('log')
 
     # Set y-axis ticks with 0.1 spacing in log space
     # Get current y-axis limits
-    if len(all_compute_values) > 0:
+    if len(all_metric_values) > 0:
         all_loss_values = []
         for opt_name in optimizer_names:
             bighead_df = data_dict[opt_name]['bighead']
@@ -685,6 +742,8 @@ if __name__ == '__main__':
     print("="*70)
     print("BigHead vs DiLoco Scaling Comparison")
     print(f"Optimizers: {', '.join(args.optimizers)}")
+    if args.min_compute is not None:
+        print(f"Minimum compute filter: {args.min_compute:.4e} PFH")
     print("="*70)
 
     # Load data for all optimizers
@@ -696,7 +755,8 @@ if __name__ == '__main__':
         print(f"{'='*70}")
 
         # Load BigHead data
-        bighead_df = load_bighead_data(args.project, args.bighead_group, args.entity, opt_type)
+        bighead_df = load_bighead_data(args.project, args.bighead_group, args.entity, opt_type,
+                                       min_compute=args.min_compute)
 
         if len(bighead_df) > 0:
             print(f"\n{opt_abbrev} BigHead results:")
@@ -705,7 +765,8 @@ if __name__ == '__main__':
             print(f"\nNo BigHead data found for {opt_abbrev}!")
 
         # Load DiLoco data
-        diloco_df = load_diloco_data(args.project, args.entity, opt_type)
+        diloco_df = load_diloco_data(args.project, args.entity, opt_type,
+                                     min_compute=args.min_compute)
 
         if len(diloco_df) > 0:
             print(f"\n{opt_abbrev} DiLoco results:")
@@ -730,9 +791,10 @@ if __name__ == '__main__':
     # Create comparison plot
     print(f"\n{'='*70}")
     print("Generating comparison plot...")
+    print(f"Fit metric: {args.fit_metric}")
     print(f"{'='*70}")
 
-    fig = plot_comparison(data_dict, args.optimizers)
+    fig = plot_comparison(data_dict, args.optimizers, fit_metric=args.fit_metric)
 
     # Save plot
     if args.output:
@@ -740,7 +802,7 @@ if __name__ == '__main__':
     else:
         if len(args.optimizers) == 1:
             optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4',
-                                     'dana': 'DanaStar', 'ademamix': 'AdemaMix'}
+                                     'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
             optimizer_name = optimizer_filename_map[args.optimizers[0]]
             output_file = f'BigHead_vs_DiLoco_{optimizer_name}_scaling.pdf'
         else:
