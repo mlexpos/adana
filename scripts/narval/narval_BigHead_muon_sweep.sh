@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# BigHead AdamW Sweep across depths {4,5,6,7}
+# BigHead Muon Sweep across depths {4,5,6,7}
 # For each depth, runs 3 learning rates: 0.75x, 1.0x, and 1.25x the formula prediction
 # Learning rate formula: lr = 1.45e-05 + 2.33e+01 × P^{-0.562} where P = NON_EMB
 
@@ -87,12 +87,12 @@ for DEPTH in "${DEPTHS[@]}"; do
 
         # Submit the job with calculated parameters
         sbatch --time=${TIME_HOURS}:00:00 \
-               --job-name=BH_AdamW_d${DEPTH}_lr${MULT} \
+               --job-name=BH_dmuon_d${DEPTH}_lr${MULT} \
                scripts/narval/BigHead_epaq.sh \
                --depth $DEPTH \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer adamw
+               --optimizer d-muon
 
         # Check if the job was successful
         if [ $? -eq 0 ]; then
