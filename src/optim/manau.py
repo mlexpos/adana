@@ -589,9 +589,9 @@ class Manau(torch.optim.Optimizer):
                 # Decoupled weight decay (AdamW-style)
                 if weight_decay != 0:
                     if wd_decaying:
-                        p.add_(p, alpha=-weight_decay / (1 + step / wd_ts) * lr)
+                        p.data.mul_(1 - weight_decay / (1 + step / wd_ts) * lr)
                     else:
-                        p.add_(p, alpha=-weight_decay * lr)
+                        p.data.mul_(1 - weight_decay * lr)
 
                 # Apply update to parameters
-                p.add_(update)
+                p.data.add_(update)
