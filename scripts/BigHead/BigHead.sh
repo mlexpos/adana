@@ -63,7 +63,7 @@ if [ -z "$DEPTH" ]; then
     echo "  --batch_size <value>      Batch size (default: 32)"
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
     echo "  --nproc_per_node <value>  Processes per node (default: 1)"
-    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix (default: dana-star-mk4)"
+    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon (default: dana-star-mk4)"
     exit 1
 fi
 
@@ -117,9 +117,16 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
+    d-muon)
+        # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        WD_TS="N/A"
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt d-muon --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.8 --beta2 0.999 --momentum 0.95 --nesterov True --muon_ns_steps 5"
+        ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
-        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix"
+        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon"
         exit 1
         ;;
 esac
