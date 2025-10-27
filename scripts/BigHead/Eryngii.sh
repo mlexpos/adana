@@ -7,14 +7,14 @@ CLIPSNR=2.0
 BATCH_SIZE=32
 ACC_STEPS=1
 NPROC_PER_NODE=1
-DEPTH=""
+HEADS=""
 OPTIMIZER="dana-star-mk4"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --depth)
-            DEPTH="$2"
+        --heads)
+            HEADS="$2"
             shift 2
             ;;
         --lr)
@@ -52,10 +52,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate depth argument
-if [ -z "$DEPTH" ]; then
-    echo "Error: --depth argument is required"
-    echo "Usage: ./BigHead.sh --depth <depth>=4> [options]"
+# Validate required arguments
+if [ -z "$HEADS" ]; then
+    echo "Error: --heads argument is required"
+    echo "Usage: ./Eryngii.sh --heads <heads> [options]"
+    echo ""
+    echo "Eryngii uses modified scaling with increased head dimension, number of heads and depth"
+    echo "  - head_dim = 64 * heads / 6"
+    echo "  - n_head = heads"
+    echo "  - n_layer = 3 * heads / 4 * heads / 6"
+    echo "  - n_embd = n_head * head_dim"
+    echo "  - mlp_hidden = 4 * n_embd"
+    echo ""
     echo "Options:"
     echo "  --lr <value>              Learning rate (default: 15e-4)"
     echo "  --omega <value>           Weight decay strength parameter (default: 4.0)"
@@ -63,27 +71,32 @@ if [ -z "$DEPTH" ]; then
     echo "  --batch_size <value>      Batch size (default: 32)"
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
     echo "  --nproc_per_node <value>  Processes per node (default: 1)"
-    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard (default: dana-star-mk4)"
+    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon (default: dana-star-mk4)"
     exit 1
 fi
 
-if [ "$DEPTH" -lt 4 ]; then
-    echo "Error: depth must be at least 4"
+if [ "$HEADS" -lt 4 ]; then
+    echo "Error: heads must be at least 4"
     exit 1
 fi
 
-# Calculate model parameters based on depth using Python for correct integer types
-# Formula: head_dim = 16 * depth, n_embd = 16 * depth^2, mlp = 32 * depth^2
-HEAD_DIM=$(python3 -c "print(int(16 * $DEPTH))")
-N_EMBD=$(python3 -c "print(int(16 * $DEPTH * $DEPTH))")
-MLP_HIDDEN=$(python3 -c "print(int(32 * $DEPTH * $DEPTH))")
-N_HEAD=$(python3 -c "print(int($DEPTH))")
-N_LAYER=$(python3 -c "print(int($DEPTH))")
+# Check that heads is divisible by 4 for clean n_layer calculation
+if [ $((HEADS % 4)) -ne 0 ]; then
+    echo "Warning: heads=$HEADS is not divisible by 4. n_layer will be rounded down."
+fi
+
+# Calculate model parameters based on Eryngii scaling
+# Formula: head_dim = 64 * heads / 6, n_layer = 3 * heads / 4 * heads / 6, n_embd = n_head * head_dim, mlp = 4 * n_embd
+HEAD_DIM=$(python3 -c "print(int(64 * $HEADS // 6))")
+N_HEAD=$(python3 -c "print(int($HEADS))")
+N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4 * $HEADS // 6))")
+N_EMBD=$(python3 -c "print(int($N_HEAD * $HEAD_DIM))")
+MLP_HIDDEN=$(python3 -c "print(int(4 * $N_EMBD))")
 
 # Calculate iterations based on total parameters
 # Total params = non_emb + 2 * n_embd * 50304
-# Non-emb = depth * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
-NON_EMB=$(python3 -c "print(int($DEPTH * (3 * $HEAD_DIM * $N_EMBD * $N_HEAD + $N_EMBD * $N_EMBD + 2 * $N_EMBD * $MLP_HIDDEN + 8 * $N_EMBD) + 2 * $N_EMBD))")
+# Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
+NON_EMB=$(python3 -c "print(int(12 * $N_EMBD * $N_EMBD * $N_LAYER))")
 TOTAL_PARAMS=$(python3 -c "print(int($NON_EMB + 2 * $N_EMBD * 50304))")
 ITERATIONS=$(python3 -c "print(int(20 * $TOTAL_PARAMS / 65536))")
 
@@ -115,7 +128,7 @@ case $OPTIMIZER in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa  0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
+        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
     d-muon)
         # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
@@ -124,36 +137,19 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt d-muon --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.8 --beta2 0.999 --momentum 0.95 --nesterov True --muon_ns_steps 5"
         ;;
-    manau)
-        # For manau (standard momentum): WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
-        # Muon parameters use standard fixed momentum (dana_momentum=False)
-        # DANA-STAR-MK4 parameters use adaptive updates
-        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 1))")
-        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum False --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
-        ;;
-    manau-hard)
-        # For manau-hard (DANA momentum): WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
-        # Both Muon and DANA-STAR-MK4 parameters use DANA-style adaptive EMA (dana_momentum=True)
-        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 1))")
-        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum True --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
-        ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
-        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard"
+        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon"
         exit 1
         ;;
 esac
 
-echo "=== BigHead Configuration for Depth $DEPTH ==="
-echo "n_layer: $N_LAYER"
+echo "=== Eryngii Configuration: $HEADS heads ==="
+echo "n_layer: $N_LAYER (= 3 * $HEADS / 4 * $HEADS / 6)"
 echo "n_head: $N_HEAD"
-echo "qkv_dim (head_dim): $HEAD_DIM"
-echo "n_embd: $N_EMBD"
-echo "mlp_hidden_dim: $MLP_HIDDEN"
+echo "qkv_dim (head_dim): $HEAD_DIM (= 64 * $HEADS / 6)"
+echo "n_embd: $N_EMBD (= $N_HEAD * $HEAD_DIM)"
+echo "mlp_hidden_dim: $MLP_HIDDEN (= 4 * $N_EMBD)"
 echo "Total parameters: $TOTAL_PARAMS"
 echo "Iterations: $ITERATIONS"
 echo "Learning rate: $LR"
