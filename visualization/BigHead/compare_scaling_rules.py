@@ -1,0 +1,767 @@
+#!/usr/bin/env python3
+"""
+Compare Scaling Rules Performance (BigHead vs EggHead vs Enoki)
+
+This script compares the scaling performance between different model architectures:
+1. BigHead: depth-based scaling (n_layer = depth)
+2. EggHead: quadratic depth scaling (n_layer = heads * (heads-1) / 2)
+3. Enoki: DiLoco scaling (n_layer = 3 * heads / 4)
+
+For each architecture and model size, it takes the best final-val/loss achieved,
+plots loss vs compute (or non-emb params), and fits saturated power laws: loss = a + b * X^c
+
+Joint Fitting Approach:
+- All curves are fit simultaneously with a SHARED saturation level 'a'
+- Uses JAX + Adagrad optimization
+- Log-space fitting for numerical stability
+- Weighted MSE loss (larger models get more weight)
+- Constraint: 0 < a < min(observed losses) via sigmoid transformation
+
+Usage:
+    python compare_scaling_rules.py --scaling-rules BigHead Enoki --optimizers adamw
+    python compare_scaling_rules.py --scaling-rules BigHead Enoki --optimizers adamw mk4
+    python compare_scaling_rules.py --scaling-rules BigHead EggHead Enoki --optimizers mk4 d-muon manau
+    python compare_scaling_rules.py --scaling-rules BigHead Enoki --optimizers adamw --fit-metric non_emb
+"""
+
+import wandb
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib import style, rc, rcParams
+import argparse
+import warnings
+import os
+import jax
+import jax.numpy as jnp
+from jax import grad, jit
+import optax
+
+warnings.filterwarnings('ignore')
+
+# =============================================================================
+# SCALING RULE CONFIGURATION
+# =============================================================================
+
+SCALING_RULE_CONFIG = {
+    'BigHead': {
+        'group': 'DanaStar_MK4_BigHead_Sweep',
+        'color': 'tab:blue',
+        'marker': 'o',
+        'linestyle': '-',
+    },
+    'EggHead': {
+        'group': 'DanaStar_MK4_EggHead_Sweep',
+        'color': 'tab:green',
+        'marker': 's',
+        'linestyle': '--',
+    },
+    'Enoki': {
+        'group': 'DanaStar_MK4_Enoki_Sweep',
+        'color': 'tab:orange',
+        'marker': 'D',
+        'linestyle': '-.',
+    }
+}
+
+# Matplotlib formatting
+style.use('default')
+rc('font', family='sans-serif')
+rcParams['font.weight'] = 'light'
+rcParams['font.size'] = 18
+rcParams['figure.figsize'] = (14, 8)
+
+# =============================================================================
+# COMMAND LINE ARGUMENTS
+# =============================================================================
+
+parser = argparse.ArgumentParser(description='Compare scaling rules performance')
+parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
+                    choices=['BigHead', 'EggHead', 'Enoki'],
+                    help='Scaling rules to compare (can specify multiple)')
+parser.add_argument('--optimizers', type=str, nargs='+', required=True,
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard'],
+                    help='Optimizer types to analyze (can specify multiple, e.g., --optimizers adamw mk4)')
+parser.add_argument('--project', type=str, default='danastar',
+                    help='WandB project name (default: danastar)')
+parser.add_argument('--entity', type=str, default='ep-rmt-ml-opt',
+                    help='WandB entity name (default: ep-rmt-ml-opt)')
+parser.add_argument('--output', type=str, default=None,
+                    help='Output filename for plot (default: auto-generated)')
+parser.add_argument('--n-steps', type=int, default=50000,
+                    help='Number of optimization steps for joint fitting (default: 50000)')
+parser.add_argument('--learning-rate', type=float, default=0.1,
+                    help='Learning rate for Adagrad optimizer (default: 0.1)')
+parser.add_argument('--min-compute', type=float, default=None,
+                    help='Minimum compute threshold in PetaFlop-Hours (default: None)')
+parser.add_argument('--fit-metric', type=str, default='compute',
+                    choices=['compute', 'non_emb'],
+                    help='Metric to use for fitting: compute (PFH) or non_emb (parameters) (default: compute)')
+args = parser.parse_args()
+
+# Map optimizer names
+optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix',
+                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard'}
+optimizer_types = [optimizer_map[opt] for opt in args.optimizers]
+
+# =============================================================================
+# PARAMETER CALCULATION FUNCTIONS
+# =============================================================================
+
+def compute_params(size, scaling_rule):
+    """
+    Compute parameters for a given size and scaling rule.
+
+    Args:
+        size: For BigHead, this is depth. For EggHead/Enoki, this is heads.
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki'
+
+    Returns:
+        dict with non_emb, total_params, compute (PFH), etc.
+    """
+    if scaling_rule == 'BigHead':
+        # BigHead: depth-based scaling
+        depth = size
+        head_dim = 16 * depth
+        n_embd = 16 * depth * depth
+        mlp_hidden = 32 * depth * depth
+        n_head = depth
+        n_layer = depth
+
+        # Non-embedding params
+        non_emb = float(depth * (3 * head_dim * n_embd * n_head + n_embd * n_embd +
+                                 2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd)
+
+        # Total params
+        vocab_size = 50304
+        total_params = float(non_emb + 2 * n_embd * vocab_size)
+
+    elif scaling_rule == 'EggHead':
+        # EggHead: quadratic depth scaling
+        heads = size
+        head_dim = 16 * heads
+        n_embd = 16 * heads * heads
+        mlp_hidden = 32 * heads * heads
+        n_head = heads
+        n_layer = int(heads * (heads - 1) / 2)
+
+        # Non-embedding params
+        non_emb = float(n_layer * (3 * head_dim * n_embd * n_head + n_embd * n_embd +
+                                    2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd)
+
+        # Total params
+        vocab_size = 50304
+        total_params = float(non_emb + 2 * n_embd * vocab_size)
+
+    elif scaling_rule == 'Enoki':
+        # Enoki: DiLoco scaling
+        heads = size
+        head_dim = 64  # Fixed
+        n_embd = heads * 64
+        mlp_hidden = 4 * n_embd
+        n_head = heads
+        n_layer = int(3 * heads // 4)
+
+        # Non-embedding params (DiLoco formula)
+        non_emb = float(12 * n_embd * n_embd * n_layer)
+
+        # Total params
+        vocab_size = 50304
+        total_params = float(non_emb + 2 * n_embd * vocab_size)
+
+    else:
+        raise ValueError(f"Unknown scaling rule: {scaling_rule}")
+
+    # Compute in FLOPs
+    compute_flops = 6.0 * non_emb * total_params * 20.0
+
+    # Convert to PetaFlop-Hours: 1 PFH = 3600e15 FLOPs
+    compute_pfh = compute_flops / (3600e15)
+
+    return {
+        'non_emb': int(non_emb),
+        'total_params': int(total_params),
+        'compute': compute_pfh,
+        'n_layer': n_layer,
+        'n_head': n_head,
+        'n_embd': n_embd
+    }
+
+# =============================================================================
+# DATA LOADING
+# =============================================================================
+
+def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_compute=None):
+    """Load data for a scaling rule and get best loss for each size.
+
+    Args:
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki'
+        project: WandB project name
+        entity: WandB entity name
+        optimizer_type: Type of optimizer to filter for
+        min_compute: Minimum compute threshold in PFH (optional)
+    """
+    api = wandb.Api()
+
+    config = SCALING_RULE_CONFIG[scaling_rule]
+    group = config['group']
+
+    print(f"Loading {scaling_rule} data from {group}...")
+    runs = api.runs(f"{entity}/{project}", filters={"group": group})
+
+    data = []
+    for run in runs:
+        run_config = run.config
+        summary = run.summary
+
+        # Filter by optimizer
+        opt = run_config.get('opt', '')
+        if opt != optimizer_type:
+            continue
+
+        # Check completion
+        actual_iter = summary.get('iter', 0)
+        iterations_config = run_config.get('iterations', 0)
+        if actual_iter > 0 and iterations_config > 0 and actual_iter < iterations_config:
+            continue
+
+        # Get size parameter based on scaling rule
+        if scaling_rule == 'BigHead':
+            size = run_config.get('n_layer')  # depth
+        else:  # EggHead or Enoki
+            size = run_config.get('n_head')  # heads
+
+        val_loss = summary.get('final-val/loss')
+
+        if size is None or val_loss is None:
+            continue
+
+        data.append({
+            'size': size,
+            'val_loss': val_loss,
+            'run_name': run.name
+        })
+
+    df = pd.DataFrame(data)
+    print(f"  Loaded {len(df)} {scaling_rule} runs")
+
+    if len(df) == 0:
+        return df
+
+    # Get best loss for each size
+    best_by_size = df.groupby('size')['val_loss'].min().reset_index()
+
+    # Add compute information
+    results = []
+    for _, row in best_by_size.iterrows():
+        size = row['size']
+        params = compute_params(size, scaling_rule)
+
+        # Apply minimum compute filter if specified
+        if min_compute is not None and params['compute'] < min_compute:
+            continue
+
+        results.append({
+            'size': size,
+            'val_loss': row['val_loss'],
+            'compute': params['compute'],
+            'non_emb': params['non_emb'],
+            'total_params': params['total_params'],
+            'scaling_rule': scaling_rule
+        })
+
+    result_df = pd.DataFrame(results)
+    if min_compute is not None and len(result_df) > 0:
+        print(f"  Filtered to {len(result_df)} data points with compute >= {min_compute:.4e} PFH")
+
+    return result_df
+
+# =============================================================================
+# JOINT FITTING FUNCTIONS (JAX + Adagrad)
+# =============================================================================
+
+@jit
+def saturated_power_law(x, a, b, c):
+    """Saturated power law: y = a + b * x^c"""
+    return a + b * jnp.power(x, c)
+
+def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1):
+    """
+    Fit saturated power laws to multiple datasets with a SHARED saturation level 'a'.
+
+    Args:
+        datasets: List of dicts, each with 'x' and 'y' arrays
+        n_steps: Number of optimization steps
+        lr: Learning rate for Adagrad
+
+    Returns:
+        Fitted parameters for each curve
+    """
+    n_curves = len(datasets)
+
+    # Get min observed loss across all datasets (for constraint)
+    min_loss = min(float(jnp.min(d['y'])) for d in datasets)
+
+    # Initialize parameters
+    # Use log-parameterization for numerical stability
+    # a_raw will be transformed: a = min_loss * sigmoid(a_raw)
+    params = {
+        'a_raw': jnp.array(0.0),  # Shared saturation level (raw)
+        'log_b': jnp.array([jnp.log(0.1) for _ in range(n_curves)]),
+        'c': jnp.array([-0.5 for _ in range(n_curves)])
+    }
+
+    # Prepare data
+    x_data = [jnp.array(d['x'], dtype=jnp.float32) for d in datasets]
+    y_data = [jnp.array(d['y'], dtype=jnp.float32) for d in datasets]
+    weights_data = [jnp.array(d['weights'], dtype=jnp.float32) for d in datasets]
+
+    def loss_fn(params):
+        """Weighted MSE loss in log space"""
+        a = min_loss * jax.nn.sigmoid(params['a_raw'])
+        total_loss = 0.0
+
+        for i in range(n_curves):
+            b = jnp.exp(params['log_b'][i])
+            c = params['c'][i]
+
+            y_pred = saturated_power_law(x_data[i], a, b, c)
+
+            # Log-space loss for numerical stability
+            log_y_true = jnp.log(y_data[i])
+            log_y_pred = jnp.log(jnp.maximum(y_pred, 1e-10))
+
+            residuals = log_y_pred - log_y_true
+            weighted_mse = jnp.sum(weights_data[i] * residuals**2) / jnp.sum(weights_data[i])
+
+            total_loss += weighted_mse
+
+        return total_loss / n_curves
+
+    # Optimize with Adagrad
+    optimizer = optax.adagrad(learning_rate=lr)
+    opt_state = optimizer.init(params)
+
+    @jit
+    def step(params, opt_state):
+        loss_value, grads = jax.value_and_grad(loss_fn)(params)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, opt_state, loss_value
+
+    # Training loop
+    print(f"\nJoint fitting with {n_curves} curves...")
+    for i in range(n_steps):
+        params, opt_state, loss_value = step(params, opt_state)
+
+        if i % 10000 == 0 or i == n_steps - 1:
+            print(f"  Step {i:6d}: Loss = {float(loss_value):.6f}")
+
+    # Extract final parameters
+    a_fit = float(min_loss * jax.nn.sigmoid(params['a_raw']))
+    results = []
+
+    for i in range(n_curves):
+        b_fit = float(jnp.exp(params['log_b'][i]))
+        c_fit = float(params['c'][i])
+
+        results.append({
+            'a': a_fit,
+            'b': b_fit,
+            'c': c_fit
+        })
+
+    return results
+
+def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0.1):
+    """
+    Fit multiple saturated power laws simultaneously with a shared saturation level.
+
+    This is the version from compare_bighead_diloco.py that returns results in dict format.
+
+    Joint fitting: loss_i = a + b_i * compute^c_i
+    where 'a' (saturation level) is shared across all curves.
+
+    Args:
+        data_list: List of dicts, each with 'compute', 'loss', and 'name' keys
+        n_steps: Number of optimization steps
+        learning_rate: Learning rate for Adagrad optimizer
+
+    Returns:
+        Dict with 'a' (shared saturation) and 'curves' (dict mapping name -> params)
+    """
+    print(f"\nPreparing {len(data_list)} curves for joint fitting...")
+
+    # Convert data to JAX arrays
+    jax_data = []
+    for i, data in enumerate(data_list):
+        compute_arr = jnp.array(data['compute'], dtype=jnp.float32)
+        loss_arr = jnp.array(data['loss'], dtype=jnp.float32)
+        name = data['name']
+
+        print(f"  Curve {i}: {name}")
+        print(f"    Data points: {len(compute_arr)}")
+        print(f"    Compute range: {float(jnp.min(compute_arr)):.4e} to {float(jnp.max(compute_arr)):.4e}")
+        print(f"    Loss range: {float(jnp.min(loss_arr)):.4f} to {float(jnp.max(loss_arr)):.4f}")
+
+        jax_data.append({
+            'compute': compute_arr,
+            'loss': loss_arr,
+            'name': name,
+            'weights': compute_arr  # Weight by compute (larger models matter more)
+        })
+
+    # Initialize parameters
+    # Params: [a_raw, log(b_0), c_0, log(b_1), c_1, ..., log(b_n), c_n]
+    n_curves = len(jax_data)
+    init_params = [0.0]  # a_raw (sigmoid will map to middle of range)
+    for i in range(n_curves):
+        init_params.extend([jnp.log(1000.0), -0.1])  # [log(b_i), c_i]
+
+    fit_params = jnp.array(init_params, dtype=jnp.float32)
+
+    @jit
+    def loss_fn(params):
+        """Joint loss function for all curves with shared saturation."""
+        # Extract shared saturation
+        a_raw = params[0]
+        min_loss = jnp.min(jnp.array([jnp.min(d['loss']) for d in jax_data]))
+        a = jax.nn.sigmoid(a_raw) * min_loss * 0.99
+
+        total_loss = 0.0
+        total_weight = 0.0
+
+        for i in range(n_curves):
+            log_b = params[1 + 2*i]
+            c = params[1 + 2*i + 1]
+
+            compute_i = jax_data[i]['compute']
+            loss_i = jax_data[i]['loss']
+            weights_i = jax_data[i]['weights']
+
+            # Log-space fitting
+            log_compute = jnp.log(compute_i)
+            log_loss_shifted = jnp.log(loss_i - a + 1e-8)
+            pred_log_loss_shifted = log_b + c * log_compute
+
+            # Weighted MSE
+            residuals = (log_loss_shifted - pred_log_loss_shifted) ** 2
+            curve_loss = jnp.sum(weights_i * residuals)
+            curve_weight = jnp.sum(weights_i)
+
+            total_loss += curve_loss
+            total_weight += curve_weight
+
+        return total_loss / total_weight
+
+    # Optimize
+    optimizer = optax.adagrad(learning_rate)
+    opt_state = optimizer.init(fit_params)
+    grad_fn = jit(grad(loss_fn))
+
+    best_loss = float('inf')
+    best_params = fit_params
+
+    print(f"\nStarting optimization...")
+    for step in range(n_steps):
+        grads = grad_fn(fit_params)
+        updates, opt_state = optimizer.update(grads, opt_state)
+        fit_params = optax.apply_updates(fit_params, updates)
+
+        current_loss = float(loss_fn(fit_params))
+        if current_loss < best_loss:
+            best_loss = current_loss
+            best_params = fit_params
+
+        if step % 10000 == 0 or step == n_steps - 1:
+            a_raw = best_params[0]
+            min_loss = float(jnp.min(jnp.array([jnp.min(d['loss']) for d in jax_data])))
+            a = float(jax.nn.sigmoid(a_raw) * min_loss * 0.99)
+            print(f"  Step {step:5d}: loss={best_loss:.6e}, a={a:.4f}")
+
+    # Extract final parameters
+    a_raw = best_params[0]
+    min_loss = float(jnp.min(jnp.array([jnp.min(d['loss']) for d in jax_data])))
+    a = float(jax.nn.sigmoid(a_raw) * min_loss * 0.99)
+
+    results = {
+        'a': a,
+        'curves': {}
+    }
+
+    for i in range(n_curves):
+        log_b = float(best_params[1 + 2*i])
+        b = float(jnp.exp(log_b))
+        c = float(best_params[1 + 2*i + 1])
+
+        name = jax_data[i]['name']
+        compute_vals = np.array(jax_data[i]['compute'])
+        loss_vals = np.array(jax_data[i]['loss'])
+
+        # Compute R-squared
+        predictions = a + b * np.power(compute_vals, c)
+        residuals = loss_vals - predictions
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((loss_vals - np.mean(loss_vals))**2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        results['curves'][name] = {
+            'b': b,
+            'c': c,
+            'r_squared': r_squared
+        }
+
+    return results
+
+# =============================================================================
+# PLOTTING
+# =============================================================================
+
+def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric):
+    """
+    Plot comparison of multiple optimizers and scaling rules on a single plot.
+
+    Args:
+        data_dict: Dict {optimizer_type: {scaling_rule: DataFrame}}
+        fit_results: Dict with 'a' and 'curves' from joint fitting
+        scaling_rules: List of scaling rule names
+        optimizer_shorts: List of short optimizer names
+        optimizer_types: List of full optimizer type names
+        fit_metric: 'compute' or 'non_emb'
+    """
+    fig, ax = plt.subplots(figsize=(18, 10))
+
+    # Color scheme for optimizers
+    opt_colors = {
+        'adamw': 'tab:blue',
+        'mk4': 'tab:red',
+        'dana': 'tab:green',
+        'ademamix': 'tab:purple',
+        'd-muon': 'tab:orange',
+        'manau': 'tab:brown',
+        'manau-hard': 'tab:pink'
+    }
+
+    # Scaling rule markers
+    rule_markers = {
+        'BigHead': 'D',
+        'EggHead': 's',
+        'Enoki': 'o'
+    }
+
+    # Scaling rule line styles
+    rule_linestyles = {
+        'BigHead': '-',
+        'EggHead': '--',
+        'Enoki': ':'
+    }
+
+    # Collect all metric values for plot range
+    all_metric_vals = []
+    for opt_type in optimizer_types:
+        for rule in scaling_rules:
+            df = data_dict[opt_type][rule]
+            if len(df) > 0:
+                all_metric_vals.extend(df[fit_metric].values)
+
+    if len(all_metric_vals) > 0:
+        metric_min = np.min(all_metric_vals)
+        metric_max = np.max(all_metric_vals)
+        plot_range = np.logspace(np.log10(metric_min * 0.5), np.log10(metric_max * 2.0), 200)
+    else:
+        plot_range = None
+
+    # Collect handles and labels for custom legend ordering
+    # We'll plot without labels first, then create custom legend
+    fit_handles = {}
+    obs_handles = {}
+
+    metric_symbol = 'C' if fit_metric == 'compute' else 'P'
+
+    # Plot each optimizer x scaling_rule combination
+    for opt_idx, opt_type in enumerate(optimizer_types):
+        opt_short = optimizer_shorts[opt_idx]
+        color = opt_colors.get(opt_short, 'black')
+
+        for rule in scaling_rules:
+            df = data_dict[opt_type][rule]
+
+            if len(df) == 0:
+                continue
+
+            marker = rule_markers.get(rule, 'x')
+            linestyle = rule_linestyles.get(rule, '-')
+
+            # Plot observed data (no label yet)
+            scatter = ax.scatter(df[fit_metric], df['val_loss'],
+                      s=120, marker=marker, c=color, edgecolors='black', linewidths=1.5,
+                      zorder=10, alpha=0.8)
+
+            obs_key = (rule, opt_short)
+            obs_handles[obs_key] = (scatter, f'{opt_short} {rule} (observed)')
+
+            # Plot fitted curve if available (no label yet)
+            curve_name = f'{opt_short}_{rule}'
+            if curve_name in fit_results['curves'] and plot_range is not None:
+                a = fit_results['a']
+                b = fit_results['curves'][curve_name]['b']
+                c = fit_results['curves'][curve_name]['c']
+                r2 = fit_results['curves'][curve_name]['r_squared']
+
+                # Saturated power law
+                loss_fit = a + b * np.power(plot_range, c)
+
+                line, = ax.plot(plot_range, loss_fit, linestyle=linestyle, color=color, linewidth=2.5,
+                       zorder=9)
+
+                fit_key = (rule, opt_short)
+                fit_handles[fit_key] = (line, f'{opt_short} {rule}: {a:.3f} + {b:.2e} × {metric_symbol}$^{{{c:.4f}}}$ ($R^2$={r2:.3f})')
+
+    # Create custom ordered legend
+    # Order: For each scaling rule, show all fit curves, then all observed points
+    legend_handles = []
+    legend_labels = []
+
+    for rule in scaling_rules:
+        # First, all fit curves for this scaling rule
+        for opt_short in optimizer_shorts:
+            fit_key = (rule, opt_short)
+            if fit_key in fit_handles:
+                handle, label = fit_handles[fit_key]
+                legend_handles.append(handle)
+                legend_labels.append(label)
+
+        # Then, all observed data for this scaling rule
+        for opt_short in optimizer_shorts:
+            obs_key = (rule, opt_short)
+            if obs_key in obs_handles:
+                handle, label = obs_handles[obs_key]
+                legend_handles.append(handle)
+                legend_labels.append(label)
+
+    # Get metric info
+    if fit_metric == 'compute':
+        xlabel = 'Compute (PetaFlop-Hours)'
+    else:  # non_emb
+        xlabel = 'Non-embedding Parameters'
+
+    # Formatting
+    ax.set_xlabel(xlabel, fontsize=20)
+    ax.set_ylabel('Validation Loss', fontsize=20)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+
+    opts_str = ', '.join(optimizer_shorts)
+    rules_str = ' vs '.join(scaling_rules)
+    ax.set_title(f'Scaling Laws Comparison: {rules_str}\nOptimizers: {opts_str} (Shared saturation a = {fit_results["a"]:.4f})',
+                fontsize=18, fontweight='bold')
+
+    ax.legend(legend_handles, legend_labels, fontsize=11, loc='best', framealpha=0.9, ncol=2)
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    plt.tight_layout()
+
+    return fig
+
+# =============================================================================
+# MAIN EXECUTION
+# =============================================================================
+
+if __name__ == '__main__':
+    print("="*70)
+    print(f"Scaling Rules Comparison")
+    print(f"Scaling Rules: {', '.join(args.scaling_rules)}")
+    print(f"Optimizers: {', '.join(args.optimizers)} ({', '.join(optimizer_types)})")
+    print(f"Fit Metric: {args.fit_metric}")
+    if args.min_compute:
+        print(f"Min Compute: {args.min_compute:.4e} PFH")
+    print("="*70)
+
+    # Load data for all optimizer x scaling_rule combinations
+    data_dict = {}  # {optimizer_type: {scaling_rule: df}}
+
+    for optimizer_idx, optimizer_type in enumerate(optimizer_types):
+        optimizer_short = args.optimizers[optimizer_idx]
+        print(f"\nLoading data for {optimizer_short} ({optimizer_type})...")
+
+        data_dict[optimizer_type] = {}
+        for scaling_rule in args.scaling_rules:
+            df = load_scaling_rule_data(
+                scaling_rule=scaling_rule,
+                project=args.project,
+                entity=args.entity,
+                optimizer_type=optimizer_type,
+                min_compute=args.min_compute
+            )
+            data_dict[optimizer_type][scaling_rule] = df
+            if len(df) > 0:
+                print(f"  {scaling_rule}: {len(df)} data points")
+            else:
+                print(f"  {scaling_rule}: No data")
+
+    # Prepare data for joint fitting across ALL optimizers and scaling rules
+    joint_fit_data = []
+
+    for optimizer_idx, optimizer_type in enumerate(optimizer_types):
+        optimizer_short = args.optimizers[optimizer_idx]
+
+        for scaling_rule in args.scaling_rules:
+            df = data_dict[optimizer_type][scaling_rule]
+
+            if len(df) > 0:
+                joint_fit_data.append({
+                    'compute': df[args.fit_metric].values,
+                    'loss': df['val_loss'].values,
+                    'name': f'{optimizer_short}_{scaling_rule}'
+                })
+
+    # Check if we have any data
+    if len(joint_fit_data) == 0:
+        print("\nNo data found for any optimizer/scaling rule combination. Exiting.")
+        exit(1)
+
+    print(f"\n{'='*70}")
+    print(f"Joint Fitting {len(joint_fit_data)} Curves")
+    print(f"{'='*70}")
+
+    # Perform single joint fit with shared saturation level
+    fit_results = fit_all_saturated_power_laws_joint(
+        joint_fit_data,
+        n_steps=args.n_steps,
+        learning_rate=args.learning_rate
+    )
+
+    # Print results
+    print(f"\n{'='*70}")
+    print("Fit Results")
+    print(f"{'='*70}")
+    print(f"\nShared saturation level a = {fit_results['a']:.6f}")
+
+    for curve_name, curve_params in fit_results['curves'].items():
+        print(f"\n{curve_name}:")
+        print(f"  b = {curve_params['b']:.6e}")
+        print(f"  c = {curve_params['c']:.6f}")
+        print(f"  R² = {curve_params['r_squared']:.6f}")
+
+    # Create single comparison plot
+    fig = plot_comparison_multi_optimizer(
+        data_dict,
+        fit_results,
+        args.scaling_rules,
+        args.optimizers,
+        optimizer_types,
+        args.fit_metric
+    )
+
+    # Save plot
+    if args.output:
+        output_file = args.output
+    else:
+        rules_str = '_'.join(args.scaling_rules)
+        opts_str = '_'.join(args.optimizers)
+        output_file = f'ScalingComparison_{rules_str}_{opts_str}.pdf'
+
+    plt.savefig(output_file, dpi=300, bbox_inches='tight', transparent=True)
+    print(f"\n{'='*70}")
+    print(f"Plot saved to: {os.path.abspath(output_file)}")
+    print(f"{'='*70}")

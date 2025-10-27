@@ -23,6 +23,7 @@ from optim.lamb import Lamb
 from optim.lion import Lion
 from optim.mars import MARS
 from optim.muon import CombinedScheduler, DistributedMuon, Muon
+from optim.manau import Manau
 from optim.prodigy import Prodigy
 from optim.schedule import cos_inf_schedule, wsd_schedule, powerlaw_schedule_with_warmup # cosine_wsd_decay_schedule, dd_schedule, DOES NOT EXIST
 from optim.schedulefree import AdamWScheduleFree, SGDScheduleFree
@@ -119,12 +120,15 @@ def main(args, parser):
     optimized_params_cnt = 0
     for g in group_specs:
         params = []
+        param_names = []  # Store parameter names for optimizers that need them
         for p_name in g["params"]:
             translated_p_names = (
                 distributed_backend.translate_model_parameter_name_for_node(p_name)
             )
             params += [param_name_mapping[p_name] for p_name in translated_p_names]
+            param_names += list(translated_p_names)  # Keep track of names
         g["params"] = params
+        g["param_names"] = param_names  # Add names to group spec for optimizer access
         optimized_params_cnt += sum([p.numel() for p in g["params"]])
     params_cnt = distributed_backend.get_raw_model(model).get_num_params()
     params_cnt_with_all_embeddings = distributed_backend.get_raw_model(model).get_num_params(non_embedding=False)
@@ -197,6 +201,26 @@ def main(args, parser):
                 adamw_betas=(args.beta1, args.beta2),
                 adamw_eps=1e-8,
                 weight_decay=args.weight_decay,
+            )
+    elif args.opt == "manau":
+            opt = Manau(
+                group_specs,
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                matched_adamw_rms=getattr(args, 'matched_adamw_rms', 0.2),
+                momentum=args.momentum,
+                nesterov=args.nesterov,
+                ns_steps=args.muon_ns_steps,
+                dana_momentum=getattr(args, 'dana_momentum', False),
+                delta=args.delta,
+                kappa=args.kappa,
+                mk4A=args.mk4A,
+                mk4B=args.mk4B,
+                clipsnr=args.clipsnr,
+                epsilon=1e-8,
+                weight_time=args.weight_time,
+                wd_decaying=args.wd_decaying,
+                wd_ts=args.wd_ts,
             )
     elif args.opt == "ademamix":
             opt = AdEMAMix(

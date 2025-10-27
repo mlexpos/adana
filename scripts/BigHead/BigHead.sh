@@ -63,7 +63,7 @@ if [ -z "$DEPTH" ]; then
     echo "  --batch_size <value>      Batch size (default: 32)"
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
     echo "  --nproc_per_node <value>  Processes per node (default: 1)"
-    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon (default: dana-star-mk4)"
+    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard (default: dana-star-mk4)"
     exit 1
 fi
 
@@ -124,9 +124,26 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt d-muon --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.8 --beta2 0.999 --momentum 0.95 --nesterov True --muon_ns_steps 5"
         ;;
+    manau)
+        # For manau (standard momentum): WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
+        # Muon parameters use standard fixed momentum (dana_momentum=False)
+        # DANA-STAR-MK4 parameters use adaptive updates
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 1))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum False --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+        ;;
+    manau-hard)
+        # For manau-hard (DANA momentum): WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
+        # Both Muon and DANA-STAR-MK4 parameters use DANA-style adaptive EMA (dana_momentum=True)
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 1))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum True --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+        ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
-        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon"
+        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard"
         exit 1
         ;;
 esac

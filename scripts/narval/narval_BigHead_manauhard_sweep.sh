@@ -1,33 +1,34 @@
 #!/bin/bash
 
-# Enoki D-Muon Sweep across sizes {4,8,12,16}
-# For each size (heads), runs multiple learning rates: 0.5x, 0.75x, 1.0x, 1.25x, and 1.5x the formula prediction
+# BigHead Manau-Hard Sweep across depths {4,5,6,7}
+# For each depth, runs multiple learning rates: multipliers of the formula prediction
 # Learning rate formula: lr = 1.45e-05 + 2.33e+01 × P^{-0.562} where P = NON_EMB
+# Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-SIZES=( 4 8 12 16 )
+DEPTHS=( 4 5 6 7 )
 LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
 
-echo "Starting Enoki D-Muon sweep"
-echo "Sizes (heads): ${SIZES[@]}"
+echo "Starting BigHead Manau-Hard sweep"
+echo "Depths: ${DEPTHS[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
 echo ""
 
-# Function to calculate model parameters for a given size (heads)
+# Function to calculate model parameters for a given depth
 calculate_params() {
-    local HEADS=$1
+    local DEPTH=$1
 
-    # Enoki architecture parameters (DiLoco scaling with fixed aspect ratio)
-    local HEAD_DIM=64
-    local N_HEAD=$(python3 -c "print(int($HEADS))")
-    local N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
-    local N_EMBD=$(python3 -c "print(int($HEADS * 64))")
-    local MLP_HIDDEN=$(python3 -c "print(int(4 * $N_EMBD))")
+    # Model architecture parameters
+    local HEAD_DIM=$(python3 -c "print(int(16 * $DEPTH))")
+    local N_EMBD=$(python3 -c "print(int(16 * $DEPTH * $DEPTH))")
+    local MLP_HIDDEN=$(python3 -c "print(int(32 * $DEPTH * $DEPTH))")
+    local N_HEAD=$(python3 -c "print(int($DEPTH))")
+    local N_LAYER=$(python3 -c "print(int($DEPTH))")
 
     # Calculate non-embedding parameters
-    # Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
-    local NON_EMB=$(python3 -c "print(int(12 * $N_EMBD * $N_EMBD * $N_LAYER))")
+    # Non-emb = depth * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
+    local NON_EMB=$(python3 -c "print(int($DEPTH * (3 * $HEAD_DIM * $N_EMBD * $N_HEAD + $N_EMBD * $N_EMBD + 2 * $N_EMBD * $MLP_HIDDEN + 8 * $N_EMBD) + 2 * $N_EMBD))")
 
     # Calculate total parameters and iterations
     local TOTAL_PARAMS=$(python3 -c "print(int($NON_EMB + 2 * $N_EMBD * 50304))")
@@ -36,11 +37,11 @@ calculate_params() {
     echo "$NON_EMB $ITERATIONS"
 }
 
-# Calculate C(4) for time normalization
+# Calculate C(4) for reference
 read NON_EMB_4 ITERATIONS_4 <<< $(calculate_params 4)
 C_4=$(python3 -c "print($NON_EMB_4 * $ITERATIONS_4)")
 
-echo "Reference (heads=4):"
+echo "Reference (depth=4):"
 echo "  NON_EMB = $NON_EMB_4"
 echo "  ITERATIONS = $ITERATIONS_4"
 echo "  C(4) = $C_4"
@@ -48,23 +49,21 @@ echo ""
 
 # Counter for job tracking
 job_count=0
-total_jobs=$((${#SIZES[@]} * ${#LR_MULTIPLIERS[@]}))
+total_jobs=$((${#DEPTHS[@]} * ${#LR_MULTIPLIERS[@]}))
 echo "Total jobs to run: $total_jobs"
 echo ""
 
-# Loop over sizes (heads)
-for HEADS in "${SIZES[@]}"; do
-    echo "Processing heads=$HEADS"
+# Loop over depths
+for DEPTH in "${DEPTHS[@]}"; do
+    echo "Processing depth=$DEPTH"
 
-    # Calculate parameters for this size
-    read NON_EMB ITERATIONS <<< $(calculate_params $HEADS)
+    # Calculate parameters for this depth
+    read NON_EMB ITERATIONS <<< $(calculate_params $DEPTH)
 
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate time in hours: C(size) / C(4) scaled appropriately
-    # We'll use this to estimate SLURM time
-    #TIME_HOURS=$(python3 -c "import math; print(max(1, int(math.ceil($C / $C_4))))")
+    # Calculate time in hours based on compute
     TIME_HOURS=8
 
     # Calculate base learning rate using formula: lr = 1.45e-05 + 2.33e+01 * P^{-0.562}
@@ -83,16 +82,16 @@ for HEADS in "${SIZES[@]}"; do
         LR=$(python3 -c "print($MULT * $BASE_LR)")
 
         job_count=$((job_count + 1))
-        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
+        echo "  Job $job_count/$total_jobs: depth=$DEPTH, lr=$LR (${MULT}x base)"
 
         # Submit the job with calculated parameters
         sbatch --time=${TIME_HOURS}:00:00 \
-               --job-name=EN_dmuon_h${HEADS}_lr${MULT} \
-               scripts/narval/Enoki_epaq.sh \
-               --heads $HEADS \
+               --job-name=BH_manauhard_d${DEPTH}_lr${MULT} \
+               scripts/narval/BigHead_epaq.sh \
+               --depth $DEPTH \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer d-muon
+               --optimizer manau-hard
 
         # Check if the job was successful
         if [ $? -eq 0 ]; then
@@ -108,3 +107,8 @@ for HEADS in "${SIZES[@]}"; do
 done
 
 echo "Sweep completed. Total jobs submitted: $job_count"
+echo ""
+echo "Manau-Hard Configuration:"
+echo "  - Muon parameters: Adaptive EMA with delta=8, momentum scaling with step^(1-kappa)"
+echo "  - DANA-STAR-MK4 parameters: Adaptive updates with kappa=0.75"
+echo "  - Weight decay: Decaying over time"
