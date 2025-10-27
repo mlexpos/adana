@@ -3,7 +3,7 @@
 # BigHead Manau-Hard Multi-GPU Sweep for depths {8,9,10}
 # Uses 4 GPUs per node for larger models
 # For each depth, runs multiple learning rates: 0.5x, 0.75x, 1.0x, 1.25x, 1.5x the formula prediction
-# Learning rate formula: lr = 2.0e+01 × P^(-0.67) where P = NON_EMB
+# Learning rate formula: lr = 7.03e-05 + 6.74e+01 × P^{-0.629} where P = NON_EMB
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
@@ -78,8 +78,8 @@ for DEPTH in "${DEPTHS[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 2.0e+01 * P^(-0.67)
-    BASE_LR=$(python3 -c "print(2.0e+01 * ($NON_EMB ** -0.67))")
+    # Calculate base learning rate using formula: lr = 7.03e-05 + 6.74e+01 * P^{-0.629}
+    BASE_LR=$(python3 -c "print(7.03e-05 + 6.74e+01 * ($NON_EMB ** -0.629))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
