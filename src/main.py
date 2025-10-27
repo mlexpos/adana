@@ -34,7 +34,7 @@ from optim.dana_star import DANA_STAR, DANA
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
-from optim.snoo_dana import snoo_DANA
+from optim.snoo_dana import snoo_DANA, snoo
 
 
 def get_args():
@@ -90,6 +90,9 @@ def main(args, parser):
             exp_dir = resume_ckpt_dir
         exp_name = exp_dir.name
     if distributed_backend.is_master_process() and args.wandb:
+        # Compute renormalized weight decay: W = weight_decay * lr * iterations
+        args.renorm_weight_decay = args.weight_decay * args.lr * args.iterations
+        
         wandb.init(
             project=args.wandb_project,
             name=exp_name,
@@ -410,7 +413,7 @@ def main(args, parser):
     elif args.opt == "snoo-dana":
         opt = snoo_DANA(
             group_specs,
-            lr_inner=args.lr_inner,
+            lr=args.lr,
             lr_outer=args.lr_outer,
             weight_decay=args.weight_decay,
             beta1=args.beta1,
@@ -418,6 +421,17 @@ def main(args, parser):
             delta=args.delta,
             kappa=args.kappa,
             gamma_3_factor=args.gamma_3_factor,
+            k=args.k,
+        )
+    elif args.opt == "snoo":
+        opt = snoo(
+            group_specs,
+            lr=args.lr,
+            lr_outer=args.lr_outer,
+            weight_decay=args.weight_decay,
+            beta1=args.beta1,
+            beta2=args.beta2,
+            mu=args.mu,
             k=args.k,
         )
     else:

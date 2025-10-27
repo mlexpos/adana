@@ -7,7 +7,7 @@ torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --mo
     --iterations 13953 \
     --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt snoo_dana --lr_inner 1e-3 --lr_outer 0.5 --delta 8 --kappa 0.75 --weight_decay 1e-3 \
+    --opt snoo-dana --lr 1e-3 --lr_outer 0.5 --delta 8 --kappa 0.75 --weight_decay 1e-3 \
     --beta1 0.9 --beta2 0.95 --k 10 \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=aip-gidelgau
-#SBATCH --time=00:30:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
@@ -24,17 +24,18 @@ echo "Activated virtual environment"
 
 DATASETS_DIR="$HOME/links/scratch/fineweb"
 
+mu=0.75
+for lr in 0.0005 0.001 0.003 0.006
+do
+for lr_outer in 0.5 0.6 0.95
+do
+for k in 10 50 100
+do
+for w in 0.3 1.0 3.0
+do
+weight_decay=$(awk "BEGIN {printf \"%.10f\", $w / $lr / 13953}")
 
-for lr_inner in 1e-3 3e-4 1e-4
-do
-for lr_outer in 0.5 0.75 1.0
-do
-for k in 1 10 20 30
-do
-w=4.0
-weight_decay=$(echo "$w / $lr_inner / 13953" | bc -l)
-
-uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
+uv run torchrun --standalone --nproc_per_node=1 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --n_embd 384 --qkv_dim 64 --n_head 6 --n_layer 4 \
     --mlp_hidden_dim 1536 \
@@ -43,12 +44,12 @@ uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format ba
     --iterations 13953 \
     --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
-    --opt snoo-dana --lr_inner $lr_inner --lr_outer $lr_outer --delta 8 --kappa 0.75 --weight_decay $weight_decay \
-    --beta1 0.9 --beta2 0.95 --k $k \
+    --opt snoo --lr $lr --lr_outer $lr_outer --weight_decay $weight_decay \
+    --beta1 0.9 --beta2 0.95 --k $k --mu $mu \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval 115
-
+done
 done
 done
 done

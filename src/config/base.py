@@ -120,7 +120,8 @@ def parse_args(base_parser, args, namespace):
             "sign_dana",
             "auto-dana",
             "dana-star-mk4",
-            "snoo-dana"
+            "snoo-dana",
+            "snoo"
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)
@@ -148,10 +149,10 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--adema_beta3", default=None, type=float)
     #parser.add_argument("--adema_alpha", default=2.0, type=float)
 
-    # SNOO-DANA params
-    parser.add_argument("--lr_inner", default=1e-3, type=float)
+    # SNOO-DANA and SNOO params
     parser.add_argument("--lr_outer", default=0.5, type=float)
     parser.add_argument("--k", default=1, type=int)
+    parser.add_argument("--mu", default=0.9, type=float)  # Nesterov momentum coefficient for SNOO
 
     parser.add_argument("--adema_beta3_warmup", default=None, type=int)
     parser.add_argument("--adema_alpha_warmup", default=None, type=int)
