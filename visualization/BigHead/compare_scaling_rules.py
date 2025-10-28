@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Compare Scaling Rules Performance (BigHead vs EggHead vs Enoki)
+Compare Scaling Rules Performance (BigHead vs EggHead vs Enoki vs Eryngii)
 
 This script compares the scaling performance between different model architectures:
 1. BigHead: depth-based scaling (n_layer = depth)
 2. EggHead: quadratic depth scaling (n_layer = heads * (heads-1) / 2)
 3. Enoki: DiLoco scaling (n_layer = 3 * heads / 4)
+4. Eryngii: increased head dimension and depth scaling (n_layer = heads^2 / 8)
 
 For each architecture and model size, it takes the best final-val/loss achieved,
 plots loss vs compute (or non-emb params), and fits saturated power laws: loss = a + b * X^c
@@ -21,7 +22,7 @@ Usage:
     python compare_scaling_rules.py --scaling-rules BigHead Enoki --optimizers adamw
     python compare_scaling_rules.py --scaling-rules BigHead Enoki --optimizers adamw mk4
     python compare_scaling_rules.py --scaling-rules BigHead EggHead Enoki --optimizers mk4 d-muon manau
-    python compare_scaling_rules.py --scaling-rules BigHead Enoki --optimizers adamw --fit-metric non_emb
+    python compare_scaling_rules.py --scaling-rules BigHead Enoki Eryngii --optimizers adamw --fit-metric non_emb
 """
 
 import wandb
@@ -62,6 +63,12 @@ SCALING_RULE_CONFIG = {
         'color': 'tab:orange',
         'marker': 'D',
         'linestyle': '-.',
+    },
+    'Eryngii': {
+        'group': 'eryngii_sweeps',
+        'color': 'tab:purple',
+        'marker': '^',
+        'linestyle': ':',
     }
 }
 
@@ -78,7 +85,7 @@ rcParams['figure.figsize'] = (14, 8)
 
 parser = argparse.ArgumentParser(description='Compare scaling rules performance')
 parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
-                    choices=['BigHead', 'EggHead', 'Enoki'],
+                    choices=['BigHead', 'EggHead', 'Enoki', 'Eryngii'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
                     choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard'],
@@ -116,8 +123,8 @@ def compute_params(size, scaling_rule):
     Compute parameters for a given size and scaling rule.
 
     Args:
-        size: For BigHead, this is depth. For EggHead/Enoki, this is heads.
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki'
+        size: For BigHead, this is depth. For EggHead/Enoki/Eryngii, this is heads.
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Eryngii'
 
     Returns:
         dict with non_emb, total_params, compute (PFH), etc.
@@ -164,6 +171,22 @@ def compute_params(size, scaling_rule):
         mlp_hidden = 4 * n_embd
         n_head = heads
         n_layer = int(3 * heads // 4)
+
+        # Non-embedding params (DiLoco formula)
+        non_emb = float(12 * n_embd * n_embd * n_layer)
+
+        # Total params
+        vocab_size = 50304
+        total_params = float(non_emb + 2 * n_embd * vocab_size)
+
+    elif scaling_rule == 'Eryngii':
+        # Eryngii: increased head dimension and depth scaling
+        heads = size
+        head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
+        n_head = heads
+        n_layer = int(heads * heads // 8)
+        n_embd = n_head * head_dim
+        mlp_hidden = 4 * n_embd
 
         # Non-embedding params (DiLoco formula)
         non_emb = float(12 * n_embd * n_embd * n_layer)
@@ -276,7 +299,7 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
         # Get size parameter based on scaling rule
         if scaling_rule == 'BigHead':
             size = run_config.get('n_layer')  # depth
-        else:  # EggHead or Enoki
+        else:  # EggHead, Enoki, or Eryngii
             size = run_config.get('n_head')  # heads
 
         val_loss = summary.get('final-val/loss')
@@ -596,14 +619,16 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
     rule_markers = {
         'BigHead': 'D',
         'EggHead': 's',
-        'Enoki': 'o'
+        'Enoki': 'o',
+        'Eryngii': '^'
     }
 
     # Scaling rule line styles
     rule_linestyles = {
         'BigHead': '-',
         'EggHead': '--',
-        'Enoki': ':'
+        'Enoki': ':',
+        'Eryngii': '-.'
     }
 
     # Collect all metric values for plot range
