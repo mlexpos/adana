@@ -3,18 +3,18 @@
 # Eryngii d-muon Multi-GPU Sweep for Tamia (heads 4 to 8)
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr = 0.001
+# Base learning rate: lr = 4.652711e-01 * compute**-0.1382
 
 OMEGA=4.0
-HEADS=(6)
-LR_MULTIPLIERS=(0.03 0.1 0.3 1.0 3.0 10.0 30.0)
+HEADS=(9 10 11 12 13)
+LR_MULTIPLIERS=(0.1 0.3 1.0 3.0 10.0)
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=3
+TIME_HOURS=24
 
 echo "Starting Eryngii d-muon Multi-GPU sweep (Tamia)"
 echo "Heads: ${HEADS[@]}"
@@ -64,9 +64,9 @@ for HEADS in "${HEADS[@]}"; do
 
     # Set time allocation based on heads
     if [ $HEADS -le 6 ]; then
-        TIME_HOURS=3  # 3 hours for heads 4, 5, 6
+        TIME_HOURS=3  # 3 hours for heads less than or equal to 6
     else
-        TIME_HOURS=12  # 12 hours for heads 7, 8
+        TIME_HOURS=24  # 24 hours for heads 9, 10, 11, 12, 13
     fi
 
     # Calculate parameters for this heads
@@ -76,7 +76,7 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
     # Base learning rate
-    BASE_LR=0.001
+    BASE_LR=$(python3 -c "print(4.652711e-01 * (6 * $C * 2048 * 32) ** -0.1382)")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
@@ -91,7 +91,7 @@ for HEADS in "${HEADS[@]}"; do
         LR=$(python3 -c "print($MULT * $BASE_LR)")
 
         job_count=$((job_count + 1))
-        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
+        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base), compute=$C"
 
         # Submit the job with multi-GPU configuration
         sbatch --account=aip-gidelgau \
