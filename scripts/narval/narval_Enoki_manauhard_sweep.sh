@@ -82,13 +82,13 @@ for DEPTH in "${DEPTHS[@]}"; do
         LR=$(python3 -c "print($MULT * $BASE_LR)")
 
         job_count=$((job_count + 1))
-        echo "  Job $job_count/$total_jobs: depth=$DEPTH, lr=$LR (${MULT}x base)"
+        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
 
         # Submit the job with calculated parameters
         sbatch --time=${TIME_HOURS}:00:00 \
-               --job-name=EN_manauhard_d${DEPTH}_lr${MULT} \
+               --job-name=EN_manauhard_d${HEADS}_lr${MULT} \
                scripts/narval/Enoki_cypaq.sh \
-               --depth $DEPTH \
+               --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
                --optimizer manau-hard
