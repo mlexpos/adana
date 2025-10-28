@@ -1,15 +1,14 @@
 #!/bin/bash
 
-# Enoki Manau-Hard Sweep across depths {4,5,6,7}
+# Enoki Ademamix Sweep across depths {8,9,10,11}
 # For each depth, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.45e-05 + 2.33e+01 × P^{-0.562} where P = NON_EMB
-# Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
+# Learning rate formula: lr = 1.50e-05 + 9.15e+01 × P^{-0.660} where P = NON_EMB
 
 OMEGA=4.0
-HEADS_ARRAY=( 8 9 10 11 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
+HEADS_ARRAY=( 6 8 10 )
+LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5 1.75 0.25)
 
-echo "Starting Enoki Manau-Hard sweep"
+echo "Starting Enoki Ademamix sweep"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -66,8 +65,8 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     # Calculate time in hours based on compute
     TIME_HOURS=8
 
-    # Calculate base learning rate using formula: lr = 1.45e-05 + 2.33e+01 * P^{-0.562}
-    BASE_LR=$(python3 -c "print(1.45e-05 + 2.33e+01 * ($NON_EMB ** -0.562))")
+    # Calculate base learning rate using formula: lr = 1.50e-05 + 9.15e+01 * P^{-0.660}
+    BASE_LR=$(python3 -c "print(1.50e-05 + 9.15e+01 * ($NON_EMB ** -0.660))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
@@ -86,12 +85,12 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
 
         # Submit the job with calculated parameters
         sbatch --time=${TIME_HOURS}:00:00 \
-               --job-name=EN_manauhard_d${HEADS}_lr${MULT} \
-               scripts/narval/Enoki_cypaq.sh \
+               --job-name=EN_ademamix_d${HEADS}_lr${MULT} \
+               scripts/narval/Enoki_epaq.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer manau-hard
+               --optimizer ademamix
 
         # Check if the job was successful
         if [ $? -eq 0 ]; then
@@ -107,8 +106,3 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
 done
 
 echo "Sweep completed. Total jobs submitted: $job_count"
-echo ""
-echo "Manau-Hard Configuration:"
-echo "  - Muon parameters: Adaptive EMA with delta=8, momentum scaling with step^(1-kappa)"
-echo "  - DANA-STAR-MK4 parameters: Adaptive updates with kappa=0.75"
-echo "  - Weight decay: Decaying over time"

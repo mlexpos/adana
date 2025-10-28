@@ -1,14 +1,15 @@
 #!/bin/bash
 
-# Enoki AdamW Multi-GPU Sweep for Narval
+# Enoki MK4 Multi-GPU Sweep for Narval
 # Uses 4 GPUs per node for larger models
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr =  1.11e-05 + 9.51e+02 × P^{-0.760} where P = NON_EMB
+# Learning rate formula: lr = 7.51e-06 + 2.50e+00 × P^{-0.507} where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA=4.0
-HEADS_ARRAY=( 16 )
-LR_MULTIPLIERS=(1.0 1.25 1.5)
+CLIPSNR=2.0
+HEADS_ARRAY=( 11 13 15 )
+LR_MULTIPLIERS=(1.0 1.25 1.5 0.75 0.5 0.25)
 
 # SLURM configuration for Narval (4 GPUs)
 GPUS_PER_NODE=4
@@ -17,9 +18,10 @@ TOTAL_CPUS=32  # 4 GPUs × 8 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=12
 
-echo "Starting Enoki AdamW Multi-GPU sweep (Narval)"
+echo "Starting Enoki MK4 Multi-GPU sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
+echo "ClipSNR: $CLIPSNR"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
 echo "GPUs per node: $GPUS_PER_NODE"
 echo "CPUs per GPU: $CPUS_PER_GPU"
@@ -76,8 +78,8 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 1.11e-05 + 9.51e+02 * P^{-0.760}
-    BASE_LR=$(python3 -c "print(1.11e-05 + 9.51e+02 * ($NON_EMB ** -0.760))")
+    # Calculate base learning rate using formula: lr = 7.51e-06 + 2.50e+00 * P^{-0.507}
+    BASE_LR=$(python3 -c "print(7.51e-06 + 2.50e+00 * ($NON_EMB ** -0.507))")
 
     # Calculate n_layer for this head count
     N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
@@ -105,12 +107,13 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
                --gpus-per-node=a100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=EN_AW_4G_h${HEADS}_lr${MULT} \
+               --job-name=EN_MK4_4G_h${HEADS}_lr${MULT} \
                scripts/narval/Enoki_epaq.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer adamw \
+               --clipsnr $CLIPSNR \
+               --optimizer dana-star-mk4 \
                --nproc_per_node ${GPUS_PER_NODE}
 
         # Check if the job was successful

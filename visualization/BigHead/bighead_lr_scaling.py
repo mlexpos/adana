@@ -21,10 +21,17 @@ Supported Scaling Rules:
    - n_layer = 3 * heads / 4, n_head = heads
    - n_embd = heads * 64, mlp_hidden = 4 * n_embd
 
+4. Eryngii: heads-based scaling with increased head dimension and depth
+   - n_layer = heads^2 / 8, n_head = heads
+   - head_dim = 32 * heads / 3 (rounded to multiple of 8)
+   - n_embd = n_head * head_dim, mlp_hidden = 4 * n_embd
+
 Usage:
     python bighead_lr_scaling.py --scaling-rule BigHead --optimizer adamw --target-omega 4.0 --top-k 5
     python bighead_lr_scaling.py --scaling-rule Enoki --optimizer mk4 --target-omega 4.0 --top-k 5
     python bighead_lr_scaling.py --scaling-rule EggHead --optimizer d-muon --target-omega 4.0 --top-k 5
+    python bighead_lr_scaling.py --scaling-rule Eryngii --optimizer adamw --target-omega 4.0 --top-k 5
+    python bighead_lr_scaling.py --scaling-rule BigHead --optimizer manau --target-omega 4.0 --top-k 5 --wd-decaying
 """
 
 import wandb
@@ -42,6 +49,7 @@ from matplotlib import style
 from matplotlib import rc, rcParams
 import argparse
 import warnings
+import json
 from scipy.optimize import curve_fit
 
 warnings.filterwarnings('ignore')
@@ -65,6 +73,11 @@ SCALING_RULE_CONFIG = {
         'group': 'DanaStar_MK4_Enoki_Sweep',
         'extrapolation_sizes': [8, 12, 16, 20, 24, 28, 32, 36, 40],  # Only multiples of 4
         'size_step': 4,  # Only show multiples of 4
+    },
+    'Eryngii': {
+        'group': 'eryngii_sweeps',
+        'extrapolation_sizes': [8, 9, 10, 11, 12],  
+        'size_step': 1,  # Show all consecutive integers
     }
 }
 
@@ -80,10 +93,10 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 # =============================================================================
 
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
-parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki'],
-                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), or Enoki (DiLoco)')
-parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon'],
-                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, or d-muon')
+parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Eryngii'],
+                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), or Eryngii (increased head dim and depth)')
+parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau'],
+                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, or manau')
 parser.add_argument('--target-omega', type=float, default=4.0,
                     help='Target omega value to find optimal LR (default: 4.0)')
 parser.add_argument('--top-k', type=int, default=5,
@@ -96,7 +109,7 @@ parser.add_argument('--entity', type=str, default='ep-rmt-ml-opt',
                     help='WandB entity name (default: ep-rmt-ml-opt)')
 parser.add_argument('--output', type=str, default=None,
                     help='Output filename for plot (default: auto-generated)')
-parser.add_argument('--n-steps', type=int, default=200000,
+parser.add_argument('--n-steps', type=int, default=300000,
                     help='Number of optimization steps for power law fitting (default: 100000)')
 parser.add_argument('--learning-rate', type=float, default=500.0,
                     help='Optimizer learning rate for power law fitting (default: 100.0)')
@@ -110,10 +123,12 @@ parser.add_argument('--target-clipsnr', type=float, default=None,
                     help='Target clipsnr value for MK4 optimizer (filters runs within tolerance, default: None)')
 parser.add_argument('--clipsnr-tolerance', type=float, default=0.1,
                     help='Tolerance for clipsnr matching (default: 0.1)')
+parser.add_argument('--wd-decaying', action='store_true',
+                    help='For Manau optimizer: filter for runs with wd_decaying=True (default: False, meaning no filter)')
 args = parser.parse_args()
 
 # Map optimizer abbreviations
-optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon'}
+optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon', 'manau': 'manau'}
 optimizer_type = optimizer_map[args.optimizer]
 
 # Get scaling rule configuration
@@ -134,8 +149,8 @@ def compute_non_embedding_params(size, scaling_rule):
     Compute non-embedding parameters based on scaling rule.
 
     Args:
-        size: For BigHead, this is depth. For EggHead/Enoki, this is heads.
-        scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki'
+        size: For BigHead, this is depth. For EggHead/Enoki/Eryngii, this is heads.
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', or 'Eryngii'
 
     Returns:
         int: Number of non-embedding parameters
@@ -173,6 +188,17 @@ def compute_non_embedding_params(size, scaling_rule):
         # Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
         non_emb = 12 * n_embd * n_embd * n_layer
 
+    elif scaling_rule == 'Eryngii':
+        # Eryngii: heads-based scaling with increased head dimension and depth
+        heads = size
+        head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
+        n_head = heads
+        n_layer = int(heads * heads // 8)
+        n_embd = n_head * head_dim
+        mlp_hidden = 4 * n_embd
+        # Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
+        non_emb = 12 * n_embd * n_embd * n_layer
+
     else:
         raise ValueError(f"Unknown scaling rule: {scaling_rule}")
 
@@ -193,6 +219,11 @@ def compute_total_params(size, scaling_rule):
         vocab_size = 50304
     elif scaling_rule == 'Enoki':
         n_embd = size * 64
+        vocab_size = 50304
+    elif scaling_rule == 'Eryngii':
+        heads = size
+        head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
+        n_embd = heads * head_dim
         vocab_size = 50304
     else:
         raise ValueError(f"Unknown scaling rule: {scaling_rule}")
@@ -248,16 +279,19 @@ def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1)
     return results
 
 def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, scaling_rule,
-                           target_clipsnr=None, clipsnr_tolerance=0.1):
+                           target_clipsnr=None, clipsnr_tolerance=0.1, wd_decaying_filter=False):
     """Load data from WandB
 
     Args:
         scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki' to determine size parameter
+        wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
     """
     api = wandb.Api()
 
     print(f"Loading data from {group_name}...")
     print(f"Scaling rule: {scaling_rule}")
+    if wd_decaying_filter:
+        print(f"Filtering for wd_decaying=True")
 
     runs = api.runs(f"{entity}/{project_name}", filters={"group": group_name})
 
@@ -267,11 +301,58 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
     skipped_incomplete = 0
     skipped_missing_data = 0
     skipped_clipsnr = 0
+    skipped_wd_decaying = 0
 
     for run in runs:
         total_runs += 1
+
+        # Handle different wandb API versions where config might be a string or dict
         config = run.config
+        if isinstance(config, str):
+            # In wandb version 0.22.2, config is returned as a JSON string
+            # Parse it to get a dictionary
+            try:
+                config = json.loads(config)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"  Warning: Could not parse config JSON for run {run.name}, skipping...")
+                continue
+
+        # Convert to dict if it's a wandb Config object
+        if hasattr(config, 'as_dict'):
+            config = config.as_dict()
+        elif not isinstance(config, dict):
+            # If it's not a dict and doesn't have as_dict, try to convert
+            try:
+                config = dict(config)
+            except (TypeError, ValueError):
+                print(f"  Warning: Could not convert config for run {run.name}, skipping...")
+                continue
+
+        # Extract value from nested dict structure if needed
+        # In some versions, config has structure {"key": {"value": actual_value}}
+        def extract_value(config_dict):
+            """Extract values from nested config structure."""
+            result = {}
+            for key, val in config_dict.items():
+                if isinstance(val, dict) and 'value' in val:
+                    result[key] = val['value']
+                else:
+                    result[key] = val
+            return result
+
+        config = extract_value(config)
+
+        # Handle summary (also may be a JSON string in some wandb versions)
         summary = run.summary
+        if hasattr(summary, '_json_dict') and isinstance(summary._json_dict, str):
+            try:
+                summary = json.loads(summary._json_dict)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"  Warning: Could not parse summary JSON for run {run.name}, skipping...")
+                continue
+        elif not isinstance(summary, dict) and hasattr(summary, '__getitem__'):
+            # If it's a wandb Summary object with dict-like access, use it as-is
+            pass
 
         # Filter by optimizer (stored as 'opt' in config)
         opt = config.get('opt', '')
@@ -279,11 +360,18 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             skipped_optimizer += 1
             continue
 
-        # Filter by clipsnr if specified (for MK4 optimizer)
+        # Filter by clipsnr if specified (for MK4 and Manau optimizers)
         if target_clipsnr is not None:
             clipsnr = config.get('clipsnr')
             if clipsnr is None or abs(clipsnr - target_clipsnr) > clipsnr_tolerance:
                 skipped_clipsnr += 1
+                continue
+
+        # Filter by wd_decaying if requested (for Manau optimizer)
+        if wd_decaying_filter:
+            wd_decaying = config.get('wd_decaying', False)
+            if not wd_decaying:
+                skipped_wd_decaying += 1
                 continue
 
         # Check if run completed
@@ -313,6 +401,10 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             # Enoki uses n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
+        elif scaling_rule == 'Eryngii':
+            # Eryngii uses n_head as heads
+            size = config.get('n_head')
+            size_name = 'heads'
         else:
             raise ValueError(f"Unknown scaling rule: {scaling_rule}")
 
@@ -325,6 +417,19 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             wd_ts = config.get('wd_ts', 1.0)
             weight_decay = config.get('weight_decay', 1.0)
             omega = wd_ts * lr * weight_decay
+        elif optimizer_type == 'manau':
+            # Manau can use either wd_decaying mode or AdamW-style weight decay
+            wd_decaying = config.get('wd_decaying', False)
+            if wd_decaying:
+                # When wd_decaying=True, use wd_ts * lr * weight_decay (like DANA)
+                wd_ts = config.get('wd_ts', 1.0)
+                weight_decay = config.get('weight_decay', 1.0)
+                omega = wd_ts * lr * weight_decay
+            else:
+                # When wd_decaying=False, use weight_decay * lr * iterations (like AdamW)
+                weight_decay = config.get('weight_decay', 0.1)
+                iterations = config.get('iterations', 1)
+                omega = weight_decay * lr * iterations
         else:  # adamw, ademamix, d-muon
             weight_decay = config.get('weight_decay', 0.1)
             iterations = config.get('iterations', 1)
@@ -344,6 +449,8 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
         print(f"  Skipped {skipped_optimizer} runs due to optimizer filter")
     if skipped_clipsnr > 0:
         print(f"  Skipped {skipped_clipsnr} runs due to clipsnr filter")
+    if skipped_wd_decaying > 0:
+        print(f"  Skipped {skipped_wd_decaying} runs due to wd_decaying filter")
     if skipped_incomplete > 0:
         print(f"  Skipped {skipped_incomplete} incomplete runs")
 
@@ -432,16 +539,18 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
     return a, b, d
 
 def collect_weighted_data_for_depths(optimizer_type, scaling_rule, target_omega, top_k, project, group, entity,
-                                      exclude_small=False, target_clipsnr=None, clipsnr_tolerance=0.1):
+                                      exclude_small=False, target_clipsnr=None, clipsnr_tolerance=0.1,
+                                      wd_decaying_filter=False):
     """
     Collect top-K LRs for each size at target omega, with weights.
 
     Args:
         scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki'
+        wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
     """
     # Load all data for the optimizer
     data_df = load_wandb_data_simple(project, group, entity, optimizer_type, scaling_rule,
-                                     target_clipsnr, clipsnr_tolerance)
+                                     target_clipsnr, clipsnr_tolerance, wd_decaying_filter)
 
     if len(data_df) == 0:
         print("No data found. Exiting.")
@@ -548,6 +657,8 @@ if __name__ == '__main__':
     print(f"Exclude Small: {args.exclude_small}")
     if args.target_clipsnr is not None:
         print(f"Target ClipSNR: {args.target_clipsnr} (tolerance: {args.clipsnr_tolerance})")
+    if args.wd_decaying:
+        print(f"Filtering for wd_decaying=True")
     print("="*70)
 
     # Collect weighted data from all sizes
@@ -561,7 +672,8 @@ if __name__ == '__main__':
         entity=args.entity,
         exclude_small=args.exclude_small,
         target_clipsnr=args.target_clipsnr,
-        clipsnr_tolerance=args.clipsnr_tolerance
+        clipsnr_tolerance=args.clipsnr_tolerance,
+        wd_decaying_filter=args.wd_decaying
     )
 
     if result is None:
@@ -694,12 +806,14 @@ if __name__ == '__main__':
     ax.set_xscale('log')
     ax.set_yscale('log')
 
-    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
+    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau'}
     optimizer_title = optimizer_title_map[args.optimizer]
 
     title_parts = [f'ω = {args.target_omega}', f'Top-K = {args.top_k}']
     if args.target_clipsnr is not None:
         title_parts.append(f'ClipSNR = {args.target_clipsnr}')
+    if args.wd_decaying:
+        title_parts.append('wd_decaying=True')
     title_params = ', '.join(title_parts)
 
     ax.set_title(f'{args.scaling_rule} {optimizer_title} Optimal Learning Rate Scaling Law\n({title_params})',
@@ -717,7 +831,7 @@ if __name__ == '__main__':
     if args.output:
         output_file = args.output
     else:
-        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
+        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau'}
         optimizer_name = optimizer_filename_map[args.optimizer]
         output_file = f'{args.scaling_rule}-{optimizer_name}-lr-extrapolation.pdf'
 
