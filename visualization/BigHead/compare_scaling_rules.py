@@ -32,6 +32,7 @@ from matplotlib import style, rc, rcParams
 import argparse
 import warnings
 import os
+import json
 import jax
 import jax.numpy as jnp
 from jax import grad, jit
@@ -97,6 +98,8 @@ parser.add_argument('--min-compute', type=float, default=None,
 parser.add_argument('--fit-metric', type=str, default='compute',
                     choices=['compute', 'non_emb'],
                     help='Metric to use for fitting: compute (PFH) or non_emb (parameters) (default: compute)')
+parser.add_argument('--a-lower-bound', type=float, default=0.0,
+                    help='Lower bound constant for saturation parameter a (default: 0.0)')
 args = parser.parse_args()
 
 # Map optimizer names
@@ -211,8 +214,53 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
 
     data = []
     for run in runs:
+        # Handle different wandb API versions where config might be a string or dict
         run_config = run.config
+        if isinstance(run_config, str):
+            # In wandb version 0.22.2, config is returned as a JSON string
+            # Parse it to get a dictionary
+            try:
+                run_config = json.loads(run_config)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"  Warning: Could not parse config JSON for run {run.name}, skipping...")
+                continue
+
+        # Convert to dict if it's a wandb Config object
+        if hasattr(run_config, 'as_dict'):
+            run_config = run_config.as_dict()
+        elif not isinstance(run_config, dict):
+            # If it's not a dict and doesn't have as_dict, try to convert
+            try:
+                run_config = dict(run_config)
+            except (TypeError, ValueError):
+                print(f"  Warning: Could not convert config for run {run.name}, skipping...")
+                continue
+
+        # Extract value from nested dict structure if needed
+        # In some versions, config has structure {"key": {"value": actual_value}}
+        def extract_value(config_dict):
+            """Extract values from nested config structure."""
+            result = {}
+            for key, val in config_dict.items():
+                if isinstance(val, dict) and 'value' in val:
+                    result[key] = val['value']
+                else:
+                    result[key] = val
+            return result
+
+        run_config = extract_value(run_config)
+
+        # Handle summary (also may be a JSON string in some wandb versions)
         summary = run.summary
+        if hasattr(summary, '_json_dict') and isinstance(summary._json_dict, str):
+            try:
+                summary = json.loads(summary._json_dict)
+            except (json.JSONDecodeError, TypeError) as e:
+                print(f"  Warning: Could not parse summary JSON for run {run.name}, skipping...")
+                continue
+        elif not isinstance(summary, dict) and hasattr(summary, '__getitem__'):
+            # If it's a wandb Summary object with dict-like access, use it as-is
+            pass
 
         # Filter by optimizer
         opt = run_config.get('opt', '')
@@ -285,7 +333,7 @@ def saturated_power_law(x, a, b, c):
     """Saturated power law: y = a + b * x^c"""
     return a + b * jnp.power(x, c)
 
-def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1):
+def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1, a_lower_bound=0.0):
     """
     Fit saturated power laws to multiple datasets with a SHARED saturation level 'a'.
 
@@ -293,6 +341,7 @@ def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1):
         datasets: List of dicts, each with 'x' and 'y' arrays
         n_steps: Number of optimization steps
         lr: Learning rate for Adagrad
+        a_lower_bound: Non-trainable lower bound constant for parameter a (default: 0.0)
 
     Returns:
         Fitted parameters for each curve
@@ -318,7 +367,7 @@ def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1):
 
     def loss_fn(params):
         """Weighted MSE loss in log space"""
-        a = min_loss * jax.nn.sigmoid(params['a_raw'])
+        a = a_lower_bound + jax.nn.sigmoid(params['a_raw']) * (min_loss - a_lower_bound)
         total_loss = 0.0
 
         for i in range(n_curves):
@@ -358,7 +407,7 @@ def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1):
             print(f"  Step {i:6d}: Loss = {float(loss_value):.6f}")
 
     # Extract final parameters
-    a_fit = float(min_loss * jax.nn.sigmoid(params['a_raw']))
+    a_fit = float(a_lower_bound + jax.nn.sigmoid(params['a_raw']) * (min_loss - a_lower_bound))
     results = []
 
     for i in range(n_curves):
@@ -373,7 +422,7 @@ def joint_fit_saturated_power_laws(datasets, n_steps=50000, lr=0.1):
 
     return results
 
-def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0.1):
+def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0.1, a_lower_bound=0.0):
     """
     Fit multiple saturated power laws simultaneously with a shared saturation level.
 
@@ -386,6 +435,7 @@ def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0
         data_list: List of dicts, each with 'compute', 'loss', and 'name' keys
         n_steps: Number of optimization steps
         learning_rate: Learning rate for Adagrad optimizer
+        a_lower_bound: Non-trainable lower bound constant for parameter a (default: 0.0)
 
     Returns:
         Dict with 'a' (shared saturation) and 'curves' (dict mapping name -> params)
@@ -426,7 +476,7 @@ def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0
         # Extract shared saturation
         a_raw = params[0]
         min_loss = jnp.min(jnp.array([jnp.min(d['loss']) for d in jax_data]))
-        a = jax.nn.sigmoid(a_raw) * min_loss * 0.99
+        a = a_lower_bound + jax.nn.sigmoid(a_raw) * (min_loss * 0.99 - a_lower_bound)
 
         total_loss = 0.0
         total_weight = 0.0
@@ -476,13 +526,13 @@ def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0
         if step % 10000 == 0 or step == n_steps - 1:
             a_raw = best_params[0]
             min_loss = float(jnp.min(jnp.array([jnp.min(d['loss']) for d in jax_data])))
-            a = float(jax.nn.sigmoid(a_raw) * min_loss * 0.99)
+            a = float(a_lower_bound + jax.nn.sigmoid(a_raw) * (min_loss * 0.99 - a_lower_bound))
             print(f"  Step {step:5d}: loss={best_loss:.6e}, a={a:.4f}")
 
     # Extract final parameters
     a_raw = best_params[0]
     min_loss = float(jnp.min(jnp.array([jnp.min(d['loss']) for d in jax_data])))
-    a = float(jax.nn.sigmoid(a_raw) * min_loss * 0.99)
+    a = float(a_lower_bound + jax.nn.sigmoid(a_raw) * (min_loss * 0.99 - a_lower_bound))
 
     results = {
         'a': a,
@@ -675,6 +725,7 @@ if __name__ == '__main__':
     print(f"Fit Metric: {args.fit_metric}")
     if args.min_compute:
         print(f"Min Compute: {args.min_compute:.4e} PFH")
+    print(f"Lower Bound on 'a': {args.a_lower_bound}")
     print("="*70)
 
     # Load data for all optimizer x scaling_rule combinations
@@ -728,7 +779,8 @@ if __name__ == '__main__':
     fit_results = fit_all_saturated_power_laws_joint(
         joint_fit_data,
         n_steps=args.n_steps,
-        learning_rate=args.learning_rate
+        learning_rate=args.learning_rate,
+        a_lower_bound=args.a_lower_bound
     )
 
     # Print results
