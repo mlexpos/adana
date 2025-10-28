@@ -49,7 +49,7 @@ echo ""
 
 # Counter for job tracking
 job_count=0
-total_jobs=$((${#DEPTHS[@]} * ${#LR_MULTIPLIERS[@]}))
+total_jobs=$((${#HEADS_ARRAY[@]} * ${#LR_MULTIPLIERS[@]}))
 echo "Total jobs to run: $total_jobs"
 echo ""
 
