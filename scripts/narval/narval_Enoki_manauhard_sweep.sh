@@ -6,11 +6,11 @@
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-DEPTHS=( 4 5 6 7 )
+HEADS_ARRAY=( 4 5 6 7 )
 LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
 
 echo "Starting Enoki Manau-Hard sweep"
-echo "Depths: ${DEPTHS[@]}"
+echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
 echo ""
@@ -54,11 +54,11 @@ echo "Total jobs to run: $total_jobs"
 echo ""
 
 # Loop over depths
-for DEPTH in "${DEPTHS[@]}"; do
-    echo "Processing depth=$DEPTH"
+for HEADS in "${HEADS_ARRAY[@]}"; do
+    echo "Processing depth=$HEADS"
 
     # Calculate parameters for this depth
-    read NON_EMB ITERATIONS <<< $(calculate_params $DEPTH)
+    read NON_EMB ITERATIONS <<< $(calculate_params $HEADS)
 
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
