@@ -25,6 +25,7 @@ Usage:
     python bighead_lr_scaling.py --scaling-rule BigHead --optimizer adamw --target-omega 4.0 --top-k 5
     python bighead_lr_scaling.py --scaling-rule Enoki --optimizer mk4 --target-omega 4.0 --top-k 5
     python bighead_lr_scaling.py --scaling-rule EggHead --optimizer d-muon --target-omega 4.0 --top-k 5
+    python bighead_lr_scaling.py --scaling-rule BigHead --optimizer manau --target-omega 4.0 --top-k 5 --wd-decaying
 """
 
 import wandb
@@ -82,8 +83,8 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
 parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki'],
                     help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), or Enoki (DiLoco)')
-parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon'],
-                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, or d-muon')
+parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau'],
+                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, or manau')
 parser.add_argument('--target-omega', type=float, default=4.0,
                     help='Target omega value to find optimal LR (default: 4.0)')
 parser.add_argument('--top-k', type=int, default=5,
@@ -110,10 +111,12 @@ parser.add_argument('--target-clipsnr', type=float, default=None,
                     help='Target clipsnr value for MK4 optimizer (filters runs within tolerance, default: None)')
 parser.add_argument('--clipsnr-tolerance', type=float, default=0.1,
                     help='Tolerance for clipsnr matching (default: 0.1)')
+parser.add_argument('--wd-decaying', action='store_true',
+                    help='For Manau optimizer: filter for runs with wd_decaying=True (default: False, meaning no filter)')
 args = parser.parse_args()
 
 # Map optimizer abbreviations
-optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon'}
+optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon', 'manau': 'manau'}
 optimizer_type = optimizer_map[args.optimizer]
 
 # Get scaling rule configuration
@@ -248,16 +251,19 @@ def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1)
     return results
 
 def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, scaling_rule,
-                           target_clipsnr=None, clipsnr_tolerance=0.1):
+                           target_clipsnr=None, clipsnr_tolerance=0.1, wd_decaying_filter=False):
     """Load data from WandB
 
     Args:
         scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki' to determine size parameter
+        wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
     """
     api = wandb.Api()
 
     print(f"Loading data from {group_name}...")
     print(f"Scaling rule: {scaling_rule}")
+    if wd_decaying_filter:
+        print(f"Filtering for wd_decaying=True")
 
     runs = api.runs(f"{entity}/{project_name}", filters={"group": group_name})
 
@@ -267,6 +273,7 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
     skipped_incomplete = 0
     skipped_missing_data = 0
     skipped_clipsnr = 0
+    skipped_wd_decaying = 0
 
     for run in runs:
         total_runs += 1
@@ -279,11 +286,18 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             skipped_optimizer += 1
             continue
 
-        # Filter by clipsnr if specified (for MK4 optimizer)
+        # Filter by clipsnr if specified (for MK4 and Manau optimizers)
         if target_clipsnr is not None:
             clipsnr = config.get('clipsnr')
             if clipsnr is None or abs(clipsnr - target_clipsnr) > clipsnr_tolerance:
                 skipped_clipsnr += 1
+                continue
+
+        # Filter by wd_decaying if requested (for Manau optimizer)
+        if wd_decaying_filter:
+            wd_decaying = config.get('wd_decaying', False)
+            if not wd_decaying:
+                skipped_wd_decaying += 1
                 continue
 
         # Check if run completed
@@ -325,6 +339,19 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             wd_ts = config.get('wd_ts', 1.0)
             weight_decay = config.get('weight_decay', 1.0)
             omega = wd_ts * lr * weight_decay
+        elif optimizer_type == 'manau':
+            # Manau can use either wd_decaying mode or AdamW-style weight decay
+            wd_decaying = config.get('wd_decaying', False)
+            if wd_decaying:
+                # When wd_decaying=True, use wd_ts * lr * weight_decay (like DANA)
+                wd_ts = config.get('wd_ts', 1.0)
+                weight_decay = config.get('weight_decay', 1.0)
+                omega = wd_ts * lr * weight_decay
+            else:
+                # When wd_decaying=False, use weight_decay * lr * iterations (like AdamW)
+                weight_decay = config.get('weight_decay', 0.1)
+                iterations = config.get('iterations', 1)
+                omega = weight_decay * lr * iterations
         else:  # adamw, ademamix, d-muon
             weight_decay = config.get('weight_decay', 0.1)
             iterations = config.get('iterations', 1)
@@ -344,6 +371,8 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
         print(f"  Skipped {skipped_optimizer} runs due to optimizer filter")
     if skipped_clipsnr > 0:
         print(f"  Skipped {skipped_clipsnr} runs due to clipsnr filter")
+    if skipped_wd_decaying > 0:
+        print(f"  Skipped {skipped_wd_decaying} runs due to wd_decaying filter")
     if skipped_incomplete > 0:
         print(f"  Skipped {skipped_incomplete} incomplete runs")
 
@@ -432,16 +461,18 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
     return a, b, d
 
 def collect_weighted_data_for_depths(optimizer_type, scaling_rule, target_omega, top_k, project, group, entity,
-                                      exclude_small=False, target_clipsnr=None, clipsnr_tolerance=0.1):
+                                      exclude_small=False, target_clipsnr=None, clipsnr_tolerance=0.1,
+                                      wd_decaying_filter=False):
     """
     Collect top-K LRs for each size at target omega, with weights.
 
     Args:
         scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki'
+        wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
     """
     # Load all data for the optimizer
     data_df = load_wandb_data_simple(project, group, entity, optimizer_type, scaling_rule,
-                                     target_clipsnr, clipsnr_tolerance)
+                                     target_clipsnr, clipsnr_tolerance, wd_decaying_filter)
 
     if len(data_df) == 0:
         print("No data found. Exiting.")
@@ -548,6 +579,8 @@ if __name__ == '__main__':
     print(f"Exclude Small: {args.exclude_small}")
     if args.target_clipsnr is not None:
         print(f"Target ClipSNR: {args.target_clipsnr} (tolerance: {args.clipsnr_tolerance})")
+    if args.wd_decaying:
+        print(f"Filtering for wd_decaying=True")
     print("="*70)
 
     # Collect weighted data from all sizes
@@ -561,7 +594,8 @@ if __name__ == '__main__':
         entity=args.entity,
         exclude_small=args.exclude_small,
         target_clipsnr=args.target_clipsnr,
-        clipsnr_tolerance=args.clipsnr_tolerance
+        clipsnr_tolerance=args.clipsnr_tolerance,
+        wd_decaying_filter=args.wd_decaying
     )
 
     if result is None:
@@ -694,12 +728,14 @@ if __name__ == '__main__':
     ax.set_xscale('log')
     ax.set_yscale('log')
 
-    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
+    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau'}
     optimizer_title = optimizer_title_map[args.optimizer]
 
     title_parts = [f'ω = {args.target_omega}', f'Top-K = {args.top_k}']
     if args.target_clipsnr is not None:
         title_parts.append(f'ClipSNR = {args.target_clipsnr}')
+    if args.wd_decaying:
+        title_parts.append('wd_decaying=True')
     title_params = ', '.join(title_parts)
 
     ax.set_title(f'{args.scaling_rule} {optimizer_title} Optimal Learning Rate Scaling Law\n({title_params})',
@@ -717,7 +753,7 @@ if __name__ == '__main__':
     if args.output:
         output_file = args.output
     else:
-        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon'}
+        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau'}
         optimizer_name = optimizer_filename_map[args.optimizer]
         output_file = f'{args.scaling_rule}-{optimizer_name}-lr-extrapolation.pdf'
 
