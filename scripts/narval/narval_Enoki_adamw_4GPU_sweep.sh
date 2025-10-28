@@ -3,12 +3,12 @@
 # Enoki AdamW Multi-GPU Sweep for Narval
 # Uses 4 GPUs per node for larger models
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.68e-05 + 4.87e+02 × P^{-0.722} where P = NON_EMB
+# Learning rate formula: lr =  1.11e-05 + 9.51e+02 × P^{-0.760} where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA=4.0
-HEADS_ARRAY=( 16 20 24 28 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
+HEADS_ARRAY=( 16 )
+LR_MULTIPLIERS=(1.0 1.25 1.5)
 
 # SLURM configuration for Narval (4 GPUs)
 GPUS_PER_NODE=4
@@ -76,8 +76,8 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 1.68e-05 + 4.87e+02 * P^{-0.722}
-    BASE_LR=$(python3 -c "print(1.68e-05 + 4.87e+02 * ($NON_EMB ** -0.722))")
+    # Calculate base learning rate using formula: lr = 1.11e-05 + 9.51e+02 * P^{-0.760}
+    BASE_LR=$(python3 -c "print(1.11e-05 + 9.51e+02 * ($NON_EMB ** -0.760))")
 
     # Calculate n_layer for this head count
     N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
