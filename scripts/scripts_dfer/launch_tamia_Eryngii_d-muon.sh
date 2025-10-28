@@ -1,12 +1,12 @@
 #!/bin/bash
 
-# Eryngii Ademamix Multi-GPU Sweep for Tamia (heads 4 to 8)
+# Eryngii d-muon Multi-GPU Sweep for Tamia (heads 4 to 8)
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
 # Base learning rate: lr = 0.001
 
 OMEGA=4.0
-HEADS=(8)
+HEADS=(6)
 LR_MULTIPLIERS=(0.03 0.1 0.3 1.0 3.0 10.0 30.0)
 
 # SLURM configuration for Tamia
@@ -16,7 +16,7 @@ TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=3
 
-echo "Starting Eryngii Ademamix Multi-GPU sweep (Tamia)"
+echo "Starting Eryngii d-muon Multi-GPU sweep (Tamia)"
 echo "Heads: ${HEADS[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -100,12 +100,12 @@ for HEADS in "${HEADS[@]}"; do
                --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=Eryngii_ademamix_h${HEADS}_lr${MULT} \
+               --job-name=Eryngii_d-muon_h${HEADS}_lr${MULT} \
                scripts/scripts_dfer/tamia_Eryngii_dfer.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer ademamix \
+               --optimizer d-muon \
                --nproc_per_node ${GPUS_PER_NODE}
 
         # Check if the job was successful

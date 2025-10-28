@@ -58,9 +58,9 @@ if [ -z "$HEADS" ]; then
     echo "Usage: ./Eryngii.sh --heads <heads> [options]"
     echo ""
     echo "Eryngii uses modified scaling with increased head dimension, number of heads and depth"
-    echo "  - head_dim = 64 * heads / 6"
+    echo "  - head_dim = 32 * heads / 3 (rounded to multiple of 8)"
     echo "  - n_head = heads"
-    echo "  - n_layer = 3 * heads / 4 * heads / 6"
+    echo "  - n_layer = heads^2 / 8"
     echo "  - n_embd = n_head * head_dim"
     echo "  - mlp_hidden = 4 * n_embd"
     echo ""
@@ -86,10 +86,10 @@ if [ $((HEADS % 4)) -ne 0 ]; then
 fi
 
 # Calculate model parameters based on Eryngii scaling
-# Formula: head_dim = 64 * heads / 6, n_layer = 3 * heads / 4 * heads / 6, n_embd = n_head * head_dim, mlp = 4 * n_embd
-HEAD_DIM=$(python3 -c "print(int(64 * $HEADS // 6))")
+# Formula: head_dim = 32 * heads / 3 (rounded to nearest multiple of 8), n_layer = heads^2 / 8, n_embd = n_head * head_dim, mlp = 4 * n_embd
+HEAD_DIM=$(python3 -c "print(int(round(32 * $HEADS / 3 / 8) * 8))")
 N_HEAD=$(python3 -c "print(int($HEADS))")
-N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4 * $HEADS // 6))")
+N_LAYER=$(python3 -c "print(int($HEADS**2 // 8))")
 N_EMBD=$(python3 -c "print(int($N_HEAD * $HEAD_DIM))")
 MLP_HIDDEN=$(python3 -c "print(int(4 * $N_EMBD))")
 
@@ -145,9 +145,9 @@ case $OPTIMIZER in
 esac
 
 echo "=== Eryngii Configuration: $HEADS heads ==="
-echo "n_layer: $N_LAYER (= 3 * $HEADS / 4 * $HEADS / 6)"
+echo "n_layer: $N_LAYER (= $HEADS^2 / 8)"
 echo "n_head: $N_HEAD"
-echo "qkv_dim (head_dim): $HEAD_DIM (= 64 * $HEADS / 6)"
+echo "qkv_dim (head_dim): $HEAD_DIM (= 32 * $HEADS / 3, rounded to multiple of 8)"
 echo "n_embd: $N_EMBD (= $N_HEAD * $HEAD_DIM)"
 echo "mlp_hidden_dim: $MLP_HIDDEN (= 4 * $N_EMBD)"
 echo "Total parameters: $TOTAL_PARAMS"

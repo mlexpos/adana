@@ -25,9 +25,14 @@ echo "Activated virtual environment"
 
 DATASETS_DIR="$HOME/links/scratch/fineweb"
 
-iteration_factor=0.1
+
+
+
+
+
+iteration_factor=3.
 iterations=$(awk "BEGIN {print $iteration_factor * 13953}")
-warmup_steps=$(awk "BEGIN {print $warmup_steps_factor * 279}")
+warmup_steps=$(awk "BEGIN {print $iteration_factor * 279}")
 
 gamma_3_factor=1.0
 for lr in 2.5e-4 5e-4 1e-3 2e-3 4e-3
@@ -35,8 +40,9 @@ do
 for w in 1.0 2.0 4.0
 do
 weight_decay=$(awk "BEGIN {printf \"%.10f\", $w / $lr / $iterations}")
-for kappa in 0.0 0.25 0.5 0.6 0.75 0.85 1.0
+for kappa in 0.0 0.5 0.75 1.0
 do
+gamma_3_factor=$(awk "BEGIN {print $gamma_3_factor * $iterations**(-0.25)}")
 uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --n_embd 384 --qkv_dim 64 --n_head 6 --n_layer 4 \
