@@ -6,15 +6,15 @@
 # Learning rate formula: lr = 8.0e+01 × P^(-0.64) where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=(11 12)
-LR_MULTIPLIERS=(0.75 1.0 1.25)
+DEPTHS=(10)
+LR_MULTIPLIERS=(1.25)
 
 # SLURM configuration
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0GB = allocate as needed
-TIME_HOURS=32
+TIME_HOURS=20
 
 echo "Starting BigHead AdamW Multi-GPU sweep"
 echo "Depths: ${DEPTHS[@]}"
@@ -100,7 +100,7 @@ for DEPTH in "${DEPTHS[@]}"; do
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM}GB \
                --job-name=BH_AW_4G_d${DEPTH}_lr${MULT} \
-               scripts/narval/BigHead_epaq.sh \
+               scripts/narval/BigHead_cypaq.sh \
                --depth $DEPTH \
                --lr $LR \
                --omega $OMEGA \
