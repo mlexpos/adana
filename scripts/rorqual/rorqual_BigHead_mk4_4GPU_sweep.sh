@@ -6,6 +6,7 @@
 # Learning rate formula: lr = 1.84e-05 + 1.37e+03 × P^{-0.880} where P = NON_EMB
 
 OMEGA=4.0
+CLIPSNR=2.0
 DEPTHS=(11 12)
 LR_MULTIPLIERS=(1.60 1.85)
 
@@ -104,6 +105,7 @@ for DEPTH in "${DEPTHS[@]}"; do
                --depth $DEPTH \
                --lr $LR \
                --omega $OMEGA \
+               --clipsnr $CLIPSNR \
                --optimizer danastar-mk4 \
                --nproc_per_node ${GPUS_PER_NODE}
 

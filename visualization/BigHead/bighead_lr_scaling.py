@@ -109,9 +109,9 @@ parser.add_argument('--entity', type=str, default='ep-rmt-ml-opt',
                     help='WandB entity name (default: ep-rmt-ml-opt)')
 parser.add_argument('--output', type=str, default=None,
                     help='Output filename for plot (default: auto-generated)')
-parser.add_argument('--n-steps', type=int, default=300000,
+parser.add_argument('--n-steps', type=int, default=100000,
                     help='Number of optimization steps for power law fitting (default: 100000)')
-parser.add_argument('--learning-rate', type=float, default=500.0,
+parser.add_argument('--learning-rate', type=float, default=0.1,
                     help='Optimizer learning rate for power law fitting (default: 100.0)')
 parser.add_argument('--exclude-small', action='store_true',
                     help='Exclude small model size (4 layers) from the fit')
@@ -475,6 +475,7 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
     params_arr = jnp.array(params_list, dtype=jnp.float32)
     lrs = jnp.array(lrs_list, dtype=jnp.float32)
     weights = jnp.array(weights_list, dtype=jnp.float32)
+    log_lrs = jnp.log(lrs)
 
     # Initialize parameters: [a_raw, b_raw, d]
     # Initial guess: a ≈ min(LR)/2, b ≈ 1e-3, d ≈ -0.5
@@ -495,9 +496,10 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
 
         # Predictions: LR = a + b * params^d
         pred_lrs = a + b * (params_arr ** d)
+        log_pred_lrs = jnp.log(pred_lrs)
 
         # Weighted MSE loss (multiply weights by params for larger model emphasis)
-        residuals = (lrs - pred_lrs) ** 2
+        residuals = (log_lrs - log_pred_lrs) ** 2
         combined_weights = weights * params_arr
         weighted_loss = jnp.sum(combined_weights * residuals) / jnp.sum(combined_weights)
 
