@@ -6,7 +6,7 @@
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-HEADS_ARRAY=( 8 9 10 11 )
+HEADS_ARRAY=( 16 )
 LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
 
 echo "Starting Enoki Manau-Hard sweep"
@@ -64,7 +64,7 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
     # Calculate time in hours based on compute
-    TIME_HOURS=8
+    TIME_HOURS=12
 
     # Calculate base learning rate using formula: lr = 1.45e-05 + 2.33e+01 * P^{-0.562}
     BASE_LR=$(python3 -c "print(1.45e-05 + 2.33e+01 * ($NON_EMB ** -0.562))")
