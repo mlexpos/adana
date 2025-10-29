@@ -6,7 +6,7 @@
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-HEADS_ARRAY=( 8 9 10 11 )
+HEADS_ARRAY=( 12 14 )
 LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
 
 echo "Starting Enoki Manau-Hard sweep"
