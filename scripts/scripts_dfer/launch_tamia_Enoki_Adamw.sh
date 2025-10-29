@@ -1,23 +1,23 @@
 #!/bin/bash
 
-# Enoki AdamW Multi-GPU Sweep for Narval
+# Enoki AdamW Multi-GPU Sweep for Tamia
 # Uses 4 GPUs per node for larger models
-# For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr =  1.11e-05 + 9.51e+02 × P^{-0.760} where P = NON_EMB
+# For each head count, runs 3 learning rates: multipliers of the formula prediction
+# Learning rate formula: lr = 4.0e+01 × P^(-0.62) where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA=4.0
-HEADS_ARRAY=( 16 )
-LR_MULTIPLIERS=(1.0 1.25 1.5)
+HEADS_ARRAY=(4 5 6 7 8 9)
+LR_MULTIPLIERS=(1.0)
 
-# SLURM configuration for Narval (4 GPUs)
+# SLURM configuration for Tamia
 GPUS_PER_NODE=4
-CPUS_PER_GPU=8
-TOTAL_CPUS=32  # 4 GPUs × 8 CPUs/GPU
+CPUS_PER_GPU=12
+TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=12
+TIME_HOURS=3
 
-echo "Starting Enoki AdamW Multi-GPU sweep (Narval)"
+echo "Starting Enoki AdamW Multi-GPU sweep (Tamia)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -76,8 +76,8 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 1.11e-05 + 9.51e+02 * P^{-0.760}
-    BASE_LR=$(python3 -c "print(1.11e-05 + 9.51e+02 * ($NON_EMB ** -0.760))")
+    # Calculate base learning rate using formula: lr = 4.0e+01 * P^(-0.62)
+    BASE_LR=0.001
 
     # Calculate n_layer for this head count
     N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
@@ -95,18 +95,17 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     for MULT in "${LR_MULTIPLIERS[@]}"; do
         # Calculate actual learning rate
         LR=$(python3 -c "print($MULT * $BASE_LR)")
-
         job_count=$((job_count + 1))
-        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
+        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base), omega=$OMEGA"
 
         # Submit the job with multi-GPU configuration
         sbatch --time=${TIME_HOURS}:00:00 \
                --nodes=1 \
-               --gpus-per-node=a100:${GPUS_PER_NODE} \
+               --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=EN_AW_4G_h${HEADS}_lr${MULT} \
-               scripts/narval/Enoki_epaq.sh \
+               --job-name=Enoki_Adamw_h${HEADS}_lr${MULT} \
+               scripts/scripts_dfer/tamia_Enoki_dfer.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
@@ -130,7 +129,7 @@ echo "Sweep completed. Total jobs submitted: $job_count"
 echo ""
 echo "Resource allocation per job:"
 echo "  Nodes: 1"
-echo "  GPUs: ${GPUS_PER_NODE} × A100"
+echo "  GPUs: ${GPUS_PER_NODE} × H100"
 echo "  CPUs: ${TOTAL_CPUS} (${CPUS_PER_GPU} per GPU)"
 echo "  Memory: ${MEM} (allocate as needed)"
 echo "  Time: ${TIME_HOURS} hours"

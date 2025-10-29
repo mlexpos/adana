@@ -40,18 +40,21 @@ calculate_eryngii_params() {
     # Calculate total tokens
     local TOTAL_TOKENS=$(python3 -c "print(int(65536 * $ITERATIONS))")
     
-    echo "$N_HEAD $HEAD_DIM $N_LAYER $N_EMBD $MLP_HIDDEN $NON_EMB $EMB_PARAMS $TOTAL_PARAMS $ITERATIONS $TOTAL_TOKENS"
+    # Calculate compute: 6 * tokens * non_emb_params
+    local COMPUTE=$(python3 -c "print(int(6 * $TOTAL_TOKENS * $NON_EMB))")
+    
+    echo "$N_HEAD $HEAD_DIM $N_LAYER $N_EMBD $MLP_HIDDEN $NON_EMB $EMB_PARAMS $TOTAL_PARAMS $ITERATIONS $TOTAL_TOKENS $COMPUTE"
 }
 
 # Print table header
-printf "%-7s %-9s %-8s %-8s %-12s %-14s %-14s %-14s %-12s %-14s\n" \
-    "n_head" "head_dim" "n_layer" "n_embd" "mlp_hidden" "non_emb" "emb_params" "total_params" "iterations" "total_tokens"
-printf "%-7s %-9s %-8s %-8s %-12s %-14s %-14s %-14s %-12s %-14s\n" \
-    "------" "---------" "--------" "--------" "------------" "--------------" "--------------" "--------------" "------------" "--------------"
+printf "%-7s %-9s %-8s %-8s %-12s %-14s %-14s %-14s %-12s %-14s %-18s\n" \
+    "n_head" "head_dim" "n_layer" "n_embd" "mlp_hidden" "non_emb" "emb_params" "total_params" "iterations" "total_tokens" "compute"
+printf "%-7s %-9s %-8s %-8s %-12s %-14s %-14s %-14s %-12s %-14s %-18s\n" \
+    "------" "---------" "--------" "--------" "------------" "--------------" "--------------" "--------------" "------------" "--------------" "------------------"
 
 # Loop through n_heads from 4 to 10
-for HEADS in {4..10}; do
-    read N_HEAD HEAD_DIM N_LAYER N_EMBD MLP_HIDDEN NON_EMB EMB_PARAMS TOTAL_PARAMS ITERATIONS TOTAL_TOKENS <<< $(calculate_eryngii_params $HEADS)
+for HEADS in {4..15}; do
+    read N_HEAD HEAD_DIM N_LAYER N_EMBD MLP_HIDDEN NON_EMB EMB_PARAMS TOTAL_PARAMS ITERATIONS TOTAL_TOKENS COMPUTE <<< $(calculate_eryngii_params $HEADS)
     
     # Format with commas for readability
     NON_EMB_FMT=$(python3 -c "print(f'{$NON_EMB:,}')")
@@ -59,15 +62,17 @@ for HEADS in {4..10}; do
     TOTAL_PARAMS_FMT=$(python3 -c "print(f'{$TOTAL_PARAMS:,}')")
     ITERATIONS_FMT=$(python3 -c "print(f'{$ITERATIONS:,}')")
     TOTAL_TOKENS_FMT=$(python3 -c "print(f'{$TOTAL_TOKENS:,}')")
+    COMPUTE_FMT=$(python3 -c "print(f'{$COMPUTE:,}')")
     
-    printf "%-7s %-9s %-8s %-8s %-12s %-14s %-14s %-14s %-12s %-14s\n" \
+    printf "%-7s %-9s %-8s %-8s %-12s %-14s %-14s %-14s %-12s %-14s %-18s\n" \
         "$N_HEAD" "$HEAD_DIM" "$N_LAYER" "$N_EMBD" "$MLP_HIDDEN" \
-        "$NON_EMB_FMT" "$EMB_PARAMS_FMT" "$TOTAL_PARAMS_FMT" "$ITERATIONS_FMT" "$TOTAL_TOKENS_FMT"
+        "$NON_EMB_FMT" "$EMB_PARAMS_FMT" "$TOTAL_PARAMS_FMT" "$ITERATIONS_FMT" "$TOTAL_TOKENS_FMT" "$COMPUTE_FMT"
 done
 
 echo ""
 echo "Notes:"
 echo "  - Iterations = 20 × total_params / 65536"
 echo "  - Total tokens = 65536 × iterations"
+echo "  - Compute = 6 × total_tokens × non_emb_params"
 echo "  - Non-emb params use DiLoco formula: 12 × n_embd² × n_layer"
 
