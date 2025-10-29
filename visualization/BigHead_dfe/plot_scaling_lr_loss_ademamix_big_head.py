@@ -85,8 +85,9 @@ def load_runs_for_group(project, entity, group):
         lr = config.get('lr')
         val_loss = summary.get('final-val/loss')
         iterations = config.get('iterations')
-        batch_size = config.get('batch_size', 2048)
-        seq_length = config.get('seq_length', 32)
+        
+        batch_size = 32
+        seq_length = 2048
         
         # Check if we have all required parameters
         required_params = [n_layer, n_head, n_embd, head_dim, mlp_hidden, lr, val_loss, iterations]
@@ -108,6 +109,11 @@ def load_runs_for_group(project, entity, group):
                 'n_layer': n_layer,
                 'n_head': n_head,
                 'n_embd': n_embd,
+                'iterations': iterations,
+                'non_emb_params': non_emb_params,
+                'total_params': total_params,
+                'batch_size': batch_size,
+                'seq_length': seq_length,
             })
     
     return pd.DataFrame(data)
@@ -303,22 +309,29 @@ def fit_power_law_with_offset_minimize(x_data, y_data):
 # PLOTTING
 # ============================================================================
 
-def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_loss=False, top_k_data=None, opt_name='ademamix', group_name=''):
+def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_loss=False, top_k_data=None, opt_name='ademamix', group_name='', n_heads=None):
     """Generic plotting function for scaling law analysis.
     
     Args:
         top_k_data: Optional dict mapping depth -> list of (compute, y_value, rank) tuples for top-k results
         opt_name: Optimizer name for legend
         group_name: WandB group name for title
+        n_heads: Optional list of n_head values corresponding to each depth
     """
     fig, ax = plt.subplots(figsize=(12, 8))
     
     # Plot data points
     colors = plt.cm.tab10(np.linspace(0, 1, len(depths)))
     for idx, (c, y, d) in enumerate(zip(compute_data, y_data, depths)):
+        # Create label with depth and n_head if available
+        if n_heads is not None and idx < len(n_heads):
+            label = f'Depth {d}, {n_heads[idx]} heads'
+        else:
+            label = f'Depth {d}'
+        
         # Plot best point (largest)
         ax.scatter(c, y, s=100, alpha=0.8, color=colors[idx], 
-                  edgecolors='black', linewidths=1.5, zorder=3, label=f'Depth {d}')
+                  edgecolors='black', linewidths=1.5, zorder=3, label=label)
         
         # Plot top-k points if provided (with decreasing sizes)
         if top_k_data is not None and d in top_k_data:
@@ -393,6 +406,8 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     compute_total = []
     best_lrs = []
     best_losses = []
+    depths_with_data = []  # Track which depths actually have data
+    n_heads_list = []  # Track n_head for each depth
     
     # For top-10 LR visualization
     top_10_lr_non_emb = {}
@@ -416,6 +431,8 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
         compute_total.append(c_total)
         best_lrs.append(best_run['lr'])
         best_losses.append(best_run['val_loss'])
+        depths_with_data.append(depth)  # Track this depth has data
+        n_heads_list.append(int(best_run['n_head']))  # Track n_head for this depth
         
         # Get top-10 runs by loss for this depth
         top_10_runs = depth_data.nsmallest(10, 'val_loss')
@@ -442,14 +459,15 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     print("LOSS vs COMPUTE (Non-embedding)")
     print("="*70)
     plot_scaling_law(
-        compute_non_emb, best_losses, depths,
+        compute_non_emb, best_losses, depths_with_data,
         ylabel='Best Validation Loss',
         title=f'Best Validation Loss vs Compute (Non-embedding)\n{opt_name} | {group_name}',
         filename=f'{output_dir}/{opt_name}_{group_name}_loss_vs_compute_nonemb.pdf',
         is_loss=True,
         top_k_data=top_10_loss_non_emb,
         opt_name=opt_name,
-        group_name=group_name
+        group_name=group_name,
+        n_heads=n_heads_list
     )
     
     # Plot 2: Loss vs Compute (total)
@@ -457,14 +475,15 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     print("LOSS vs COMPUTE (Total)")
     print("="*70)
     plot_scaling_law(
-        compute_total, best_losses, depths,
+        compute_total, best_losses, depths_with_data,
         ylabel='Best Validation Loss',
         title=f'Best Validation Loss vs Compute (Total)\n{opt_name} | {group_name}',
         filename=f'{output_dir}/{opt_name}_{group_name}_loss_vs_compute_total.pdf',
         is_loss=True,
         top_k_data=top_10_loss_total,
         opt_name=opt_name,
-        group_name=group_name
+        group_name=group_name,
+        n_heads=n_heads_list
     )
     
     # Plot 3: Learning Rate vs Compute (non-embedding)
@@ -472,14 +491,15 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     print("LEARNING RATE vs COMPUTE (Non-embedding)")
     print("="*70)
     plot_scaling_law(
-        compute_non_emb, best_lrs, depths,
+        compute_non_emb, best_lrs, depths_with_data,
         ylabel='Best Learning Rate',
         title=f'Best Learning Rate vs Compute (Non-embedding)\n{opt_name} | {group_name}',
         filename=f'{output_dir}/{opt_name}_{group_name}_best_lr_vs_compute_nonemb.pdf',
         is_loss=False,
         top_k_data=top_10_lr_non_emb,
         opt_name=opt_name,
-        group_name=group_name
+        group_name=group_name,
+        n_heads=n_heads_list
     )
     
     # Plot 4: Learning Rate vs Compute (total)
@@ -487,14 +507,15 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     print("LEARNING RATE vs COMPUTE (Total)")
     print("="*70)
     plot_scaling_law(
-        compute_total, best_lrs, depths,
+        compute_total, best_lrs, depths_with_data,
         ylabel='Best Learning Rate',
         title=f'Best Learning Rate vs Compute (Total)\n{opt_name} | {group_name}',
         filename=f'{output_dir}/{opt_name}_{group_name}_best_lr_vs_compute_total.pdf',
         is_loss=False,
         top_k_data=top_10_lr_total,
         opt_name=opt_name,
-        group_name=group_name
+        group_name=group_name,
+        n_heads=n_heads_list
     )
 
 # ============================================================================
@@ -559,8 +580,26 @@ def main():
         depth_data = df[df['depth'] == depth]
         if len(depth_data) > 0:
             best_loss = depth_data['val_loss'].min()
-            best_lr = depth_data.loc[depth_data['val_loss'].idxmin(), 'lr']
-            print(f"  Depth {depth}: {len(depth_data)} runs, best_loss={best_loss:.4f}, best_lr={best_lr:.4e}")
+            best_idx = depth_data['val_loss'].idxmin()
+            best_lr = depth_data.loc[best_idx, 'lr']
+            
+            # Get architecture details from first run (should be same for all runs at this depth)
+            first_run = depth_data.iloc[0]
+            iterations = first_run['iterations']
+            n_embd = first_run['n_embd']
+            n_head = first_run['n_head']
+            non_emb_params = first_run['non_emb_params']
+            compute_non_emb = first_run['compute_non_emb']
+            batch_size = first_run['batch_size']
+            seq_length = first_run['seq_length']
+            
+            print(f"  Depth {depth}: {len(depth_data)} runs")
+            print(f"    Best: loss={best_loss:.4f}, lr={best_lr:.4e}")
+            print(f"    Config: n_embd={n_embd}, n_head={n_head}")
+            print(f"    Iterations: {iterations:,}")
+            print(f"    Batch: batch_size={batch_size:.0f}, seq_length={seq_length:.0f}")
+            print(f"    Non-emb params: {non_emb_params:,.0f} ({non_emb_params:.2e})")
+            print(f"    Compute (non-emb): {compute_non_emb:.2e} FLOPs")
     
     # Create plots
     print("\nCreating visualizations...")
