@@ -2,12 +2,12 @@
 
 # BigHead Manau-Hard Sweep across depths {4,5,6,7}
 # For each depth, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.45e-05 + 2.33e+01 × P^{-0.562} where P = NON_EMB
+# Learning rate formula: lr = 3.66e-07 + 9.73e+03 * P^{-0.926} where P = NON_EMB
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-DEPTHS=( 4 5 6 7 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
+DEPTHS=( 8 )
+LR_MULTIPLIERS=( 0.5 )
 
 echo "Starting BigHead Manau-Hard sweep"
 echo "Depths: ${DEPTHS[@]}"
@@ -64,10 +64,10 @@ for DEPTH in "${DEPTHS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
     # Calculate time in hours based on compute
-    TIME_HOURS=8
+    TIME_HOURS=12
 
-    # Calculate base learning rate using formula: lr = 1.45e-05 + 2.33e+01 * P^{-0.562}
-    BASE_LR=$(python3 -c "print(1.45e-05 + 2.33e+01 * ($NON_EMB ** -0.562))")
+    # Calculate base learning rate using formula: lr = 3.66e-07 + 9.73e+03 * P^{-0.926}
+    BASE_LR=$(python3 -c "print(3.66e-07 + 9.73e+03 * ($NON_EMB ** -0.926))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
@@ -87,7 +87,7 @@ for DEPTH in "${DEPTHS[@]}"; do
         # Submit the job with calculated parameters
         sbatch --time=${TIME_HOURS}:00:00 \
                --job-name=BH_manauhard_d${DEPTH}_lr${MULT} \
-               scripts/narval/BigHead_epaq.sh \
+               scripts/narval/BigHead_cypaq.sh \
                --depth $DEPTH \
                --lr $LR \
                --omega $OMEGA \
