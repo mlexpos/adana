@@ -8,15 +8,15 @@
 
 OMEGA=4.0
 CLIPSNR=2.0
-DEPTHS=(8)
-LR_MULTIPLIERS=(0.5)
+DEPTHS=( 9 )
+LR_MULTIPLIERS=( 1.0 0.75 0.5 1.75 )
 
 # SLURM configuration
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0GB = allocate as needed
-TIME_HOURS=16
+TIME_HOURS=8
 
 echo "Starting BigHead Manau-Hard Multi-GPU sweep"
 echo "Depths: ${DEPTHS[@]}"
