@@ -6,8 +6,8 @@
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-DEPTHS=( 5 )
-LR_MULTIPLIERS=(0.9)
+DEPTHS=( 6 )
+LR_MULTIPLIERS=(0.75)
 
 echo "Starting BigHead Manau-Hard sweep"
 echo "Depths: ${DEPTHS[@]}"
