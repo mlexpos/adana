@@ -3,19 +3,19 @@
 # BigHead MK4 Multi-GPU Sweep for depths {9,10}
 # Uses 4 GPUs per node for larger models
 # For each depth, runs 3 learning rates: 0.75x, 1.0x, and 1.25x the formula prediction
-# Learning rate formula: lr = 2.0e+01 × P^(-0.67) where P = NON_EMB
+# Learning rate formula: lr =  1.84e-05 + 1.37e+03 × P^(-0.880) where P = NON_EMB
 
 OMEGA=4.0
 CLIPSNR=2.0
-DEPTHS=(8 9 10)
-LR_MULTIPLIERS=(0.75 1.0 1.25)
+DEPTHS=(9)
+LR_MULTIPLIERS=(1.5)
 
 # SLURM configuration
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0GB = allocate as needed
-TIME_HOURS=8
+TIME_HOURS=24
 
 echo "Starting BigHead MK4 Multi-GPU sweep"
 echo "Depths: ${DEPTHS[@]}"
@@ -77,8 +77,8 @@ for DEPTH in "${DEPTHS[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 2.0e+01 * P^(-0.67)
-    BASE_LR=$(python3 -c "print(2.0e+01 * ($NON_EMB ** -0.67))")
+    # Calculate base learning rate using formula: lr = 1.84e-05 + 1.37e+03 × P 0.880
+    BASE_LR=$(python3 -c "print(1.84e-05 + 1.37e+03 * ($NON_EMB ** -0.88))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
@@ -102,7 +102,7 @@ for DEPTH in "${DEPTHS[@]}"; do
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM}GB \
                --job-name=BH_MK4_4G_d${DEPTH}_lr${MULT} \
-               scripts/narval/BigHead_epaq.sh \
+               scripts/narval/BigHead_cypaq.sh \
                --depth $DEPTH \
                --lr $LR \
                --omega $OMEGA \
