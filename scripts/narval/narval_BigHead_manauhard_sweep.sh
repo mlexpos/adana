@@ -6,8 +6,8 @@
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
-DEPTHS=( 6 )
-LR_MULTIPLIERS=(0.75)
+DEPTHS=( 7 )
+LR_MULTIPLIERS=(0.75 0.5)
 
 echo "Starting BigHead Manau-Hard sweep"
 echo "Depths: ${DEPTHS[@]}"
@@ -64,7 +64,7 @@ for DEPTH in "${DEPTHS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
     # Calculate time in hours based on compute
-    TIME_HOURS=8
+    TIME_HOURS=12
 
     # Calculate base learning rate using formula: lr = 3.66e-07 + 9.73e+03 * P^{-0.926}
     BASE_LR=$(python3 -c "print(3.66e-07 + 9.73e+03 * ($NON_EMB ** -0.926))")
