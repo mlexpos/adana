@@ -8,7 +8,7 @@
 
 OMEGA=4.0
 HEADS_ARRAY=( 24 )
-LR_MULTIPLIERS=( 1.0 1.25 )
+LR_MULTIPLIERS=( 1.5 1.75 )
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4

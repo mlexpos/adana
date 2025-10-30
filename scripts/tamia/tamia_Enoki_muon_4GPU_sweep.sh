@@ -1,13 +1,14 @@
 #!/bin/bash
 
-# Eryngii AdamW Multi-GPU Sweep for Tamia (heads 4 to 8)
+# Enoki D-Muon Multi-GPU Sweep for Tamia
 # Uses 4 GPUs per node for larger models
-# For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr = 1.53e+04×C -0.435
+# For each head count, runs multiple learning rates: multipliers of the formula prediction
+# Learning rate formula: lr = 2.33e-05 + 1.69e+01 × P^{-0.541} where P = NON_EMB
+# Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA=4.0
-HEADS=(10 11 12)
-LR_MULTIPLIERS=(0.5 0.75 1.0 1.25 1.5)
+HEADS_ARRAY=( 20 24 )
+LR_MULTIPLIERS=(1.0 0.75 1.25)
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4
@@ -16,8 +17,8 @@ TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
 
-echo "Starting Eryngii DANA-STAR-MK4 Multi-GPU sweep (Tamia)"
-echo "Heads: ${HEADS[@]}"
+echo "Starting Enoki D-Muon Multi-GPU sweep (Tamia)"
+echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
 echo "GPUs per node: $GPUS_PER_NODE"
@@ -27,19 +28,19 @@ echo "Memory: ${MEM} (allocate as needed)"
 echo "Time allocation: ${TIME_HOURS}h"
 echo ""
 
-# Function to calculate model parameters for Eryngii
+# Function to calculate model parameters for a given head count
 calculate_params() {
     local HEADS=$1
 
-    # Eryngii architecture parameters
-    local HEAD_DIM=$(python3 -c "print(int(round(32 * $HEADS / 3 / 8) * 8))")
+    # Enoki architecture parameters (DiLoco scaling)
+    local HEAD_DIM=64
     local N_HEAD=$(python3 -c "print(int($HEADS))")
-    local N_LAYER=$(python3 -c "print(int($HEADS**2 // 8))")
-    local N_EMBD=$(python3 -c "print(int($N_HEAD * $HEAD_DIM))")
+    local N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
+    local N_EMBD=$(python3 -c "print(int($HEADS * 64))")
     local MLP_HIDDEN=$(python3 -c "print(int(4 * $N_EMBD))")
 
-    # Calculate non-embedding parameters
-    # Non-emb = 12 * n_embd^2 * n_layer (DiLoco formula)
+    # Calculate non-embedding parameters (DiLoco formula)
+    # Non-emb = 12 * n_embd^2 * n_layer
     local NON_EMB=$(python3 -c "print(int(12 * $N_EMBD * $N_EMBD * $N_LAYER))")
 
     # Calculate total parameters and iterations
@@ -49,46 +50,45 @@ calculate_params() {
     echo "$NON_EMB $ITERATIONS"
 }
 
-# Calculate reference for heads=4
-read NON_EMB_4 ITERATIONS_4 <<< $(calculate_params 4)
+# Calculate reference for heads=16
+read NON_EMB_16 ITERATIONS_16 <<< $(calculate_params 16)
+C_16=$(python3 -c "print($NON_EMB_16 * $ITERATIONS_16)")
+
+echo "Reference (heads=16):"
+echo "  NON_EMB = $NON_EMB_16"
+echo "  ITERATIONS = $ITERATIONS_16"
+echo "  C(16) = $C_16"
+echo ""
 
 # Counter for job tracking
 job_count=0
-total_jobs=$((${#HEADS[@]} * ${#LR_MULTIPLIERS[@]}))
+total_jobs=$((${#HEADS_ARRAY[@]} * ${#LR_MULTIPLIERS[@]}))
 echo "Total jobs to run: $total_jobs"
 echo ""
 
-# Loop over heads
-for HEADS in "${HEADS[@]}"; do
+# Loop over head counts
+for HEADS in "${HEADS_ARRAY[@]}"; do
     echo "Processing heads=$HEADS"
 
-    # Set time allocation based on heads
-    if [ $HEADS -le 6 ]; then
-        TIME_SPEC="00:30:00"
-    elif [ $HEADS -le 9 ]; then
-        TIME_SPEC="03:00:00"
-    elif [ $HEADS -le 11 ]; then
-        TIME_SPEC="12:00:00"
-    elif [ $HEADS -le 12 ]; then
-        TIME_SPEC="24:00:00"
-    else
-        TIME_SPEC="48:00:00"
-    fi
-
-    # Calculate parameters for this heads
+    # Calculate parameters for this head count
     read NON_EMB ITERATIONS <<< $(calculate_params $HEADS)
 
     # Calculate computational cost C = NON_EMB * ITERATIONS
-    C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32)")
+    C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Base learning rate
-    BASE_LR=$(python3 -c "print(1.53e+04 * $C**(-0.435))")
+    # Calculate base learning rate using formula: lr = 2.33e-05 + 1.69e+01 × P^{-0.541}}
+    BASE_LR=$(python3 -c "print(2.33e-05 + 1.69e+01 * ($NON_EMB ** -0.541))")
 
+    # Calculate n_layer for this head count
+    N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
+
+    echo "  HEADS = $HEADS"
+    echo "  N_LAYER = $N_LAYER (= 3 * $HEADS / 4)"
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
-    echo "  C = $(python3 -c "print($C / 1e18)")e18"
-    echo "  Time allocation: ${TIME_SPEC}"
-    echo "  Base LR: $BASE_LR"
+    echo "  C = $C"
+    echo "  Time allocation: ${TIME_HOURS}h"
+    echo "  Base LR (formula): $BASE_LR"
     echo ""
 
     # Loop over learning rate multipliers
@@ -100,17 +100,17 @@ for HEADS in "${HEADS[@]}"; do
         echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
 
         # Submit the job with multi-GPU configuration
-        sbatch --time=${TIME_SPEC} \
+        sbatch --time=${TIME_HOURS}:00:00 \
                --nodes=1 \
                --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=Eryngii_dana-star-mk4_h${HEADS}_lr${MULT} \
-               scripts/scripts_dfer/fir_Eryngii_dfer.sh \
+               --job-name=EN_dmuon_4G_h${HEADS}_lr${MULT} \
+               scripts/narval/Enoki_cypaq.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer dana-star-mk4 \
+               --optimizer d-muon \
                --nproc_per_node ${GPUS_PER_NODE}
 
         # Check if the job was successful
@@ -133,4 +133,4 @@ echo "  Nodes: 1"
 echo "  GPUs: ${GPUS_PER_NODE} × H100"
 echo "  CPUs: ${TOTAL_CPUS} (${CPUS_PER_GPU} per GPU)"
 echo "  Memory: ${MEM} (allocate as needed)"
-echo "  Time: ${TIME_SPEC}"
+echo "  Time: ${TIME_HOURS} hours"
