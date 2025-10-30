@@ -6,7 +6,7 @@
 
 OMEGA=4.0
 DEPTHS=( 7 )
-LR_MULTIPLIERS=( 0.5 )
+LR_MULTIPLIERS=( 0.5 0.3 )
 
 echo "Starting BigHead AdamW sweep"
 echo "Depths: ${DEPTHS[@]}"
