@@ -7,8 +7,8 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA=4.0
-HEADS_ARRAY=( 16 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 0.5 1.5)
+HEADS_ARRAY=( 24 )
+LR_MULTIPLIERS=(1.0 1.25)
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4
