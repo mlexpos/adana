@@ -7,7 +7,8 @@ from pathlib import Path
 import torch
 import wandb
 import yaml
-
+import torch.distributed as dist
+import pdb
 from logger.logger import DynamicsLogger
 
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
@@ -40,8 +41,7 @@ def train(
         )
     else:
         type_ctx = nullcontext()
-
-    if cfg.resume_from:
+    if cfg.resume_from :
         # This is a full resume including the model weights, optimizer, state
         # dataloader state, random seed, etc. Not indended for fine tuning or
         # other scenarios where some of these should change.
@@ -106,11 +106,6 @@ def train(
             or curr_iter == cfg.iterations
             or (curr_iter in cfg.full_eval_at)
         ):
-            # Ensure all workers are synchronized before evaluation
-            import torch.distributed as dist
-            if dist.is_initialized():
-                dist.barrier()
-            
             eval_and_log(
                 tokens,
                 curr_iter,
@@ -126,10 +121,6 @@ def train(
 
         if curr_iter == cfg.iterations:
             # Save checkpoints and evaluate at final iteration, but no need to train further
-            # Ensure all distributed operations are complete before ending
-            import torch.distributed as dist
-            if dist.is_initialized():
-                dist.barrier()
             break
 
         # Train model

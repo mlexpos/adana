@@ -6,11 +6,11 @@ import os
 import random
 import sys
 from pathlib import Path
-
+import pdb
 import numpy as np
 import torch
 import wandb
-
+import torch.distributed as dist
 import config
 import distributed
 from data.utils import DataReader, MultiFileDataReader, get_dataset
@@ -35,6 +35,7 @@ from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
 from optim.snoo_dana import snoo_DANA, snoo
+import pdb
 
 
 def get_args():
@@ -63,6 +64,7 @@ def main(args, parser):
 
     if args.full_eval_at is None:
         args.full_eval_at = []
+    
 
     # NOTE args.seed is offset per worker in get_adjusted_args_for_process
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -442,7 +444,8 @@ def main(args, parser):
             weight_decay=args.weight_decay,
             nesterov=args.nesterov,
         )
-    print(f"\nOptimizer:\n{opt}")
+    if distributed_backend.is_master_process():
+        print(f"\nOptimizer:\n{opt}")
 
     if args.scheduler != "none":
         assert (
@@ -543,6 +546,12 @@ def main(args, parser):
     if distributed_backend.is_master_process():
         with open(exp_dir / "summary.json", "w") as fs:
             json.dump(stats, fs)
+    # Disable MultiFileDataReader coordination to avoid collectives during teardown
+    try:
+        train_reader = datareaders["train"]
+        setattr(train_reader, "disable_coordination", True)
+    except Exception:
+        pass
     distributed_backend.finalize()
 
 
@@ -606,6 +615,7 @@ def get_exp_name(
     ignore_args=[
         "eval_interval",
         "full_eval_at",
+        "distributed_backend",
         "latest_ckpt_interval",
         "permanent_ckpt_interval",
         "wandb",
@@ -617,6 +627,8 @@ def get_exp_name(
         "plot_router_logits",
         "auto_resume",
         "resume_from",
+        "device",
+        "seed",
         "resume_from_swa",
         "datasets_dir",
     ],
