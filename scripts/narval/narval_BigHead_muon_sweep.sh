@@ -2,11 +2,11 @@
 
 # BigHead Muon Sweep across depths {4,5,6,7}
 # For each depth, runs 3 learning rates: 0.75x, 1.0x, and 1.25x the formula prediction
-# Learning rate formula: lr =  2.76e-04 + 3.31e+00 * P^{-0.461} where P = NON_EMB
+# Learning rate formula: lr = 2.63e-04 + 2.50e+00 * P^{-0.445} where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=( 6 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 0.5 1.5 0.25 1.75)
+DEPTHS=( 7 )
+LR_MULTIPLIERS=( 0.5 )
 
 echo "Starting BigHead AdamW sweep"
 echo "Depths: ${DEPTHS[@]}"
@@ -67,8 +67,8 @@ for DEPTH in "${DEPTHS[@]}"; do
     #TIME_HOURS=$(python3 -c "import math; print(max(1, int(math.ceil($C / $C_4))))")
     TIME_HOURS=8
 
-    # Calculate base learning rate using formula: lr = 2.76e-04 + 3.31e+00 * P^{-0.461}
-    BASE_LR=$(python3 -c "print(2.76e-04 + 3.31e+00 * ($NON_EMB ** -0.461))")
+    # Calculate base learning rate using formula: lr = 2.63e-04 + 2.50e+00 * P^{-0.445}
+    BASE_LR=$(python3 -c "print(2.63e-04 + 2.5e+00 * ($NON_EMB ** -0.445))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
