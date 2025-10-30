@@ -3,18 +3,18 @@
 # BigHead D-Muon Multi-GPU Sweep for Narval (depths {8,9,10,11})
 # Uses 4 GPUs per node for larger models
 # For each depth, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 8.47e-04 + 6.03e+01 × P^{-0.658} where P = NON_EMB
+# Learning rate formula: lr = 2.63e-04 + 2.50e+00 * P^{-0.445} where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=( 8 9 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
+DEPTHS=( 8 )
+LR_MULTIPLIERS=(0.75 0.5)
 
 # SLURM configuration for Narval (4 GPUs)
 GPUS_PER_NODE=4
 CPUS_PER_GPU=8
 TOTAL_CPUS=32  # 4 GPUs × 8 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=12
+TIME_HOURS=15
 
 echo "Starting BigHead D-Muon Multi-GPU sweep (Narval)"
 echo "Depths: ${DEPTHS[@]}"
@@ -75,8 +75,8 @@ for DEPTH in "${DEPTHS[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 8.47e-04 + 6.03e+01 * P^{-0.658}
-    BASE_LR=$(python3 -c "print(8.47e-04 + 6.03e+01 * ($NON_EMB ** -0.658))")
+    # Calculate base learning rate using formula: lr = 2.63e-04 + 2.50e+00 * P^{-0.445}
+    BASE_LR=$(python3 -c "print(2.63e-04 + 2.50e+00 * ($NON_EMB ** -0.445))")
 
     echo "  DEPTH = $DEPTH"
     echo "  NON_EMB = $NON_EMB"
