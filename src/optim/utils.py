@@ -218,7 +218,12 @@ def save_worker_state(ckpt_dir: Path):
 
 def load_worker_state(ckpt_dir: Path):
     rank = 0 if not dist.is_initialized() else dist.get_rank()
-    worker_state = torch.load(ckpt_dir / f"worker_{rank}.pt")
+    # PyTorch 2.6 defaults to weights_only=True; worker state includes numpy/python RNG states
+    # Try safe default first, then fall back to weights_only=False if needed
+    try:
+        worker_state = torch.load(ckpt_dir / f"worker_{rank}.pt")
+    except Exception:
+        worker_state = torch.load(ckpt_dir / f"worker_{rank}.pt", weights_only=False)
     torch.random.set_rng_state(worker_state["rng_torch_cpu"])
     torch.cuda.set_rng_state(worker_state["rng_torch_gpu"])
     np.random.set_state(worker_state["rng_np"])

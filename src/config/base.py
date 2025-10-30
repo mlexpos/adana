@@ -35,7 +35,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--resume_from", default=None, type=str)
     parser.add_argument("--resume_from_swa", default=None, type=str)
 
-    parser.add_argument("--auto_resume", default=False)
+    parser.add_argument("--auto_resume", default=False, action="store_true")
 
     # logging params (WandB)
     parser.add_argument("--wandb", action="store_true")  # whether to use wandb or not
