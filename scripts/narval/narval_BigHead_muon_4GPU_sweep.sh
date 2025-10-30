@@ -6,7 +6,7 @@
 # Learning rate formula: lr = 2.63e-04 + 2.50e+00 * P^{-0.445} where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=( 8 )
+DEPTHS=( 9 )
 LR_MULTIPLIERS=(0.75 0.5)
 
 # SLURM configuration for Narval (4 GPUs)
