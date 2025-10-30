@@ -33,6 +33,19 @@ plt.rcParams.update({
     'legend.fontsize': 10,
 })
 
+# ----------------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------------
+def normalize_opt_name(opt_value: str) -> str:
+    """Normalize optimizer name to a canonical form for matching.
+    - lower-case
+    - replace underscores with hyphens
+    - strip whitespace
+    """
+    if opt_value is None:
+        return ""
+    return str(opt_value).strip().lower().replace('_', '-')
+
 # ============================================================================
 # PARAMETER COMPUTATION
 # ============================================================================
@@ -114,6 +127,7 @@ def load_runs_for_group(project, entity, group):
                 'total_params': total_params,
                 'batch_size': batch_size,
                 'seq_length': seq_length,
+                'opt': normalize_opt_name(config.get('opt', '')),
             })
     
     return pd.DataFrame(data)
@@ -602,6 +616,97 @@ def main():
             print(f"    Compute (non-emb): {compute_non_emb:.2e} FLOPs")
     
     # Create plots
+    # If user requested all optimizers, run per-optimizer plots and comparison
+    if opt_name == 'all':
+        # Detect available optimizers in data
+        available_opts = sorted([o for o in df.get('opt', pd.Series(dtype=str)).dropna().unique() if o])
+        if not available_opts:
+            print("ERROR: No optimizer field ('opt') found in runs; cannot run --opt=all")
+            return
+        print(f"\nOptimizers detected: {available_opts}")
+
+        # Generate plots for each optimizer
+        for opt in available_opts:
+            df_opt = df[df['opt'] == opt]
+            if df_opt.empty:
+                continue
+            print(f"\nCreating visualizations for {opt}...")
+            create_plots(df_opt, depths, opt, wandb_group, wandb_group)
+
+        # Create comparison plot (Loss vs Compute, non-embedding) with fits
+        print("\nCreating comparison plot across all optimizers...")
+        fig, ax = plt.subplots(figsize=(14, 9))
+        colors = plt.cm.tab10(np.linspace(0, 1, max(3, len(available_opts))))
+
+        for idx, opt in enumerate(available_opts):
+            df_opt = df[df['opt'] == opt]
+            if df_opt.empty:
+                continue
+
+            compute_non_emb = []
+            best_losses = []
+            depths_with_data = []
+            for depth in depths:
+                depth_data = df_opt[df_opt['depth'] == depth]
+                if len(depth_data) == 0:
+                    continue
+                c_non_emb = depth_data['compute_non_emb'].mode()[0]
+                best_run = depth_data.loc[depth_data['val_loss'].idxmin()]
+                compute_non_emb.append(c_non_emb)
+                best_losses.append(best_run['val_loss'])
+                depths_with_data.append(depth)
+
+            if not compute_non_emb:
+                continue
+
+            ax.scatter(
+                compute_non_emb,
+                best_losses,
+                s=20,
+                alpha=0.9,
+                color=colors[idx],
+                marker='x',
+                linewidths=0.8,
+                label=f"{opt.upper()} data",
+            )
+
+            x = np.array(compute_non_emb, dtype=np.float64)
+            y = np.array(best_losses, dtype=np.float64)
+            res = fit_power_law_logspace(x, y)
+            if res:
+                b, c, r2 = res['b'], res['c'], res['r2']
+                x_fit = np.logspace(np.log10(min(x) * 0.8), np.log10(max(x) * 1.2), 100)
+                y_pred = power_law_no_offset(x_fit, b, c)
+                ax.plot(x_fit, y_pred, '-', linewidth=1.8, alpha=0.8, color=colors[idx],
+                        label=f"{opt.upper()}: {b:.2e}×$C^{{{c:.4f}}}$ (R²={r2:.3f})")
+
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlabel('Compute (FLOPs)', fontweight='bold', fontsize=14)
+        ax.set_ylabel('Best Validation Loss', fontweight='bold', fontsize=14)
+        ax.set_title(f'Optimizer Comparison: Best Loss vs Compute (Non-embedding)\n{wandb_group}',
+                    fontweight='bold', fontsize=16)
+        ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.8)
+        ax.grid(True, which='minor', alpha=0.15, linestyle=':', linewidth=0.5)
+        ax.legend(loc='best', framealpha=0.9, fontsize=11)
+        plt.tight_layout()
+
+        import os
+        output_dir = 'visualization/BigHead_dfe'
+        os.makedirs(output_dir, exist_ok=True)
+        comp_filename = f"{output_dir}/optimizer_comparison_all_{wandb_group}_loss_vs_compute.pdf"
+        fig.savefig(comp_filename, bbox_inches='tight', dpi=300)
+        print(f"\n✓ Saved comparison plot: {comp_filename}")
+        return
+
+    # Non-all mode: ensure we filter by the requested optimizer for consistency
+    requested_opt = normalize_opt_name(opt_name)
+    if 'opt' in df.columns and requested_opt:
+        before = len(df)
+        df = df[df['opt'] == requested_opt]
+        after = len(df)
+        print(f"Filtered by optimizer '{requested_opt}': {before} -> {after} runs")
+
     print("\nCreating visualizations...")
     create_plots(df, depths, opt_name, wandb_group, wandb_group)
     
