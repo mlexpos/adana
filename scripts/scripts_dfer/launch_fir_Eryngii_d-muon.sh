@@ -3,10 +3,10 @@
 # Eryngii AdamW Multi-GPU Sweep for Tamia (heads 4 to 8)
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr = 1.53e+04×C -0.435
+# Base learning rate: lr =  4.22e+01×C -0.258
 
 OMEGA=4.0
-HEADS=(10 11 12)
+HEADS=(4 5 6 7 8 9 10 11)
 LR_MULTIPLIERS=(0.5 0.75 1.0 1.25 1.5)
 
 # SLURM configuration for Tamia
@@ -16,7 +16,7 @@ TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
 
-echo "Starting Eryngii DANA-STAR-MK4 Multi-GPU sweep (Tamia)"
+echo "Starting Eryngii AdamW Multi-GPU sweep (Fir)"
 echo "Heads: ${HEADS[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -82,7 +82,7 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32)")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(1.53e+04 * $C**(-0.435))")
+    BASE_LR=$(python3 -c "print(4.22e+01 * $C**(-0.258))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
@@ -105,12 +105,12 @@ for HEADS in "${HEADS[@]}"; do
                --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=Eryngii_dana-star-mk4_h${HEADS}_lr${MULT} \
+               --job-name=Eryngii_d-muon_h${HEADS}_lr${MULT} \
                scripts/scripts_dfer/fir_Eryngii_dfer.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer dana-star-mk4 \
+               --optimizer d-muon \
                --nproc_per_node ${GPUS_PER_NODE}
 
         # Check if the job was successful
