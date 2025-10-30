@@ -65,7 +65,7 @@ for DEPTH in "${DEPTHS[@]}"; do
     # Calculate time in hours: C(depth) / C(4) scaled appropriately
     # We'll use this to estimate SLURM time
     #TIME_HOURS=$(python3 -c "import math; print(max(1, int(math.ceil($C / $C_4))))")
-    TIME_HOURS=8
+    TIME_HOURS=22
 
     # Calculate base learning rate using formula: lr = 2.63e-04 + 2.50e+00 * P^{-0.445}
     BASE_LR=$(python3 -c "print(2.63e-04 + 2.5e+00 * ($NON_EMB ** -0.445))")
