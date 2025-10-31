@@ -9,6 +9,7 @@ ACC_STEPS=1
 NPROC_PER_NODE=1
 HEADS=""
 OPTIMIZER="dana-star-mk4"
+KAPPA=0.75
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -23,6 +24,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --omega)
             OMEGA="$2"
+            shift 2
+            ;;
+        --kappa)
+            KAPPA="$2"
             shift 2
             ;;
         --clipsnr)
@@ -67,6 +72,7 @@ if [ -z "$HEADS" ]; then
     echo "Options:"
     echo "  --lr <value>              Learning rate (default: 15e-4)"
     echo "  --omega <value>           Weight decay strength parameter (default: 4.0)"
+    echo "  --kappa <value>           Kappa for dana (default: 0.75)"
     echo "  --clipsnr <value>         Clip SNR for dana-star-mk4 (default: 2.0)"
     echo "  --batch_size <value>      Batch size (default: 32)"
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
@@ -107,7 +113,7 @@ case $OPTIMIZER in
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
     adamw)
         # For adamw: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
@@ -121,14 +127,14 @@ case $OPTIMIZER in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa 0.75 --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999"
+        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa $KAPPA --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999"
         ;;
     ademamix)
         # For ademamix: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
+        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa $KAPPA --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
     d-muon)
         # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
