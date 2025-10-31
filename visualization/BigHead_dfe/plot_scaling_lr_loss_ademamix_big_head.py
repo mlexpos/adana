@@ -98,6 +98,7 @@ def load_runs_for_group(project, entity, group):
         lr = config.get('lr')
         val_loss = summary.get('final-val/loss')
         iterations = config.get('iterations')
+        kappa = config.get('kappa')  # Extract kappa value
         
         batch_size = 32
         seq_length = 2048
@@ -105,6 +106,7 @@ def load_runs_for_group(project, entity, group):
         # Check if we have all required parameters
         required_params = [n_layer, n_head, n_embd, head_dim, mlp_hidden, lr, val_loss, iterations]
         if all(x is not None for x in required_params):
+            # Note: kappa can be None for non-ademamix optimizers
             # Compute parameters
             non_emb_params = compute_non_embedding_params(n_layer, n_head, n_embd, head_dim, mlp_hidden)
             total_params = compute_total_params(n_layer, n_head, n_embd, head_dim, mlp_hidden, vocab_size)
@@ -131,7 +133,11 @@ def load_runs_for_group(project, entity, group):
                 'batch_size': batch_size,
                 'seq_length': seq_length,
                 'opt': normalize_opt_name(config.get('opt', '')),
+<<<<<<< Updated upstream
                 'kappa': kappa,
+=======
+                'kappa': kappa,  # Store kappa value
+>>>>>>> Stashed changes
             })
     
     return pd.DataFrame(data)
@@ -327,7 +333,7 @@ def fit_power_law_with_offset_minimize(x_data, y_data):
 # PLOTTING
 # ============================================================================
 
-def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_loss=False, top_k_data=None, opt_name='ademamix', group_name='', n_heads=None):
+def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_loss=False, top_k_data=None, opt_name='ademamix', group_name='', n_heads=None, kappa_value=None):
     """Generic plotting function for scaling law analysis.
     
     Args:
@@ -335,6 +341,7 @@ def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_l
         opt_name: Optimizer name for legend
         group_name: WandB group name for title
         n_heads: Optional list of n_head values corresponding to each depth
+        kappa_value: Optional kappa value to include in title/filename
     """
     fig, ax = plt.subplots(figsize=(12, 8))
 
@@ -420,12 +427,34 @@ def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_l
     fig.savefig(filename, bbox_inches='tight', dpi=300)
     print(f"\n✓ Saved: {filename}")
 
+<<<<<<< Updated upstream
 def create_plots(df, depths, opt_name, title_suffix, group_name, kappa=None):
     """Create all scaling law plots.
     
     Args:
         kappa: Optional kappa value to include in filename (for ademamix optimizer)
     """
+=======
+def create_plots(df, depths, opt_name, title_suffix, group_name, kappa_value=None):
+    """Create all scaling law plots.
+    
+    Args:
+        df: DataFrame with run data
+        depths: List of depths to plot
+        opt_name: Optimizer name
+        title_suffix: Suffix for plot titles
+        group_name: WandB group name
+        kappa_value: Optional kappa value for filtering and filename (if None, uses all kappa values)
+    """
+    
+    # Filter by kappa if specified
+    if kappa_value is not None:
+        df_filtered = df[df['kappa'] == kappa_value].copy()
+        if df_filtered.empty:
+            print(f"Warning: No data found for kappa={kappa_value}")
+            return
+        df = df_filtered
+>>>>>>> Stashed changes
     
     # Extract data for each depth
     compute_non_emb = []
@@ -480,23 +509,35 @@ def create_plots(df, depths, opt_name, title_suffix, group_name, kappa=None):
     output_dir = 'visualization/BigHead_dfe'
     os.makedirs(output_dir, exist_ok=True)
     
+<<<<<<< Updated upstream
     # Build filename suffix for kappa if applicable
     kappa_suffix = f"_kappa{kappa}" if kappa is not None else ""
+=======
+    # Create kappa suffix for filenames (replace decimal point with underscore)
+    kappa_suffix = f"_kappa_{str(kappa_value).replace('.', '_')}" if kappa_value is not None else ""
+>>>>>>> Stashed changes
     
     # Plot 1: Loss vs Compute (non-embedding)
     print("\n" + "="*70)
     print("LOSS vs COMPUTE (Non-embedding)")
     print("="*70)
+    title_kappa = f" (κ={kappa_value})" if kappa_value is not None else ""
     plot_scaling_law(
         compute_non_emb, best_losses, depths_with_data,
         ylabel='Best Validation Loss',
+<<<<<<< Updated upstream
         title=f'Best Validation Loss vs Compute (Non-embedding)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
         filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_loss_vs_compute_nonemb.pdf',
+=======
+        title=f'Best Validation Loss vs Compute (Non-embedding)\n{opt_name}{title_kappa} | {group_name}',
+        filename=f'{output_dir}/{opt_name}_{group_name}{kappa_suffix}_loss_vs_compute_nonemb.pdf',
+>>>>>>> Stashed changes
         is_loss=True,
         top_k_data=top_10_loss_non_emb,
         opt_name=opt_name,
         group_name=group_name,
-        n_heads=n_heads_list
+        n_heads=n_heads_list,
+        kappa_value=kappa_value
     )
     
     # Plot 2: Loss vs Compute (total)
@@ -506,13 +547,19 @@ def create_plots(df, depths, opt_name, title_suffix, group_name, kappa=None):
     plot_scaling_law(
         compute_total, best_losses, depths_with_data,
         ylabel='Best Validation Loss',
+<<<<<<< Updated upstream
         title=f'Best Validation Loss vs Compute (Total)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
         filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_loss_vs_compute_total.pdf',
+=======
+        title=f'Best Validation Loss vs Compute (Total)\n{opt_name}{title_kappa} | {group_name}',
+        filename=f'{output_dir}/{opt_name}_{group_name}{kappa_suffix}_loss_vs_compute_total.pdf',
+>>>>>>> Stashed changes
         is_loss=True,
         top_k_data=top_10_loss_total,
         opt_name=opt_name,
         group_name=group_name,
-        n_heads=n_heads_list
+        n_heads=n_heads_list,
+        kappa_value=kappa_value
     )
     
     # Plot 3: Learning Rate vs Compute (non-embedding)
@@ -522,13 +569,19 @@ def create_plots(df, depths, opt_name, title_suffix, group_name, kappa=None):
     plot_scaling_law(
         compute_non_emb, best_lrs, depths_with_data,
         ylabel='Best Learning Rate',
+<<<<<<< Updated upstream
         title=f'Best Learning Rate vs Compute (Non-embedding)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
         filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_best_lr_vs_compute_nonemb.pdf',
+=======
+        title=f'Best Learning Rate vs Compute (Non-embedding)\n{opt_name}{title_kappa} | {group_name}',
+        filename=f'{output_dir}/{opt_name}_{group_name}{kappa_suffix}_best_lr_vs_compute_nonemb.pdf',
+>>>>>>> Stashed changes
         is_loss=False,
         top_k_data=top_10_lr_non_emb,
         opt_name=opt_name,
         group_name=group_name,
-        n_heads=n_heads_list
+        n_heads=n_heads_list,
+        kappa_value=kappa_value
     )
     
     # Plot 4: Learning Rate vs Compute (total)
@@ -538,13 +591,19 @@ def create_plots(df, depths, opt_name, title_suffix, group_name, kappa=None):
     plot_scaling_law(
         compute_total, best_lrs, depths_with_data,
         ylabel='Best Learning Rate',
+<<<<<<< Updated upstream
         title=f'Best Learning Rate vs Compute (Total)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
         filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_best_lr_vs_compute_total.pdf',
+=======
+        title=f'Best Learning Rate vs Compute (Total)\n{opt_name}{title_kappa} | {group_name}',
+        filename=f'{output_dir}/{opt_name}_{group_name}{kappa_suffix}_best_lr_vs_compute_total.pdf',
+>>>>>>> Stashed changes
         is_loss=False,
         top_k_data=top_10_lr_total,
         opt_name=opt_name,
         group_name=group_name,
-        n_heads=n_heads_list
+        n_heads=n_heads_list,
+        kappa_value=kappa_value
     )
 
 # ============================================================================
@@ -765,6 +824,7 @@ def main():
         df = df[df['opt'] == requested_opt]
         after = len(df)
         print(f"Filtered by optimizer '{requested_opt}': {before} -> {after} runs")
+<<<<<<< Updated upstream
     
     # Special handling for ademamix: create separate plots for each kappa value
     if requested_opt == 'ademamix' and 'kappa' in df.columns:
@@ -781,6 +841,30 @@ def main():
     
     print("\nCreating visualizations...")
     create_plots(df, depths, opt_name, wandb_group, wandb_group)
+=======
+
+    # For ademamix, check if we need to split by kappa
+    if requested_opt == 'ademamix':
+        # Check available kappa values
+        available_kappas = sorted([k for k in df['kappa'].dropna().unique() if k is not None])
+        print(f"\nAvailable kappa values: {available_kappas}")
+        
+        if len(available_kappas) > 0:
+            # Create plots for each kappa value
+            for kappa_val in available_kappas:
+                print(f"\n{'='*70}")
+                print(f"Creating visualizations for kappa={kappa_val}")
+                print(f"{'='*70}")
+                create_plots(df, depths, opt_name, wandb_group, wandb_group, kappa_value=kappa_val)
+        else:
+            # No kappa values found, create plots without kappa filtering
+            print("\nNo kappa values found, creating plots without kappa filtering...")
+            create_plots(df, depths, opt_name, wandb_group, wandb_group)
+    else:
+        # For other optimizers, create plots normally
+        print("\nCreating visualizations...")
+        create_plots(df, depths, opt_name, wandb_group, wandb_group)
+>>>>>>> Stashed changes
     
     print("\n" + "="*70)
     print("Analysis complete!")
