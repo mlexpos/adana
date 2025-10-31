@@ -18,7 +18,7 @@ GPUS_PER_NODE=4
 CPUS_PER_GPU=8
 TOTAL_CPUS=32  # 4 GPUs × 8 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=24
+TIME_HOURS=31
 
 echo "Starting Enoki AdamW Multi-GPU sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
