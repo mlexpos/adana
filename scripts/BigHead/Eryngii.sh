@@ -175,7 +175,7 @@ case $OPTIMIZER in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt snoo-dana --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 $BETA2 --delta 8 --kappa $KAPPA --k $K --lr_outer 1.O --gamma_3_factor 0.5"
+        OPT_PARAMS="--opt snoo-dana --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 $BETA2 --delta 8 --kappa $KAPPA --k $K --lr_outer 1.0 --gamma_3_factor 0.5"
         ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
