@@ -3,11 +3,11 @@
 # BigHead AdamW Multi-GPU Sweep for Tamia (depths {9,10,11,12})
 # Uses 4 GPUs per node for larger models
 # For each depth, runs 3 learning rates: 0.75x, 1.0x, and 1.25x the formula prediction
-# Learning rate formula: lr = 4.0e+01 × P^(-0.62) where P = NON_EMB
+# Learning rate formula: lr = 1.23e-06 + 3.09e+02 × P^{-0.704} where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=(11 12)
-LR_MULTIPLIERS=(1.50 1.75 2.00)
+DEPTHS=(12)
+LR_MULTIPLIERS=(1.10 1.60)
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4
@@ -75,8 +75,8 @@ for DEPTH in "${DEPTHS[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 4.0e+01 * P^(-0.62)
-    BASE_LR=$(python3 -c "print(4.0e+01 * ($NON_EMB ** -0.62))")
+    # Calculate base learning rate using formula: lr = 1.23e-06 + 3.09e+02 × P^{-0.704}
+    BASE_LR=$(python3 -c "print(1.23e-06 + 3.09e+02 * ($NON_EMB ** -0.704))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
