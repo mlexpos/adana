@@ -6,8 +6,8 @@
 # Learning rate formula: lr = 1.23e-06 + 3.09e+02 × P^{-0.704} where P = NON_EMB
 
 OMEGA=4.0
-DEPTHS=(12)
-LR_MULTIPLIERS=(1.10 1.60)
+DEPTHS=(11)
+LR_MULTIPLIERS=(1.60)
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4
