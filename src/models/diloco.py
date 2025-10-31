@@ -177,6 +177,7 @@ class DiLoCoMLP(MLP):
 class DiLoCoBlock(Block):
     def __init__(self, config):
         super().__init__(config)
+        self.config = config
         # Replace attention with DiLoCo attention
         self.attn = DiLoCoAttention(config)
         # Replace MLP with DiLoCo MLP (supports custom hidden dim)
@@ -188,9 +189,9 @@ class DiLoCoBlock(Block):
             self.mlp = DiLoCoMLP(config)
 
     def forward(self, x, freqs_cis):
-        x = x + self.attn(self.ln_1(x), freqs_cis)
+        x = x + self.config.residual_stream_scalar * self.attn(self.ln_1(x), freqs_cis)
         x_, logits_and_experts = self.mlp(self.ln_2(x))
-        x = x + x_
+        x = x + self.config.residual_stream_scalar * x_
         return x, logits_and_experts
 
 
@@ -212,8 +213,9 @@ class DiLoCo(GPTBase):
 
         # Re-apply weight initialization since we replaced blocks
         self.apply(self._init_weights)
+        # Only apply depth scaling for KarpathyGPT2 scheme
         for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
+            if pn.endswith("c_proj.weight") and config.init_scheme == "KarpathyGPT2":
                 torch.nn.init.normal_(
                     p,
                     mean=0.0,

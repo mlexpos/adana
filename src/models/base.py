@@ -122,6 +122,7 @@ class MLP(nn.Module):
 class Block(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.parallel = config.parallel_block
@@ -147,11 +148,11 @@ class Block(nn.Module):
             x_ln = self.ln_1(x, *args, **kwargs)
             x_attn = self.attn(x_ln)
             x_ffn, logits_and_experts = self.mlp(x_ln)
-            x = x + x_attn + x_ffn
+            x = x + self.config.residual_stream_scalar * (x_attn + x_ffn)
         else:
-            x = x + self.attn(self.ln_1(x, *args, **kwargs))
+            x = x + self.config.residual_stream_scalar * self.attn(self.ln_1(x, *args, **kwargs))
             x_, logits_and_experts = self.mlp(self.ln_2(x, *args, **kwargs))
-            x = x + x_
+            x = x + self.config.residual_stream_scalar * x_
         return x, logits_and_experts
 
 
@@ -186,8 +187,9 @@ class GPTBase(nn.Module):
         # init all weights
         self.apply(self._init_weights)
         # apply special scaled init to the residual projections, per GPT-2 paper
+        # Only for KarpathyGPT2 scheme
         for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight"):
+            if pn.endswith("c_proj.weight") and config.init_scheme == "KarpathyGPT2":
                 torch.nn.init.normal_(
                     p,
                     mean=0.0,
@@ -245,11 +247,21 @@ class GPTBase(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
+            if self.config.init_scheme == "Standard":
+                # Standard initialization: variance = 1/fan_in
+                fan_in = module.weight.size(1)
+                std = 1.0 / math.sqrt(fan_in)
+                torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            else:  # KarpathyGPT2
+                torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
-            torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
+            if self.config.init_scheme == "Standard":
+                # Standard initialization: variance = 1
+                torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
+            else:  # KarpathyGPT2
+                torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
 
     def forward(self, idx, targets=None, get_logits=False, moe=False):
         device = idx.device

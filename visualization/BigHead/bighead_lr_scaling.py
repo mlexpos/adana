@@ -76,7 +76,7 @@ SCALING_RULE_CONFIG = {
     },
     'Eryngii': {
         'group': 'eryngii_sweeps',
-        'extrapolation_sizes': [8, 9, 10, 11, 12],  
+        'extrapolation_sizes': [8, 9, 10, 11, 12, 13, 14, 15],  
         'size_step': 1,  # Show all consecutive integers
     }
 }

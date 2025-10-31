@@ -12,6 +12,8 @@ OPTIMIZER="dana-star-mk4"
 KAPPA=0.75
 BETA2=0.999
 K=20
+INIT_SCHEME="KarpathyGPT2"
+DEPTH_SCALAR_EXPONENT=0.0
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -60,6 +62,14 @@ while [[ $# -gt 0 ]]; do
             OPTIMIZER="$2"
             shift 2
             ;;
+        --init-scheme)
+            INIT_SCHEME="$2"
+            shift 2
+            ;;
+        --depth-scalar-exponent)
+            DEPTH_SCALAR_EXPONENT="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option $1"
             exit 1
@@ -90,6 +100,8 @@ if [ -z "$HEADS" ]; then
     echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon (default: dana-star-mk4)"
     echo "  --beta2 <value>           Beta2 (default: 0.999)"
     echo "  --k <value>               K for snoo-dana (default: 20)"
+    echo "  --init-scheme <type>      Initialization scheme: KarpathyGPT2, Standard (default: KarpathyGPT2)"
+    echo "  --depth-scalar-exponent <value>  Exponent for depth-based residual scaling: scalar = n_layer^exp (default: 0.0)"
     exit 1
 fi
 
@@ -110,6 +122,9 @@ N_HEAD=$(python3 -c "print(int($HEADS))")
 N_LAYER=$(python3 -c "print(int($HEADS**2 // 8))")
 N_EMBD=$(python3 -c "print(int($N_HEAD * $HEAD_DIM))")
 MLP_HIDDEN=$(python3 -c "print(int(4 * $N_EMBD))")
+
+# Calculate residual stream scalar based on depth and exponent
+RESIDUAL_STREAM_SCALAR=$(python3 -c "print($N_LAYER ** $DEPTH_SCALAR_EXPONENT)")
 
 # Calculate iterations based on total parameters
 # Total params = non_emb + 2 * n_embd * 50304
@@ -186,6 +201,9 @@ echo "Batch size: $BATCH_SIZE"
 echo "Accumulation steps: $ACC_STEPS"
 echo "Processes per node: $NPROC_PER_NODE"
 echo "Optimizer: $OPTIMIZER"
+echo "Init scheme: $INIT_SCHEME"
+echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
+echo "Residual stream scalar: $RESIDUAL_STREAM_SCALAR"
 echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
@@ -198,6 +216,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --batch_size $BATCH_SIZE --sequence_length 2048 --acc_steps $ACC_STEPS \
     --iterations $ITERATIONS \
     --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
+    --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
     --z_loss_coeff 0.0 \
     $OPT_PARAMS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
