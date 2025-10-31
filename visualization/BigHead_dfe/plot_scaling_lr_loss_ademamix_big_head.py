@@ -780,11 +780,11 @@ def main():
             ax.scatter(
                 compute_non_emb_pf_days,
                 best_losses,
-                s=20,
+                s=10,
                 alpha=0.9,
                 color=colors[idx],
                 marker='x',
-                linewidths=0.8,
+                linewidths=0.3,
                 label=f"{opt_label} data",
             )
 
@@ -795,7 +795,7 @@ def main():
                 b, c, r2 = res['b'], res['c'], res['r2']
                 x_fit = np.logspace(np.log10(min(x) * 0.8), np.log10(max(x) * 1.2), 100)
                 y_pred = power_law_no_offset(x_fit, b, c)
-                ax.plot(x_fit, y_pred, '-', linewidth=1.8, alpha=0.8, color=colors[idx],
+                ax.plot(x_fit, y_pred, '-', linewidth=0.8, alpha=0.8, color=colors[idx],
                         label=f"{opt_label}: {b:.2e}×$C^{{{c:.4f}}}$ (R²={r2:.3f})")
 
         ax.set_xscale('log')
