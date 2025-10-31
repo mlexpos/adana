@@ -10,6 +10,8 @@ NPROC_PER_NODE=1
 HEADS=""
 OPTIMIZER="dana-star-mk4"
 KAPPA=0.75
+BETA2=0.999
+K=20
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -40,6 +42,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --acc_steps)
             ACC_STEPS="$2"
+            shift 2
+            ;;
+        --beta2)
+            BETA2="$2"
+            shift 2
+            ;;
+        --k)
+            K="$2"
             shift 2
             ;;
         --nproc_per_node)
@@ -78,6 +88,8 @@ if [ -z "$HEADS" ]; then
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
     echo "  --nproc_per_node <value>  Processes per node (default: 1)"
     echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon (default: dana-star-mk4)"
+    echo "  --beta2 <value>           Beta2 (default: 0.999)"
+    echo "  --k <value>               K for snoo-dana (default: 20)"
     exit 1
 fi
 
@@ -120,28 +132,35 @@ case $OPTIMIZER in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt adamw --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999"
+        OPT_PARAMS="--opt adamw --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 $BETA2"
         ;;
     dana)
         # For dana: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa $KAPPA --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999"
+        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa $KAPPA --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta $BETA2"
         ;;
     ademamix)
         # For ademamix: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa $KAPPA --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
+        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 $BETA2 --delta 8 --kappa $KAPPA --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
     d-muon)
         # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt d-muon --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.8 --beta2 0.999 --momentum 0.95 --nesterov True --muon_ns_steps 5"
+        OPT_PARAMS="--opt d-muon --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.8 --beta2 $BETA2 --momentum 0.95 --nesterov True --muon_ns_steps 5"
+        ;;
+    snoo-dana)
+        # For snoo-dana: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        WD_TS="N/A"
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt snoo-dana --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 $BETA2 --delta 8 --kappa $KAPPA --k $K --lr_outer 1.O --gamma_3_factor 0.5"
         ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
