@@ -3,25 +3,32 @@
 # Enoki Manau-Hard Multi-GPU Sweep for Narval
 # Uses 4 GPUs per node for larger models
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 2.55e-05 + 1.83e+01 * P^{-0.553} where P = NON_EMB
+# Learning rate formula: lr = 7.59e-06 + 3.10e+01 * P^{-0.583} where P = NON_EMB
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA=4.0
-HEADS_ARRAY=( 16 18)
+HEADS_ARRAY=(20)
 LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
+
+
+BATCH_SIZE=8  # Need to be divisible by 4
+ACC_STEPS=4   # BATCH_SIZE * ACC_STEPS = 32
 
 # SLURM configuration for Narval (4 GPUs)
 GPUS_PER_NODE=4
 CPUS_PER_GPU=8
 TOTAL_CPUS=32  # 4 GPUs × 8 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=15
+TIME_HOURS=22
 
 echo "Starting Enoki Manau-Hard Multi-GPU sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
+echo "Batch size: $BATCH_SIZE"
+echo "Accumulation steps: $ACC_STEPS"
+echo "Effective batch size: $((BATCH_SIZE * ACC_STEPS))"
 echo "GPUs per node: $GPUS_PER_NODE"
 echo "CPUs per GPU: $CPUS_PER_GPU"
 echo "Total CPUs: $TOTAL_CPUS"
@@ -77,8 +84,8 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 2.55e-05 + 1.83e+01 * P^{-0.553}
-    BASE_LR=$(python3 -c "print(2.55e-05 + 1.83e+01 * ($NON_EMB ** -0.553))")
+    # Calculate base learning rate using formula: lr = 7.59e-06 + 3.10e+01 * P^{-0.583}
+    BASE_LR=$(python3 -c "print(7.59e-06 + 3.10e+01 * ($NON_EMB ** -0.583))")
 
     # Calculate n_layer for this head count
     N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
@@ -111,6 +118,8 @@ for HEADS in "${HEADS_ARRAY[@]}"; do
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
+               --batch_size $BATCH_SIZE \
+               --acc_steps $ACC_STEPS \
                --optimizer manau-hard \
                --nproc_per_node ${GPUS_PER_NODE}
 

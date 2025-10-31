@@ -125,6 +125,8 @@ parser.add_argument('--clipsnr-tolerance', type=float, default=0.1,
                     help='Tolerance for clipsnr matching (default: 0.1)')
 parser.add_argument('--wd-decaying', action='store_true',
                     help='For Manau optimizer: filter for runs with wd_decaying=True (default: False, meaning no filter)')
+parser.add_argument('--show-predictions', action='store_true',
+                    help='Show text boxes with LR predictions on plot (default: off)')
 args = parser.parse_args()
 
 # Map optimizer abbreviations
@@ -786,6 +788,38 @@ if __name__ == '__main__':
     ax.plot(params_range, lr_fit, '--', color='tab:orange', linewidth=3,
             label=f'Saturated: {a_fit:.2e} + {b_fit:.2e} × $P^{{{d_fit:.3f}}}$', zorder=10)
 
+    # Plot compute fit line if --fit-compute is specified
+    if args.fit_compute and a_fit_compute is not None:
+        # Create compute range corresponding to the params_range
+        # Use the relationship: compute = non_emb * total * 20
+        # We can derive compute from non_emb params for each point
+        compute_range = []
+        for p in params_range:
+            # Find the approximate size for this parameter count
+            # Use inverse relationship to estimate size from parameters
+            best_size = None
+            best_diff = float('inf')
+            for size_val in all_prediction_sizes:
+                size_params = compute_non_embedding_params(size_val, args.scaling_rule)
+                diff = abs(size_params - p)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_size = size_val
+
+            # Use the best matching size to compute the compute metric
+            if best_size is not None:
+                # Scale the compute metric proportionally to parameter difference
+                size_params = compute_non_embedding_params(best_size, args.scaling_rule)
+                size_compute = compute_compute(best_size, args.scaling_rule)
+                # Compute scales as non_emb * total * 20, approximately as p^2 for these architectures
+                ratio = p / size_params
+                compute_range.append(size_compute * (ratio ** 2))
+
+        compute_range = np.array(compute_range)
+        lr_fit_compute = saturated_power_law_function(compute_range, a_fit_compute, b_fit_compute, d_fit_compute)
+        ax.plot(params_range, lr_fit_compute, '-.', color='tab:green', linewidth=3,
+                label=f'Compute fit: {a_fit_compute:.2e} + {b_fit_compute:.2e} × $C^{{{d_fit_compute:.3f}}}$', zorder=10)
+
     # Get size name from results
     size_name = list(model_results.values())[0]['size_name'] if model_results else 'size'
 
@@ -797,16 +831,34 @@ if __name__ == '__main__':
         ax.scatter([non_emb_pred], [lr_pred], s=150, marker='D', c='tab:orange',
                   edgecolors='black', linewidths=1.5, zorder=11)
 
-        vertical_offset = 1.5 if i != 1 else 1.3
-        ax.text(non_emb_pred, lr_pred * vertical_offset, f'{size_name.capitalize()}={size_pred}\nLR={lr_pred:.2e}',
-               ha='left', va='bottom', fontsize=15,
-               bbox=dict(boxstyle='round,pad=0.3', facecolor='tab:orange', alpha=0.2))
+        # Only show text boxes if --show-predictions flag is set
+        if args.show_predictions:
+            vertical_offset = 1.5 if i != 1 else 1.3
+            ax.text(non_emb_pred, lr_pred * vertical_offset, f'{size_name.capitalize()}={size_pred}\nLR={lr_pred:.2e}',
+                   ha='left', va='bottom', fontsize=15,
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='tab:orange', alpha=0.2))
 
     # Formatting
     ax.set_xlabel('Non-embedding Parameters', fontsize=20)
     ax.set_ylabel('Learning Rate (LR)', fontsize=20)
     ax.set_xscale('log')
     ax.set_yscale('log')
+
+    # Add second x-axis showing 'size' variable
+    ax2 = ax.twiny()
+
+    # Get all sizes (both with data and extrapolated)
+    all_sizes_for_axis = sorted(set(list(sizes_with_data) + all_prediction_sizes))
+
+    # Compute non-embedding params for these sizes
+    size_to_params = {size: compute_non_embedding_params(size, args.scaling_rule) for size in all_sizes_for_axis}
+
+    # Set up the second axis with size labels at corresponding parameter positions
+    ax2.set_xscale('log')
+    ax2.set_xlim(ax.get_xlim())
+    ax2.set_xticks([size_to_params[size] for size in all_sizes_for_axis])
+    ax2.set_xticklabels([str(size) for size in all_sizes_for_axis])
+    ax2.set_xlabel(f'{size_name.capitalize()}', fontsize=20)
 
     optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau'}
     optimizer_title = optimizer_title_map[args.optimizer]

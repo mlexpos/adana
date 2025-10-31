@@ -1,49 +1,50 @@
 #!/bin/bash
 
-# BigHead Manau-Hard Multi-GPU Sweep for depths {8,9,10}
+# Enoki Manau-Hard Multi-GPU Sweep for Tamia
 # Uses 4 GPUs per node for larger models
-# For each depth, runs multiple learning rates: 0.5x, 0.75x, 1.0x, 1.25x, 1.5x the formula prediction
-# Learning rate formula: lr = 4.53e-05 + 1.13e+02 * P^{-0.674} where P = NON_EMB
+# For each head count, runs multiple learning rates: multipliers of the formula prediction
+# Learning rate formula: lr =  7.59e-06 + 3.10e+01 * P^{-0.583} where P = NON_EMB
+# Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 # Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 
 OMEGA=4.0
 CLIPSNR=2.0
-DEPTHS=( 10 )
-LR_MULTIPLIERS=( 1.5 0.5)
+HEADS_ARRAY=( 24 )
+LR_MULTIPLIERS=( 1.0 0.75 1.25 )
 
-# SLURM configuration
+# SLURM configuration for Tamia
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
-MEM=0          # 0GB = allocate as needed
-TIME_HOURS=23
+MEM=0          # 0 = allocate as needed
+TIME_HOURS=24
 
-echo "Starting BigHead Manau-Hard Multi-GPU sweep"
-echo "Depths: ${DEPTHS[@]}"
+echo "Starting Enoki Manau-Hard Multi-GPU sweep (Tamia)"
+echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega: $OMEGA"
 echo "ClipSNR: $CLIPSNR"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
 echo "GPUs per node: $GPUS_PER_NODE"
 echo "CPUs per GPU: $CPUS_PER_GPU"
 echo "Total CPUs: $TOTAL_CPUS"
-echo "Memory: ${MEM}GB"
+echo "Memory: ${MEM} (allocate as needed)"
 echo "Time allocation: ${TIME_HOURS}h"
 echo ""
 
-# Function to calculate model parameters for a given depth
+# Function to calculate model parameters for a given head count
 calculate_params() {
-    local DEPTH=$1
+    local HEADS=$1
 
-    # Model architecture parameters
-    local HEAD_DIM=$(python3 -c "print(int(16 * $DEPTH))")
-    local N_EMBD=$(python3 -c "print(int(16 * $DEPTH * $DEPTH))")
-    local MLP_HIDDEN=$(python3 -c "print(int(32 * $DEPTH * $DEPTH))")
-    local N_HEAD=$(python3 -c "print(int($DEPTH))")
-    local N_LAYER=$(python3 -c "print(int($DEPTH))")
+    # Enoki architecture parameters (DiLoco scaling)
+    local HEAD_DIM=64
+    local N_HEAD=$(python3 -c "print(int($HEADS))")
+    local N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
+    local N_EMBD=$(python3 -c "print(int($HEADS * 64))")
+    local MLP_HIDDEN=$(python3 -c "print(int(4 * $N_EMBD))")
 
-    # Calculate non-embedding parameters
-    # Non-emb = depth * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
-    local NON_EMB=$(python3 -c "print(int($DEPTH * (3 * $HEAD_DIM * $N_EMBD * $N_HEAD + $N_EMBD * $N_EMBD + 2 * $N_EMBD * $MLP_HIDDEN + 8 * $N_EMBD) + 2 * $N_EMBD))")
+    # Calculate non-embedding parameters (DiLoco formula)
+    # Non-emb = 12 * n_embd^2 * n_layer
+    local NON_EMB=$(python3 -c "print(int(12 * $N_EMBD * $N_EMBD * $N_LAYER))")
 
     # Calculate total parameters and iterations
     local TOTAL_PARAMS=$(python3 -c "print(int($NON_EMB + 2 * $N_EMBD * 50304))")
@@ -52,35 +53,40 @@ calculate_params() {
     echo "$NON_EMB $ITERATIONS"
 }
 
-# Calculate reference for depth=9
-read NON_EMB_9 ITERATIONS_9 <<< $(calculate_params 9)
-C_9=$(python3 -c "print($NON_EMB_9 * $ITERATIONS_9)")
+# Calculate reference for heads=16
+read NON_EMB_16 ITERATIONS_16 <<< $(calculate_params 16)
+C_16=$(python3 -c "print($NON_EMB_16 * $ITERATIONS_16)")
 
-echo "Reference (depth=9):"
-echo "  NON_EMB = $NON_EMB_9"
-echo "  ITERATIONS = $ITERATIONS_9"
-echo "  C(9) = $C_9"
+echo "Reference (heads=16):"
+echo "  NON_EMB = $NON_EMB_16"
+echo "  ITERATIONS = $ITERATIONS_16"
+echo "  C(16) = $C_16"
 echo ""
 
 # Counter for job tracking
 job_count=0
-total_jobs=$((${#DEPTHS[@]} * ${#LR_MULTIPLIERS[@]}))
+total_jobs=$((${#HEADS_ARRAY[@]} * ${#LR_MULTIPLIERS[@]}))
 echo "Total jobs to run: $total_jobs"
 echo ""
 
-# Loop over depths
-for DEPTH in "${DEPTHS[@]}"; do
-    echo "Processing depth=$DEPTH"
+# Loop over head counts
+for HEADS in "${HEADS_ARRAY[@]}"; do
+    echo "Processing heads=$HEADS"
 
-    # Calculate parameters for this depth
-    read NON_EMB ITERATIONS <<< $(calculate_params $DEPTH)
+    # Calculate parameters for this head count
+    read NON_EMB ITERATIONS <<< $(calculate_params $HEADS)
 
     # Calculate computational cost C = NON_EMB * ITERATIONS
     C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-    # Calculate base learning rate using formula: lr = 4.53e-05 + 1.13e+02 * P^{-0.674}
-    BASE_LR=$(python3 -c "print(4.53e-05 + 1.13e+02 * ($NON_EMB ** -0.674))")
+    # Calculate base learning rate using formula: lr = 7.59e-06 + 3.10e+01 * P^{-0.583} 
+    BASE_LR=$(python3 -c "print(7.59e-06 + 3.1e+01 * ($NON_EMB ** -0.583))")
 
+    # Calculate n_layer for this head count
+    N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
+
+    echo "  HEADS = $HEADS"
+    echo "  N_LAYER = $N_LAYER (= 3 * $HEADS / 4)"
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
     echo "  C = $C"
@@ -94,17 +100,17 @@ for DEPTH in "${DEPTHS[@]}"; do
         LR=$(python3 -c "print($MULT * $BASE_LR)")
 
         job_count=$((job_count + 1))
-        echo "  Job $job_count/$total_jobs: depth=$DEPTH, lr=$LR (${MULT}x base)"
+        echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
 
         # Submit the job with multi-GPU configuration
         sbatch --time=${TIME_HOURS}:00:00 \
                --nodes=1 \
-               --gpus-per-node=a100:${GPUS_PER_NODE} \
+               --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
-               --mem=${MEM}GB \
-               --job-name=BH_manauhard_4G_d${DEPTH}_lr${MULT} \
-               scripts/narval/BigHead_cypaq.sh \
-               --depth $DEPTH \
+               --mem=${MEM} \
+               --job-name=EN_manauhard_4G_h${HEADS}_lr${MULT} \
+               scripts/narval/Enoki_cypaq.sh \
+               --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
                --clipsnr $CLIPSNR \
@@ -128,9 +134,9 @@ echo "Sweep completed. Total jobs submitted: $job_count"
 echo ""
 echo "Resource allocation per job:"
 echo "  Nodes: 1"
-echo "  GPUs: ${GPUS_PER_NODE} × A100"
+echo "  GPUs: ${GPUS_PER_NODE} × H100"
 echo "  CPUs: ${TOTAL_CPUS} (${CPUS_PER_GPU} per GPU)"
-echo "  Memory: ${MEM}GB (allocate as needed)"
+echo "  Memory: ${MEM} (allocate as needed)"
 echo "  Time: ${TIME_HOURS} hours"
 echo ""
 echo "Manau-Hard Configuration:"
