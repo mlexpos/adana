@@ -12,7 +12,7 @@ export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=bece9f2099e3e85e0ae9922002616cf20bd26946
 export WANDB_PROJECT=danastar
 export WANDB_ENTITY=ep-rmt-ml-opt
-export WANDB_RUN_GROUP=kappa_scaling_search
+export WANDB_RUN_GROUP=gamma3factor_scaling_search
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
 
 module load arrow/21.0.0
@@ -26,23 +26,19 @@ echo "Activated virtual environment"
 DATASETS_DIR="$HOME/links/scratch/fineweb"
 
 
-
-
-
-
-iteration_factor=3.
+iteration_factor=10.0
 iterations=$(awk "BEGIN {print $iteration_factor * 13953}")
 warmup_steps=$(awk "BEGIN {print $iteration_factor * 279}")
 
-gamma_3_factor=1.0
-for lr in 2.5e-4 5e-4 1e-3 2e-3 4e-3
+kappa=0.0
+for lr in 1e-3 2e-3 2.5e-4 5e-4 4e-3
 do
-for w in 1.0 2.0 4.0
+for w in 4.0
 do
 weight_decay=$(awk "BEGIN {printf \"%.10f\", $w / $lr / $iterations}")
-for kappa in 0.0 0.5 0.75 1.0
+for gamma_3_factor in 0.1 0.2 0.4 0.8 1.6 3.2 6.4
 do
-gamma_3_factor=$(awk "BEGIN {print $gamma_3_factor * $iterations**(-0.25)}")
+gamma_3_factor=$(awk "BEGIN {print $gamma_3_factor * $iterations**(-0.75)}")
 uv run torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --n_embd 384 --qkv_dim 64 --n_head 6 --n_layer 4 \

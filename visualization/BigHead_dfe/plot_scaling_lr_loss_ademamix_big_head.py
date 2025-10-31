@@ -113,6 +113,9 @@ def load_runs_for_group(project, entity, group):
             compute_non_emb = iterations * non_emb_params * 6 * batch_size * seq_length
             compute_total = iterations * total_params * 6 * batch_size * seq_length
             
+            # Get kappa for ademamix optimizer
+            kappa = config.get('kappa')
+            
             data.append({
                 'depth': n_layer,  # Use n_layer as "depth" for plotting
                 'lr': lr,
@@ -128,6 +131,7 @@ def load_runs_for_group(project, entity, group):
                 'batch_size': batch_size,
                 'seq_length': seq_length,
                 'opt': normalize_opt_name(config.get('opt', '')),
+                'kappa': kappa,
             })
     
     return pd.DataFrame(data)
@@ -333,10 +337,14 @@ def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_l
         n_heads: Optional list of n_head values corresponding to each depth
     """
     fig, ax = plt.subplots(figsize=(12, 8))
+
+    # Convert compute from FLOPs to PF-days for plotting and fitting
+    FLOPS_PER_PFDAY = 8.64e19
+    compute_pf_days = [c / FLOPS_PER_PFDAY for c in compute_data]
     
     # Plot data points
     colors = plt.cm.tab10(np.linspace(0, 1, len(depths)))
-    for idx, (c, y, d) in enumerate(zip(compute_data, y_data, depths)):
+    for idx, (c, y, d) in enumerate(zip(compute_pf_days, y_data, depths)):
         # Create label with depth and n_head if available
         if n_heads is not None and idx < len(n_heads):
             label = f'Depth {d}, {n_heads[idx]} heads'
@@ -356,15 +364,15 @@ def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_l
                 # Size decreases linearly from 90 to 10 for ranks 2-10
                 size = max(10, 100 - (rank - 1) * 10)
                 alpha = max(0.3, 0.8 - (rank - 1) * 0.05)
-                ax.scatter(compute_val, y_val, s=size, alpha=alpha, color=colors[idx],
+                ax.scatter(compute_val / FLOPS_PER_PFDAY, y_val, s=size, alpha=alpha, color=colors[idx],
                           edgecolors='gray', linewidths=0.8, zorder=2)
     
     # Fit power laws
-    compute_array = np.array(compute_data, dtype=np.float64)
+    compute_array = np.array(compute_pf_days, dtype=np.float64)
     y_array = np.array(y_data, dtype=np.float64)
     
-    x_fit = np.logspace(np.log10(min(compute_data) * 0.8), 
-                       np.log10(max(compute_data) * 1.2), 100)
+    x_fit = np.logspace(np.log10(min(compute_pf_days) * 0.8), 
+                       np.log10(max(compute_pf_days) * 1.2), 100)
     
     # Fit 1: Without offset (log-space fit - most stable)
     print(f"\n  Fit 1: NO offset (b*C^c) - log-space linear regression")
@@ -401,7 +409,7 @@ def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_l
     # Formatting
     ax.set_xscale('log')
     ax.set_yscale('log')
-    ax.set_xlabel('Compute (FLOPs)', fontweight='bold', fontsize=13)
+    ax.set_xlabel('Compute (PF-days)', fontweight='bold', fontsize=13)
     ax.set_ylabel(ylabel, fontweight='bold', fontsize=14)
     ax.set_title(title, fontweight='bold', fontsize=16)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.8)
@@ -412,8 +420,12 @@ def plot_scaling_law(compute_data, y_data, depths, ylabel, title, filename, is_l
     fig.savefig(filename, bbox_inches='tight', dpi=300)
     print(f"\n✓ Saved: {filename}")
 
-def create_plots(df, depths, opt_name, title_suffix, group_name):
-    """Create all scaling law plots."""
+def create_plots(df, depths, opt_name, title_suffix, group_name, kappa=None):
+    """Create all scaling law plots.
+    
+    Args:
+        kappa: Optional kappa value to include in filename (for ademamix optimizer)
+    """
     
     # Extract data for each depth
     compute_non_emb = []
@@ -468,6 +480,9 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     output_dir = 'visualization/BigHead_dfe'
     os.makedirs(output_dir, exist_ok=True)
     
+    # Build filename suffix for kappa if applicable
+    kappa_suffix = f"_kappa{kappa}" if kappa is not None else ""
+    
     # Plot 1: Loss vs Compute (non-embedding)
     print("\n" + "="*70)
     print("LOSS vs COMPUTE (Non-embedding)")
@@ -475,8 +490,8 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     plot_scaling_law(
         compute_non_emb, best_losses, depths_with_data,
         ylabel='Best Validation Loss',
-        title=f'Best Validation Loss vs Compute (Non-embedding)\n{opt_name} | {group_name}',
-        filename=f'{output_dir}/{opt_name}_{group_name}_loss_vs_compute_nonemb.pdf',
+        title=f'Best Validation Loss vs Compute (Non-embedding)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
+        filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_loss_vs_compute_nonemb.pdf',
         is_loss=True,
         top_k_data=top_10_loss_non_emb,
         opt_name=opt_name,
@@ -491,8 +506,8 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     plot_scaling_law(
         compute_total, best_losses, depths_with_data,
         ylabel='Best Validation Loss',
-        title=f'Best Validation Loss vs Compute (Total)\n{opt_name} | {group_name}',
-        filename=f'{output_dir}/{opt_name}_{group_name}_loss_vs_compute_total.pdf',
+        title=f'Best Validation Loss vs Compute (Total)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
+        filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_loss_vs_compute_total.pdf',
         is_loss=True,
         top_k_data=top_10_loss_total,
         opt_name=opt_name,
@@ -507,8 +522,8 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     plot_scaling_law(
         compute_non_emb, best_lrs, depths_with_data,
         ylabel='Best Learning Rate',
-        title=f'Best Learning Rate vs Compute (Non-embedding)\n{opt_name} | {group_name}',
-        filename=f'{output_dir}/{opt_name}_{group_name}_best_lr_vs_compute_nonemb.pdf',
+        title=f'Best Learning Rate vs Compute (Non-embedding)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
+        filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_best_lr_vs_compute_nonemb.pdf',
         is_loss=False,
         top_k_data=top_10_lr_non_emb,
         opt_name=opt_name,
@@ -523,8 +538,8 @@ def create_plots(df, depths, opt_name, title_suffix, group_name):
     plot_scaling_law(
         compute_total, best_lrs, depths_with_data,
         ylabel='Best Learning Rate',
-        title=f'Best Learning Rate vs Compute (Total)\n{opt_name} | {group_name}',
-        filename=f'{output_dir}/{opt_name}_{group_name}_best_lr_vs_compute_total.pdf',
+        title=f'Best Learning Rate vs Compute (Total)\n{opt_name}{f" κ={kappa}" if kappa is not None else ""} | {group_name}',
+        filename=f'{output_dir}/{opt_name}{kappa_suffix}_{group_name}_best_lr_vs_compute_total.pdf',
         is_loss=False,
         top_k_data=top_10_lr_total,
         opt_name=opt_name,
@@ -630,16 +645,51 @@ def main():
             df_opt = df[df['opt'] == opt]
             if df_opt.empty:
                 continue
+            
+            # Special handling for ademamix: create separate plots for each kappa value
+            if opt == 'ademamix' and 'kappa' in df_opt.columns:
+                kappa_values = sorted([k for k in df_opt['kappa'].dropna().unique() if k is not None])
+                if len(kappa_values) > 0:
+                    print(f"\nCreating visualizations for {opt} (detected kappa values: {kappa_values})...")
+                    for kappa in kappa_values:
+                        df_kappa = df_opt[df_opt['kappa'] == kappa]
+                        if not df_kappa.empty:
+                            print(f"  Creating plots for {opt} with κ={kappa}...")
+                            create_plots(df_kappa, depths, opt, wandb_group, wandb_group, kappa=kappa)
+                    continue
+            
             print(f"\nCreating visualizations for {opt}...")
             create_plots(df_opt, depths, opt, wandb_group, wandb_group)
 
         # Create comparison plot (Loss vs Compute, non-embedding) with fits
         print("\nCreating comparison plot across all optimizers...")
         fig, ax = plt.subplots(figsize=(14, 9))
-        colors = plt.cm.tab10(np.linspace(0, 1, max(3, len(available_opts))))
-
-        for idx, opt in enumerate(available_opts):
+        
+        # Build list of optimizer/kappa combinations for comparison
+        opt_kappa_list = []
+        for opt in available_opts:
             df_opt = df[df['opt'] == opt]
+            if df_opt.empty:
+                continue
+            
+            # Special handling for ademamix: separate by kappa
+            if opt == 'ademamix' and 'kappa' in df_opt.columns:
+                kappa_values = sorted([k for k in df_opt['kappa'].dropna().unique() if k is not None])
+                if len(kappa_values) > 0:
+                    for kappa in kappa_values:
+                        opt_kappa_list.append((opt, kappa))
+                else:
+                    opt_kappa_list.append((opt, None))
+            else:
+                opt_kappa_list.append((opt, None))
+        
+        colors = plt.cm.tab10(np.linspace(0, 1, max(3, len(opt_kappa_list))))
+
+        for idx, (opt, kappa) in enumerate(opt_kappa_list):
+            df_opt = df[df['opt'] == opt]
+            if kappa is not None and 'kappa' in df_opt.columns:
+                df_opt = df_opt[df_opt['kappa'] == kappa]
+            
             if df_opt.empty:
                 continue
 
@@ -659,18 +709,27 @@ def main():
             if not compute_non_emb:
                 continue
 
+            # Convert compute to PF-days for plotting and fitting
+            FLOPS_PER_PFDAY = 8.64e19
+            compute_non_emb_pf_days = [c / FLOPS_PER_PFDAY for c in compute_non_emb]
+            
+            # Build label with kappa if applicable
+            opt_label = opt.upper()
+            if kappa is not None:
+                opt_label = f"{opt.upper()} κ={kappa}"
+
             ax.scatter(
-                compute_non_emb,
+                compute_non_emb_pf_days,
                 best_losses,
                 s=20,
                 alpha=0.9,
                 color=colors[idx],
                 marker='x',
                 linewidths=0.8,
-                label=f"{opt.upper()} data",
+                label=f"{opt_label} data",
             )
 
-            x = np.array(compute_non_emb, dtype=np.float64)
+            x = np.array(compute_non_emb_pf_days, dtype=np.float64)
             y = np.array(best_losses, dtype=np.float64)
             res = fit_power_law_logspace(x, y)
             if res:
@@ -678,11 +737,11 @@ def main():
                 x_fit = np.logspace(np.log10(min(x) * 0.8), np.log10(max(x) * 1.2), 100)
                 y_pred = power_law_no_offset(x_fit, b, c)
                 ax.plot(x_fit, y_pred, '-', linewidth=1.8, alpha=0.8, color=colors[idx],
-                        label=f"{opt.upper()}: {b:.2e}×$C^{{{c:.4f}}}$ (R²={r2:.3f})")
+                        label=f"{opt_label}: {b:.2e}×$C^{{{c:.4f}}}$ (R²={r2:.3f})")
 
         ax.set_xscale('log')
         ax.set_yscale('log')
-        ax.set_xlabel('Compute (FLOPs)', fontweight='bold', fontsize=14)
+        ax.set_xlabel('Compute (PF-days)', fontweight='bold', fontsize=14)
         ax.set_ylabel('Best Validation Loss', fontweight='bold', fontsize=14)
         ax.set_title(f'Optimizer Comparison: Best Loss vs Compute (Non-embedding)\n{wandb_group}',
                     fontweight='bold', fontsize=16)
@@ -706,7 +765,20 @@ def main():
         df = df[df['opt'] == requested_opt]
         after = len(df)
         print(f"Filtered by optimizer '{requested_opt}': {before} -> {after} runs")
-
+    
+    # Special handling for ademamix: create separate plots for each kappa value
+    if requested_opt == 'ademamix' and 'kappa' in df.columns:
+        kappa_values = sorted([k for k in df['kappa'].dropna().unique() if k is not None])
+        if len(kappa_values) > 0:
+            print(f"\nDetected kappa values for ademamix: {kappa_values}")
+            print(f"Creating separate plots for each kappa value...")
+            for kappa in kappa_values:
+                df_kappa = df[df['kappa'] == kappa]
+                if not df_kappa.empty:
+                    print(f"\nCreating visualizations for {requested_opt} with κ={kappa}...")
+                    create_plots(df_kappa, depths, requested_opt, wandb_group, wandb_group, kappa=kappa)
+            return
+    
     print("\nCreating visualizations...")
     create_plots(df, depths, opt_name, wandb_group, wandb_group)
     
