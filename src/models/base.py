@@ -247,8 +247,8 @@ class GPTBase(nn.Module):
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
-            if self.config.init_scheme == "Standard":
-                # Standard initialization: variance = 1/fan_in
+            if self.config.init_scheme == "Standard" or self.config.init_scheme == "ScaledGPT":
+                # Standard/ScaledGPT initialization: variance = 1/fan_in
                 fan_in = module.weight.size(1)
                 std = 1.0 / math.sqrt(fan_in)
                 torch.nn.init.normal_(module.weight, mean=0.0, std=std)
@@ -260,6 +260,11 @@ class GPTBase(nn.Module):
             if self.config.init_scheme == "Standard":
                 # Standard initialization: variance = 1
                 torch.nn.init.normal_(module.weight, mean=0.0, std=1.0)
+            elif self.config.init_scheme == "ScaledGPT":
+                # ScaledGPT initialization: variance = 1/embedding_dim
+                embedding_dim = module.weight.size(1)  # Second dimension
+                std = 1.0 / math.sqrt(embedding_dim)
+                torch.nn.init.normal_(module.weight, mean=0.0, std=std)
             else:  # KarpathyGPT2
                 torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
 

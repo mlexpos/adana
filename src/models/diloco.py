@@ -213,14 +213,22 @@ class DiLoCo(GPTBase):
 
         # Re-apply weight initialization since we replaced blocks
         self.apply(self._init_weights)
-        # Only apply depth scaling for KarpathyGPT2 scheme
+
+        # Apply depth scaling for specific init schemes
         for pn, p in self.named_parameters():
-            if pn.endswith("c_proj.weight") and config.init_scheme == "KarpathyGPT2":
-                torch.nn.init.normal_(
-                    p,
-                    mean=0.0,
-                    std=self.config.init_std / math.sqrt(2 * config.n_layer),
-                )
+            if pn.endswith("c_proj.weight"):
+                if config.init_scheme == "KarpathyGPT2":
+                    # KarpathyGPT2: std = init_std / sqrt(2 * n_layer)
+                    torch.nn.init.normal_(
+                        p,
+                        mean=0.0,
+                        std=self.config.init_std / math.sqrt(2 * config.n_layer),
+                    )
+                elif config.init_scheme == "ScaledGPT":
+                    # ScaledGPT: std = 1 / sqrt(2 * fan_in * n_layer)
+                    fan_in = p.size(1)
+                    std = 1.0 / math.sqrt(2 * fan_in * config.n_layer)
+                    torch.nn.init.normal_(p, mean=0.0, std=std)
 
     def compute_z_loss(self, logits):
         """
