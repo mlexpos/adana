@@ -123,7 +123,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
                    --job-name=EN_AW_STD_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/narval/Enoki_cypaq.sh \
+                   scripts/narval/Enoki_cypaq_std.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
