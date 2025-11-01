@@ -112,7 +112,7 @@ for HEADS in "${HEADS[@]}"; do
                --omega $OMEGA \
                --optimizer snoo-dana \
                --nproc_per_node ${GPUS_PER_NODE} \
-               --beta2 0.95 \
+               --beta2 0.999 \
                --k 20
 
         # Check if the job was successful
