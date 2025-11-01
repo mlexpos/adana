@@ -7,18 +7,18 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 14)
+HEADS_ARRAY=( 16 )
 LR_MULTIPLIERS=( 8.0 6.0 10.0 4.0 12.0)
 
-BATCH_SIZE=32
-ACC_STEPS=1
+BATCH_SIZE=8
+ACC_STEPS=4
 
 # SLURM configuration for Narval (1 GPU)
 GPUS_PER_NODE=1
 CPUS_PER_GPU=8
 TOTAL_CPUS=8
 MEM=80GB          # 0 = allocate as needed
-TIME_HOURS=8
+TIME_HOURS=16
 
 # Standard initialization parameters
 INIT_SCHEME="Standard"
