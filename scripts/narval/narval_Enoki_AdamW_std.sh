@@ -6,7 +6,7 @@
 # Learning rate formula: lr = 2.07e-06 + 1.35e+03 * P^{-0.779} where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
-OMEGA_ARRAY=( 4.0 )
+OMEGA_ARRAY=( 4.0)
 HEADS_ARRAY=( 8 )
 LR_MULTIPLIERS=( 4.0 6.0 8.0 10.0 12.0 20.0)
 
