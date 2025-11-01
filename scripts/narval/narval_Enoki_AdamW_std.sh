@@ -6,9 +6,9 @@
 # Learning rate formula: lr = 2.07e-06 + 1.35e+03 * P^{-0.779} where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
-OMEGA_ARRAY=( 2.0 1.0 0.5 0.25 0.125 0.0625 )
-HEADS_ARRAY=( 8 )
-LR_MULTIPLIERS=( 1.0 1.5 2.0 2.5 0.5 0.25 0.125 3.0 )
+OMEGA_ARRAY=( 4.0 )
+HEADS_ARRAY=( 14)
+LR_MULTIPLIERS=( 8.0 6.0 10.0 4.0 12.0)
 
 BATCH_SIZE=32
 ACC_STEPS=1
@@ -18,11 +18,11 @@ GPUS_PER_NODE=1
 CPUS_PER_GPU=8
 TOTAL_CPUS=8
 MEM=80GB          # 0 = allocate as needed
-TIME_HOURS=2
+TIME_HOURS=8
 
 # Standard initialization parameters
 INIT_SCHEME="Standard"
-DEPTH_SCALAR_EXPONENT=0.0
+DEPTH_SCALAR_EXPONENT=-0.5
 
 echo "Starting Enoki AdamW Standard Initialization sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
