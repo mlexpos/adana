@@ -22,7 +22,7 @@ TIME_HOURS=2
 
 # Standard initialization parameters
 INIT_SCHEME="Standard"
-DEPTH_SCALAR_EXPONENT=0.0
+DEPTH_SCALAR_EXPONENT=-0.5
 
 echo "Starting Enoki AdamW Standard Initialization sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
