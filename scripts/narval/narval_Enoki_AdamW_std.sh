@@ -7,7 +7,7 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 2.0)
-HEADS_ARRAY=( 10 )
+HEADS_ARRAY=( 12 )
 LR_MULTIPLIERS=( 8.0 6.0 10.0 4.0 12.0)
 
 BATCH_SIZE=32
@@ -18,7 +18,7 @@ GPUS_PER_NODE=1
 CPUS_PER_GPU=8
 TOTAL_CPUS=8
 MEM=80GB          # 0 = allocate as needed
-TIME_HOURS=5
+TIME_HOURS=6
 
 # Standard initialization parameters
 INIT_SCHEME="Standard"
