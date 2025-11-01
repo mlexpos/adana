@@ -252,8 +252,8 @@ def parse_args(base_parser, args, namespace):
     )  # 'none', 'gpt-2' or a path to the pretraind model
     parser.add_argument("--from_dense", action="store_true")
     parser.add_argument("--init_std", default=0.02, type=float)
-    parser.add_argument("--init-scheme", default="KarpathyGPT2", type=str, choices=["KarpathyGPT2", "Standard"],
-                        help="Weight initialization scheme: KarpathyGPT2 (default, uses init_std with depth scaling) or Standard (fan-in variance scaling)")
+    parser.add_argument("--init-scheme", default="KarpathyGPT2", type=str, choices=["KarpathyGPT2", "Standard", "ScaledGPT"],
+                        help="Weight initialization scheme: KarpathyGPT2 (default, uses init_std with depth scaling), Standard (fan-in variance scaling), or ScaledGPT (fan-in for Linear, 1/sqrt(emb_dim) for Embedding, depth scaling for c_proj)")
     parser.add_argument("--residual-stream-scalar", default=1.0, type=float,
                         help="Scalar multiplier for residual connections (default: 1.0)")
     parser.add_argument("--dropout", default=0.0, type=float)
