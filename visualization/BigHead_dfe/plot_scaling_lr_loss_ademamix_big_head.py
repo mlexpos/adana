@@ -98,7 +98,9 @@ def load_runs_for_group(project, entity, group):
         lr = config.get('lr')
         val_loss = summary.get('final-val/loss')
         iterations = config.get('iterations')
-        kappa = config.get('kappa')  # Extract kappa value
+        kappa = config.get('kappa')  # Extract kappa value (for ademamix and snoo-dana)
+        k = config.get('k')  # Extract k value (for snoo-dana)
+        delta = config.get('delta')  # Extract delta value (for snoo-dana)
         
         batch_size = 32
         seq_length = 2048
@@ -106,7 +108,7 @@ def load_runs_for_group(project, entity, group):
         # Check if we have all required parameters
         required_params = [n_layer, n_head, n_embd, head_dim, mlp_hidden, lr, val_loss, iterations]
         if all(x is not None for x in required_params):
-            # Note: kappa can be None for non-ademamix optimizers
+            # Note: kappa can be None for non-ademamix/snoo-dana optimizers
             # Compute parameters
             non_emb_params = compute_non_embedding_params(n_layer, n_head, n_embd, head_dim, mlp_hidden)
             total_params = compute_total_params(n_layer, n_head, n_embd, head_dim, mlp_hidden, vocab_size)
@@ -114,9 +116,6 @@ def load_runs_for_group(project, entity, group):
             # Compute FLOPs
             compute_non_emb = iterations * non_emb_params * 6 * batch_size * seq_length
             compute_total = iterations * total_params * 6 * batch_size * seq_length
-            
-            # Get kappa for ademamix optimizer
-            kappa = config.get('kappa')
             
             data.append({
                 'depth': n_layer,  # Use n_layer as "depth" for plotting
@@ -133,7 +132,9 @@ def load_runs_for_group(project, entity, group):
                 'batch_size': batch_size,
                 'seq_length': seq_length,
                 'opt': normalize_opt_name(config.get('opt', '')),
-                'kappa': kappa,  # Store kappa value
+                'kappa': kappa,  # Store kappa value (for ademamix and snoo-dana)
+                'k': k,  # Store k value (for snoo-dana)
+                'delta': delta,  # Store delta value (for snoo-dana)
             })
     
     return pd.DataFrame(data)
@@ -676,7 +677,7 @@ def main():
                         df_kappa = df_opt[df_opt['kappa'] == kappa]
                         if not df_kappa.empty:
                             print(f"  Creating plots for {opt} with κ={kappa}...")
-                            create_plots(df_kappa, depths, opt, wandb_group, wandb_group, kappa=kappa)
+                            create_plots(df_kappa, depths, opt, wandb_group, wandb_group, kappa_value=kappa)
                     continue
             
             print(f"\nCreating visualizations for {opt}...")
