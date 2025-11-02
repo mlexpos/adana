@@ -63,9 +63,9 @@ for HEADS in "${HEADS[@]}"; do
     echo "Processing heads=$HEADS"
 
     # Set time allocation based on heads
-    if [ $HEADS -le 7 ]; then
+    if [ $HEADS -le 6 ]; then
         TIME_SPEC="00:30:00"
-    elif [ $HEADS -le 10 ]; then
+    elif [ $HEADS -le 9 ]; then
         TIME_SPEC="03:00:00"
     elif [ $HEADS -le 11 ]; then
         TIME_SPEC="12:00:00"

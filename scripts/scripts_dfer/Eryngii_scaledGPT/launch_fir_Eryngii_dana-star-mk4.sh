@@ -1,22 +1,22 @@
 #!/bin/bash
 
-# Eryngii AdamW Multi-GPU Sweep for Tamia (heads 4 to 8)
+# Eryngii DANA-STAR-MK4 Multi-GPU Sweep for Fir (heads 4 to 10)
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr = 1.53e+04×C -0.435
+# Base learning rate: lr = 3.21e-05×C^ -0.435
 
 OMEGA=4.0
-HEADS=(10 11 12)
-LR_MULTIPLIERS=(0.5 0.75 1.0 1.25 1.5)
+HEADS=(4 5 6 7 8 9 10)
+LR_MULTIPLIERS=(0.1 0.3 0.5 0.75 1.0 1.25 1.5 3.0 10.0)
 
-# SLURM configuration for Tamia
+# SLURM configuration for Fir
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
 
-echo "Starting Eryngii DANA-STAR-MK4 Multi-GPU sweep (Tamia)"
+echo "Starting Eryngii DANA-STAR-MK4 Multi-GPU sweep (Fir)"
 echo "Heads: ${HEADS[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -79,14 +79,14 @@ for HEADS in "${HEADS[@]}"; do
     read NON_EMB ITERATIONS <<< $(calculate_params $HEADS)
 
     # Calculate computational cost C = NON_EMB * ITERATIONS
-    C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32)")
+    C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32 /(8.64e19))")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(1.53e+04 * $C**(-0.435))")
+    BASE_LR=$(python3 -c "print(3.21e-05 * $C**(-0.435))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
-    echo "  C = $(python3 -c "print($C / 1e18)")e18"
+    echo "  C = $(python3 -c "print($C)") PetaFLOPS Day"
     echo "  Time allocation: ${TIME_SPEC}"
     echo "  Base LR: $BASE_LR"
     echo ""
@@ -105,8 +105,8 @@ for HEADS in "${HEADS[@]}"; do
                --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=Eryngii_dana-star-mk4_h${HEADS}_lr${MULT} \
-               scripts/scripts_dfer/fir_Eryngii_dfer.sh \
+               --job-name=Eryngii_scaledGPT_dana-star-mk4_h${HEADS}_lr${MULT} \
+               scripts/scripts_dfer/Eryngii_scaledGPT/fir_Eryngii_dfer.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
