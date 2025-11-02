@@ -7,18 +7,18 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 6 8 10 12 14 )
-LR_MULTIPLIERS=( 1.0 1.25 0.75 1.5 0.25 )
+HEADS_ARRAY=( 20)
+LR_MULTIPLIERS=( 1.0 1.25 0.75 1.5 0.5 )
 
 BATCH_SIZE=32
 ACC_STEPS=1
 
 # SLURM configuration for Narval (1 GPU)
-GPUS_PER_NODE=1
+GPUS_PER_NODE=4
 CPUS_PER_GPU=8
-TOTAL_CPUS=8
-MEM=80GB          # 0 = allocate as needed
-TIME_HOURS=12
+TOTAL_CPUS=32
+MEM=0  #80GB          # 0 = allocate as needed
+TIME_HOURS=24
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"

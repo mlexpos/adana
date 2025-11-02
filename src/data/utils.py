@@ -399,6 +399,52 @@ class MultiFileDataReader:
             return self.current_reader.num_batches_for_switching()
         return 0
 
+    def state_dict(self):
+        """Get the current state of the MultiFileDataReader for checkpointing"""
+        state = {
+            "current_file_idx": self.current_file_idx,
+            "step": self.step,
+        }
+        # Also save the underlying DataReader state if it has state_dict
+        if self.current_reader is not None and hasattr(self.current_reader, 'state_dict'):
+            state["current_reader_state"] = self.current_reader.state_dict()
+        return state
+
+    def load_state_dict(self, state_dict):
+        """Restore the state of the MultiFileDataReader from a checkpoint"""
+        current_file_idx = state_dict.get("current_file_idx", 0)
+        step = state_dict.get("step", 0)
+        
+        # Check if we need to switch to a different file
+        if current_file_idx != self.current_file_idx:
+            print(f"Restoring MultiFileDataReader: switching from file {self.current_file_idx} to file {current_file_idx}")
+            # Switch to the correct file
+            self.current_file_idx = current_file_idx
+            # Load the correct file
+            self._load_current_file()
+            # Start loading next file if there are multiple files
+            if len(self.file_paths) > 1:
+                self._start_loading_next_file()
+        else:
+            # Same file, just need to reload it to ensure it's in memory
+            print(f"Restoring MultiFileDataReader: staying on file {current_file_idx}, reloading data")
+            self._load_current_file()
+            if len(self.file_paths) > 1:
+                self._start_loading_next_file()
+        
+        # Restore the step counter
+        self.step = step
+        
+        # Restore the underlying DataReader state if available
+        if self.current_reader is not None:
+            if "current_reader_state" in state_dict and hasattr(self.current_reader, 'load_state_dict'):
+                self.current_reader.load_state_dict(state_dict["current_reader_state"])
+            else:
+                # Fallback: just set the step
+                self.current_reader.set_step(step)
+        
+        print(f"MultiFileDataReader restored: file_idx={self.current_file_idx}, step={self.step}")
+
     def __del__(self):
         """Cleanup async loader on deletion"""
         if hasattr(self, 'async_loader'):
@@ -622,3 +668,48 @@ class DataReader:
         for both with_replacement and without_replacement modes.
         """
         return self.num_batches_of_seqlen
+
+    def state_dict(self):
+        """Get the current state of the DataReader for checkpointing"""
+        state = {
+            "step": self.step,
+        }
+        # Save epoch-related state for without_replacement mode
+        if not self.with_replacement:
+            state["last_epoch"] = self.last_epoch if self.last_epoch is not None else 0
+            state["order"] = self.order.copy() if self.order is not None else None
+            state["epoch_offset"] = self.epoch_offset if self.epoch_offset is not None else 0
+            state["total_possible_local_batches"] = getattr(self, 'total_possible_local_batches', 0)
+            state["num_batches_of_seqlen"] = self.num_batches_of_seqlen
+        return state
+
+    def load_state_dict(self, state_dict):
+        """Restore the state of the DataReader from a checkpoint"""
+        self.step = state_dict.get("step", 0)
+        
+        # Restore epoch-related state for without_replacement mode
+        if not self.with_replacement:
+            last_epoch = state_dict.get("last_epoch", 0)
+            order = state_dict.get("order", None)
+            epoch_offset = state_dict.get("epoch_offset", 0)
+            total_possible_local_batches = state_dict.get("total_possible_local_batches", 0)
+            num_batches_of_seqlen = state_dict.get("num_batches_of_seqlen", 0)
+            
+            if order is not None:
+                self.last_epoch = last_epoch
+                self.order = order
+                self.epoch_offset = epoch_offset
+                self.total_possible_local_batches = total_possible_local_batches
+                self.num_batches_of_seqlen = num_batches_of_seqlen
+            else:
+                # If order is not available, reinitialize epoch state from step
+                # This may not perfectly restore state but is better than nothing
+                print(f"Warning: DataReader state_dict missing order, reinitializing epoch state from step={self.step}")
+                # Calculate current epoch from step
+                if hasattr(self, 'total_possible_local_batches') and self.total_possible_local_batches > 0:
+                    batch_idx = self.world_size * self.step + self.rank
+                    epoch = batch_idx // self.total_possible_local_batches
+                    self._shuffle_epoch(epoch)
+                else:
+                    # Fallback: initialize first epoch
+                    self._shuffle_epoch(0)

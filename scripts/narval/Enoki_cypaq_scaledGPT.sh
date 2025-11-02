@@ -16,10 +16,8 @@ export WANDB_ENTITY=ep-rmt-ml-opt
 
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
 
-module load StdEnv/2023
-module load gcc/12.3
-module load arrow/15.0.1
-module load python/3.12
+module load arrow/21.0.0
+module load python/3.13
 
 echo "Loaded modules"
 
