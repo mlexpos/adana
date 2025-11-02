@@ -18,7 +18,7 @@ ACC_STEPS=1 #1 #8
 GPUS_PER_NODE=1 #4 #1
 CPUS_PER_GPU=8
 TOTAL_CPUS=8 #32 #8
-MEM=0  #80GB          # 0 = for 4 GPUs
+MEM=80GB  #80GB          # 0 = for 4 GPUs
 TIME_HOURS=14
 
 # ScaledGPT initialization parameters
