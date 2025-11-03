@@ -203,20 +203,56 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device):
     return itr
 
 
-def save_worker_state(ckpt_dir: Path):
+def save_worker_state(ckpt_dir: Path, train_reader=None):
     # Dataloader, rng states
     worker_state = {
         "rng_torch_cpu": torch.random.get_rng_state(),
-        "rng_torch_gpu": torch.cuda.get_rng_state(),
         "rng_np": np.random.get_state(),
         "rng_python": random.getstate(),
     }
+    # Get GPU RNG state only if CUDA is available
+    try:
+        worker_state["rng_torch_gpu"] = torch.cuda.get_rng_state()
+    except (AttributeError, RuntimeError):
+        worker_state["rng_torch_gpu"] = None
     rank = 0 if not dist.is_initialized() else dist.get_rank()
+    
+    # Save dataloader state if available
+    if train_reader is not None and hasattr(train_reader, 'state_dict'):
+        dataloader_state = train_reader.state_dict()
+        worker_state["dataloader_state"] = dataloader_state
+        
+        # Print checkpoint info for each rank
+        seed = getattr(train_reader, 'seed', None)
+        step = dataloader_state.get('step', None)
+        if hasattr(train_reader, 'current_file_idx'):
+            # MultiFileDataReader case
+            file_idx = dataloader_state.get('current_file_idx', None)
+            # Compute actual seed used for current file: seed + file_idx * 1000
+            file_seed = seed + file_idx * 1000 if (seed is not None and file_idx is not None) else None
+            if file_idx is not None and hasattr(train_reader, 'file_paths') and file_idx < len(train_reader.file_paths):
+                file_name = train_reader.file_paths[file_idx].name
+                print(f"[Rank {rank}] Checkpoint: data_seed={seed}, file_idx={file_idx} ({file_name}), file_seed={file_seed}, step={step}")
+            else:
+                print(f"[Rank {rank}] Checkpoint: data_seed={seed}, file_idx={file_idx}, file_seed={file_seed}, step={step}")
+            
+            # Preview next data points (from underlying reader)
+            if hasattr(train_reader, 'current_reader') and train_reader.current_reader is not None:
+                if hasattr(train_reader.current_reader, '_preview_next_samples'):
+                    train_reader.current_reader._preview_next_samples(num_preview=3)
+        else:
+            # Regular DataReader
+            print(f"[Rank {rank}] Checkpoint: data_seed={seed}, step={step}")
+            
+            # Preview next data points
+            if hasattr(train_reader, '_preview_next_samples'):
+                train_reader._preview_next_samples(num_preview=3)
+    
     ckpt_dir.mkdir(exist_ok=True, parents=True)
     torch.save(worker_state, ckpt_dir / f"worker_{rank}.pt")
 
 
-def load_worker_state(ckpt_dir: Path):
+def load_worker_state(ckpt_dir: Path, train_reader=None):
     rank = 0 if not dist.is_initialized() else dist.get_rank()
     # PyTorch 2.6 defaults to weights_only=True; worker state includes numpy/python RNG states
     # Try safe default first, then fall back to weights_only=False if needed
@@ -225,9 +261,38 @@ def load_worker_state(ckpt_dir: Path):
     except Exception:
         worker_state = torch.load(ckpt_dir / f"worker_{rank}.pt", weights_only=False)
     torch.random.set_rng_state(worker_state["rng_torch_cpu"])
-    torch.cuda.set_rng_state(worker_state["rng_torch_gpu"])
+    if worker_state.get("rng_torch_gpu", None) is not None:
+        try:
+            torch.cuda.set_rng_state(worker_state["rng_torch_gpu"])
+        except (AttributeError, RuntimeError):
+            pass  # CUDA not available, skip GPU RNG restoration
     np.random.set_state(worker_state["rng_np"])
     random.setstate(worker_state["rng_python"])
+    
+    # Restore dataloader state if available
+    if train_reader is not None and hasattr(train_reader, 'load_state_dict'):
+        if "dataloader_state" in worker_state:
+            dataloader_state = worker_state["dataloader_state"]
+            train_reader.load_state_dict(dataloader_state)
+            
+            # Print restored state info for each rank
+            seed = getattr(train_reader, 'seed', None)
+            step = dataloader_state.get('step', None)
+            if hasattr(train_reader, 'current_file_idx'):
+                # MultiFileDataReader case
+                file_idx = dataloader_state.get('current_file_idx', None)
+                # Compute actual seed used for current file: seed + file_idx * 1000
+                file_seed = seed + file_idx * 1000 if (seed is not None and file_idx is not None) else None
+                if file_idx is not None and hasattr(train_reader, 'file_paths') and file_idx < len(train_reader.file_paths):
+                    file_name = train_reader.file_paths[file_idx].name
+                    print(f"[Rank {rank}] Restored: data_seed={seed}, file_idx={file_idx} ({file_name}), file_seed={file_seed}, step={step}")
+                else:
+                    print(f"[Rank {rank}] Restored: data_seed={seed}, file_idx={file_idx}, file_seed={file_seed}, step={step}")
+            else:
+                # Regular DataReader
+                print(f"[Rank {rank}] Restored: data_seed={seed}, step={step}")
+        else:
+            print(f"[Rank {rank}] Warning: No dataloader state in checkpoint")
 
 
 def get_parameter_norms(model, order=2):

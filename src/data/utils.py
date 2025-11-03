@@ -611,12 +611,35 @@ class DataReader:
             self.total_possible_local_batches = len(self.order) // self.local_batch_size
             # Each worker gets every world_size-th batch, so divide by world_size
             self.num_batches_of_seqlen = self.total_possible_local_batches // self.world_size
-            #print(f"Shuffling. Rank {self.rank}. length of order: {len(self.order)}, total_possible_local_batches: {self.total_possible_local_batches}, num_batches_of_seqlen: {self.num_batches_of_seqlen}, sequence_length: {self.sequence_length}")
         else:
             # Single worker case: process all possible batches
-            #print(f"single worker case, world_size: {self.world_size}, local_batch_size: {self.local_batch_size}, sequence_length: {self.sequence_length}")
             self.total_possible_local_batches = len(self.order) // self.local_batch_size
             self.num_batches_of_seqlen = self.total_possible_local_batches
+        
+
+    def _preview_next_samples(self, num_preview=3):
+        """Preview the next few data points that will be sampled (without incrementing step or changing state)"""
+        if self.with_replacement:
+            # For with_replacement, show next few indices that would be sampled
+            preview_indices = []
+            for i in range(num_preview):
+                idxs = self._sample_with_replacement(self.step + i)
+                preview_indices.append(idxs[:min(5, len(idxs))].tolist())  # Show first 5 indices per batch
+            print(f"[Rank {self.rank}] Next {num_preview} batch(es) preview (with_replacement): {preview_indices}")
+        else:
+            # For without_replacement, show next few batch indices from order
+            # Calculate indices directly without calling _sample_without_replacement to avoid triggering shuffling
+            preview_indices = []
+            for i in range(num_preview):
+                step_to_use = self.step + i
+                batch_idx = self.world_size * step_to_use + self.rank
+                epoch_length = self.total_possible_local_batches
+                epoch_idx = batch_idx % epoch_length
+                start = epoch_idx * self.local_batch_size
+                end = start + self.local_batch_size
+                idxs = self.order[start:end] * self.sequence_length + self.epoch_offset
+                preview_indices.append(idxs[:min(5, len(idxs))].tolist())  # Show first 5 indices per batch
+            print(f"[Rank {self.rank}] Next {num_preview} batch(es) preview (without_replacement): {preview_indices}")
 
     def _sample_without_replacement(self, step):
         # Return an array of token indices of length self.local_batch_size
@@ -635,7 +658,7 @@ class DataReader:
         epoch_length = self.total_possible_local_batches
         epoch = batch_idx // epoch_length
         if epoch != self.last_epoch:
-            #print(f"Shuffling. Rank {self.rank}.")
+            print(f"Shuffling. Rank {self.rank}. File: {self.data_path}. Epoch: {epoch}.")
             self._shuffle_epoch(epoch)
         epoch_idx = batch_idx % epoch_length
 
