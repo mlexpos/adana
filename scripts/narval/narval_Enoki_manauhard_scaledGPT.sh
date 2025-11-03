@@ -8,7 +8,7 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 20 )
+HEADS_ARRAY=( 22 )
 LR_MULTIPLIERS=( 1.0 1.25 0.75 1.5 0.5)
 
 BATCH_SIZE=4 #32 #4
