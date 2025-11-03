@@ -6,7 +6,9 @@ This script compares the scaling performance between different model architectur
 1. BigHead: depth-based scaling (n_layer = depth)
 2. EggHead: quadratic depth scaling (n_layer = heads * (heads-1) / 2)
 3. Enoki: DiLoco scaling (n_layer = 3 * heads / 4)
-4. Eryngii: increased head dimension and depth scaling (n_layer = heads^2 / 8)
+4. Enoki_Scaled: DiLoco scaling with ScaledGPT initialization
+5. Eryngii: increased head dimension and depth scaling (n_layer = heads^2 / 8)
+6. Eryngii_Scaled: increased head dimension and depth scaling with ScaledGPT initialization
 
 For each architecture and model size, it takes the best final-val/loss achieved,
 plots loss vs compute (or non-emb params), and fits saturated power laws: loss = a + b * X^c
@@ -64,11 +66,23 @@ SCALING_RULE_CONFIG = {
         'marker': 'D',
         'linestyle': '-.',
     },
+    'Enoki_Scaled': {
+        'group': 'Enoki_ScaledGPT',
+        'color': 'tab:cyan',
+        'marker': 'D',
+        'linestyle': '-',
+    },
     'Eryngii': {
         'group': 'eryngii_sweeps',
         'color': 'tab:purple',
         'marker': '^',
         'linestyle': ':',
+    },
+    'Eryngii_Scaled': {
+        'group': 'Eryngii_ScaledGPT',
+        'color': 'tab:pink',
+        'marker': '^',
+        'linestyle': '-',
     }
 }
 
@@ -85,7 +99,7 @@ rcParams['figure.figsize'] = (14, 8)
 
 parser = argparse.ArgumentParser(description='Compare scaling rules performance')
 parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
-                    choices=['BigHead', 'EggHead', 'Enoki', 'Eryngii'],
+                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
                     choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard'],
@@ -124,7 +138,7 @@ def compute_params(size, scaling_rule):
 
     Args:
         size: For BigHead, this is depth. For EggHead/Enoki/Eryngii, this is heads.
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Eryngii'
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'
 
     Returns:
         dict with non_emb, total_params, compute (PFH), etc.
@@ -163,8 +177,8 @@ def compute_params(size, scaling_rule):
         vocab_size = 50304
         total_params = float(non_emb + 2 * n_embd * vocab_size)
 
-    elif scaling_rule == 'Enoki':
-        # Enoki: DiLoco scaling
+    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_Scaled':
+        # Enoki and Enoki_Scaled: DiLoco scaling
         heads = size
         head_dim = 64  # Fixed
         n_embd = heads * 64
@@ -179,8 +193,8 @@ def compute_params(size, scaling_rule):
         vocab_size = 50304
         total_params = float(non_emb + 2 * n_embd * vocab_size)
 
-    elif scaling_rule == 'Eryngii':
-        # Eryngii: increased head dimension and depth scaling
+    elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
+        # Eryngii and Eryngii_Scaled: increased head dimension and depth scaling
         heads = size
         head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
         n_head = heads
@@ -299,7 +313,7 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
         # Get size parameter based on scaling rule
         if scaling_rule == 'BigHead':
             size = run_config.get('n_layer')  # depth
-        else:  # EggHead, Enoki, or Eryngii
+        else:  # EggHead, Enoki, Enoki_Scaled, Eryngii, or Eryngii_Scaled
             size = run_config.get('n_head')  # heads
 
         val_loss = summary.get('final-val/loss')

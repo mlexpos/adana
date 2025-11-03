@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Learning Rate Scaling Law Analysis - Saturated Power Law Fitting
+Learning Rate Scaling Law Analysis - Alternative Power Law Fitting
 
-This script estimates a saturated power law fit for the optimal learning rate across different
+This script estimates an alternative power law fit for the optimal learning rate across different
 model scaling rules using a direct weighted fitting approach. For a fixed omega value, it finds
 the K best LRs for each model size, weights them (smallest gets weight K, second gets K-1, etc.),
-and fits: LR = a + b * (parameter_metric)^d using weighted MSE loss with Adagrad optimization.
+and fits: LR = a * (b + parameter_metric)^d using weighted MSE loss with Adagrad optimization.
 Constraints: a, b > 0 (enforced via exponential parameterization).
 
 Supported Scaling Rules:
@@ -74,9 +74,24 @@ SCALING_RULE_CONFIG = {
         'extrapolation_sizes': [8, 12, 16, 20, 24, 28, 32, 36, 40],  # Only multiples of 4
         'size_step': 4,  # Only show multiples of 4
     },
+    'Enoki_std': {
+        'group': 'Enoki_Sweep_std',
+        'extrapolation_sizes': [8, 12, 16, 20, 24, 28, 32, 36, 40],  # Only multiples of 4
+        'size_step': 4,  # Only show multiples of 4
+    },
+    'Enoki_Scaled': {
+        'group': 'Enoki_ScaledGPT',
+        'extrapolation_sizes': [8, 12, 16, 20, 24, 28, 32, 36, 40],  # Only multiples of 4
+        'size_step': 4,  # Only show multiples of 4
+    },
     'Eryngii': {
         'group': 'eryngii_sweeps',
-        'extrapolation_sizes': [8, 9, 10, 11, 12, 13, 14, 15],  
+        'extrapolation_sizes': [8, 9, 10, 11, 12, 13, 14, 15],
+        'size_step': 1,  # Show all consecutive integers
+    },
+    'Eryngii_Scaled': {
+        'group': 'Eryngii_ScaledGPT',
+        'extrapolation_sizes': [8, 9, 10, 11, 12, 13, 14, 15],
         'size_step': 1,  # Show all consecutive integers
     }
 }
@@ -93,12 +108,14 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 # =============================================================================
 
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
-parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Eryngii'],
-                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), or Eryngii (increased head dim and depth)')
+parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Eryngii_Scaled'],
+                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Eryngii (increased head dim and depth), or Eryngii_Scaled (ScaledGPT init)')
 parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau'],
                     help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, or manau')
 parser.add_argument('--target-omega', type=float, default=4.0,
                     help='Target omega value to find optimal LR (default: 4.0)')
+parser.add_argument('--target-residual-exponent', type=float, default=None,
+                    help='Target residual exponent for Enoki_std: filters runs where residual_stream_scalar ≈ n_layer^exponent (default: None, no filtering)')
 parser.add_argument('--top-k', type=int, default=5,
                     help='Number of best LRs to use for each model size (default: 5)')
 parser.add_argument('--project', type=str, default='danastar',
@@ -152,7 +169,7 @@ def compute_non_embedding_params(size, scaling_rule):
 
     Args:
         size: For BigHead, this is depth. For EggHead/Enoki/Eryngii, this is heads.
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', or 'Eryngii'
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', or 'Eryngii_Scaled'
 
     Returns:
         int: Number of non-embedding parameters
@@ -179,8 +196,8 @@ def compute_non_embedding_params(size, scaling_rule):
         # Non-emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
         non_emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd * n_embd + 2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd
 
-    elif scaling_rule == 'Enoki':
-        # Enoki: heads-based DiLoco scaling
+    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_std' or scaling_rule == 'Enoki_Scaled':
+        # Enoki and Enoki_std: heads-based DiLoco scaling
         heads = size
         head_dim = 64  # Fixed for Enoki
         n_embd = heads * 64
@@ -190,8 +207,8 @@ def compute_non_embedding_params(size, scaling_rule):
         # Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
         non_emb = 12 * n_embd * n_embd * n_layer
 
-    elif scaling_rule == 'Eryngii':
-        # Eryngii: heads-based scaling with increased head dimension and depth
+    elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
+        # Eryngii and Eryngii_Scaled: heads-based scaling with increased head dimension and depth
         heads = size
         head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
         n_head = heads
@@ -219,10 +236,10 @@ def compute_total_params(size, scaling_rule):
     elif scaling_rule == 'EggHead':
         n_embd = 16 * size * size
         vocab_size = 50304
-    elif scaling_rule == 'Enoki':
+    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_std' or scaling_rule == 'Enoki_Scaled':
         n_embd = size * 64
         vocab_size = 50304
-    elif scaling_rule == 'Eryngii':
+    elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
         heads = size
         head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
         n_embd = heads * head_dim
@@ -245,9 +262,9 @@ def compute_compute(size, scaling_rule):
 
 @jit
 def saturated_power_law_function(params, a, b, d):
-    """Saturated power law function: LR = a + b * (params)^d"""
+    """Alternative power law function: LR = a * (b + params)^d"""
     params_float = jnp.asarray(params, dtype=jnp.float32)
-    return a + b * (params_float ** d)
+    return a * ((b + params_float) ** d)
 
 def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1):
     """
@@ -281,12 +298,14 @@ def get_top_k_lrs_for_omega(data_df, target_omega, top_k=5, omega_tolerance=0.1)
     return results
 
 def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, scaling_rule,
-                           target_clipsnr=None, clipsnr_tolerance=0.1, wd_decaying_filter=False):
+                           target_clipsnr=None, clipsnr_tolerance=0.1, wd_decaying_filter=False,
+                           target_residual_exponent=None):
     """Load data from WandB
 
     Args:
-        scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki' to determine size parameter
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', or 'Eryngii_Scaled' to determine size parameter
         wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
+        target_residual_exponent: If provided, filter runs where residual_stream_scalar ≈ n_layer^exponent (for Enoki_std)
     """
     api = wandb.Api()
 
@@ -294,6 +313,8 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
     print(f"Scaling rule: {scaling_rule}")
     if wd_decaying_filter:
         print(f"Filtering for wd_decaying=True")
+    if target_residual_exponent is not None:
+        print(f"Filtering for residual_stream_scalar ≈ n_layer^{target_residual_exponent}")
 
     runs = api.runs(f"{entity}/{project_name}", filters={"group": group_name})
 
@@ -304,6 +325,7 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
     skipped_missing_data = 0
     skipped_clipsnr = 0
     skipped_wd_decaying = 0
+    skipped_residual_exponent = 0
 
     for run in runs:
         total_runs += 1
@@ -399,12 +421,12 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             # EggHead uses n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
-        elif scaling_rule == 'Enoki':
-            # Enoki uses n_head as heads
+        elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_std' or scaling_rule == 'Enoki_Scaled':
+            # Enoki and Enoki_std use n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
-        elif scaling_rule == 'Eryngii':
-            # Eryngii uses n_head as heads
+        elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
+            # Eryngii and Eryngii_Scaled use n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
         else:
@@ -413,6 +435,24 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
         if size is None:
             skipped_missing_data += 1
             continue
+
+        # Filter by residual exponent if specified (for Enoki_std)
+        if target_residual_exponent is not None:
+            residual_stream_scalar = config.get('residual_stream_scalar')
+            n_layer = config.get('n_layer')
+
+            if residual_stream_scalar is None or n_layer is None:
+                skipped_missing_data += 1
+                continue
+
+            # Calculate target value: n_layer^exponent
+            target_residual_value = n_layer ** target_residual_exponent
+
+            # Check if residual_stream_scalar is within 10% of target
+            relative_diff = abs(residual_stream_scalar - target_residual_value) / target_residual_value
+            if relative_diff > 0.10:  # 10% tolerance
+                skipped_residual_exponent += 1
+                continue
 
         # Calculate omega based on optimizer type
         if optimizer_type in ['dana-star-mk4', 'dana']:
@@ -453,6 +493,8 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
         print(f"  Skipped {skipped_clipsnr} runs due to clipsnr filter")
     if skipped_wd_decaying > 0:
         print(f"  Skipped {skipped_wd_decaying} runs due to wd_decaying filter")
+    if skipped_residual_exponent > 0:
+        print(f"  Skipped {skipped_residual_exponent} runs due to residual exponent filter")
     if skipped_incomplete > 0:
         print(f"  Skipped {skipped_incomplete} incomplete runs")
 
@@ -465,7 +507,7 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
 
 def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_steps=5000, learning_rate=0.1):
     """
-    Fit saturated power law LR = a + b * (params)^d using weighted MSE loss with Adagrad optimization.
+    Fit alternative power law LR = a * (b + params)^d using weighted MSE loss with Adagrad optimization.
     Constraints: a, b > 0
 
     Uses parameterization:
@@ -480,12 +522,13 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
     log_lrs = jnp.log(lrs)
 
     # Initialize parameters: [a_raw, b_raw, d]
-    # Initial guess: a ≈ min(LR)/2, b ≈ 1e-3, d ≈ -0.5
-    min_lr = float(jnp.min(lrs))
+    # Initial guess: a ≈ 1e3, b ≈ min(params), d ≈ -1.0
+    max_lr = float(jnp.max(lrs))
+    min_params = float(jnp.min(params_arr))
     fit_params = jnp.array([
-        jnp.log(min_lr / 2.0),  # a_raw -> a = exp(a_raw)
-        jnp.log(1e0),          # b_raw -> b = exp(b_raw)
-        -0.5                    # d (unconstrained)
+        jnp.log(1e3),  # a_raw -> a = exp(a_raw)
+        jnp.log(min_params),    # b_raw -> b = exp(b_raw)
+        -1.0                     # d (unconstrained)
     ], dtype=jnp.float32)
 
     @jit
@@ -496,8 +539,8 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
         a = jnp.exp(a_raw)
         b = jnp.exp(b_raw)
 
-        # Predictions: LR = a + b * params^d
-        pred_lrs = a + b * (params_arr ** d)
+        # Predictions: LR = a * (b + params)^d
+        pred_lrs = a * ((b + params_arr) ** d)
         log_pred_lrs = jnp.log(pred_lrs)
 
         # Weighted MSE loss (multiply weights by params for larger model emphasis)
@@ -544,17 +587,19 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
 
 def collect_weighted_data_for_depths(optimizer_type, scaling_rule, target_omega, top_k, project, group, entity,
                                       exclude_small=False, target_clipsnr=None, clipsnr_tolerance=0.1,
-                                      wd_decaying_filter=False):
+                                      wd_decaying_filter=False, target_residual_exponent=None):
     """
     Collect top-K LRs for each size at target omega, with weights.
 
     Args:
-        scaling_rule: One of 'BigHead', 'EggHead', or 'Enoki'
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', or 'Eryngii_Scaled'
         wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
+        target_residual_exponent: If provided, filter runs where residual_stream_scalar ≈ n_layer^exponent
     """
     # Load all data for the optimizer
     data_df = load_wandb_data_simple(project, group, entity, optimizer_type, scaling_rule,
-                                     target_clipsnr, clipsnr_tolerance, wd_decaying_filter)
+                                     target_clipsnr, clipsnr_tolerance, wd_decaying_filter,
+                                     target_residual_exponent)
 
     if len(data_df) == 0:
         print("No data found. Exiting.")
@@ -663,6 +708,8 @@ if __name__ == '__main__':
         print(f"Target ClipSNR: {args.target_clipsnr} (tolerance: {args.clipsnr_tolerance})")
     if args.wd_decaying:
         print(f"Filtering for wd_decaying=True")
+    if args.target_residual_exponent is not None:
+        print(f"Target Residual Exponent: {args.target_residual_exponent} (residual_stream_scalar ≈ n_layer^{args.target_residual_exponent}, 10% tolerance)")
     print("="*70)
 
     # Collect weighted data from all sizes
@@ -677,7 +724,8 @@ if __name__ == '__main__':
         exclude_small=args.exclude_small,
         target_clipsnr=args.target_clipsnr,
         clipsnr_tolerance=args.clipsnr_tolerance,
-        wd_decaying_filter=args.wd_decaying
+        wd_decaying_filter=args.wd_decaying,
+        target_residual_exponent=args.target_residual_exponent
     )
 
     if result is None:
@@ -702,7 +750,7 @@ if __name__ == '__main__':
 
     # Fit saturated power law using non-embedding parameters (always on)
     print(f"\n{'='*70}")
-    print("Fitting Saturated Power Law: LR = a + b * (non_emb_params)^d")
+    print("Fitting Saturated Power Law: LR = a * (b + non_emb_params)^d")
     print(f"{'='*70}")
     a_fit, b_fit, d_fit = fit_saturated_power_law_weighted(non_emb_params, lrs, weights,
                                                              n_steps=args.n_steps,
@@ -712,13 +760,13 @@ if __name__ == '__main__':
     print(f"  a = {a_fit:.6e}")
     print(f"  b = {b_fit:.6e}")
     print(f"  d = {d_fit:.4f}")
-    print(f"Saturated power law: LR = {a_fit:.6e} + {b_fit:.6e} * (non_emb_params)^{d_fit:.4f}")
+    print(f"Alternative power law: LR = {a_fit:.6e} * ({b_fit:.6e} + non_emb_params)^{d_fit:.4f}")
 
     # Fit using total parameters if requested
     a_fit_total, b_fit_total, d_fit_total = None, None, None
     if args.fit_total_params:
         print(f"\n{'='*70}")
-        print("Fitting Saturated Power Law: LR = a + b * (total_params)^d")
+        print("Fitting Alternative Power Law: LR = a * (b + total_params)^d")
         print(f"{'='*70}")
         a_fit_total, b_fit_total, d_fit_total = fit_saturated_power_law_weighted(
             total_params, lrs, weights,
@@ -729,13 +777,13 @@ if __name__ == '__main__':
         print(f"  a = {a_fit_total:.6e}")
         print(f"  b = {b_fit_total:.6e}")
         print(f"  d = {d_fit_total:.4f}")
-        print(f"Saturated power law: LR = {a_fit_total:.6e} + {b_fit_total:.6e} * (total_params)^{d_fit_total:.4f}")
+        print(f"Alternative power law: LR = {a_fit_total:.6e} * ({b_fit_total:.6e} + total_params)^{d_fit_total:.4f}")
 
     # Fit using compute if requested
     a_fit_compute, b_fit_compute, d_fit_compute = None, None, None
     if args.fit_compute:
         print(f"\n{'='*70}")
-        print("Fitting Saturated Power Law: LR = a + b * (compute)^d")
+        print("Fitting Alternative Power Law: LR = a * (b + compute)^d")
         print(f"{'='*70}")
         a_fit_compute, b_fit_compute, d_fit_compute = fit_saturated_power_law_weighted(
             compute, lrs, weights,
@@ -746,7 +794,7 @@ if __name__ == '__main__':
         print(f"  a = {a_fit_compute:.6e}")
         print(f"  b = {b_fit_compute:.6e}")
         print(f"  d = {d_fit_compute:.4f}")
-        print(f"Saturated power law: LR = {a_fit_compute:.6e} + {b_fit_compute:.6e} * (compute)^{d_fit_compute:.4f}")
+        print(f"Alternative power law: LR = {a_fit_compute:.6e} * ({b_fit_compute:.6e} + compute)^{d_fit_compute:.4f}")
 
     # =============================================================================
     # VISUALIZATION
@@ -786,7 +834,7 @@ if __name__ == '__main__':
 
     lr_fit = saturated_power_law_function(params_range, a_fit, b_fit, d_fit)
     ax.plot(params_range, lr_fit, '--', color='tab:orange', linewidth=3,
-            label=f'Saturated: {a_fit:.2e} + {b_fit:.2e} × $P^{{{d_fit:.3f}}}$', zorder=10)
+            label=f'Fit: {a_fit:.2e} × $({b_fit:.2e} + P)^{{{d_fit:.3f}}}$', zorder=10)
 
     # Plot compute fit line if --fit-compute is specified
     if args.fit_compute and a_fit_compute is not None:
