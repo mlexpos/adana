@@ -41,6 +41,9 @@ def train(
         )
     else:
         type_ctx = nullcontext()
+    # Initialize datareaders early so we can restore their state if resuming
+    train_reader, val_reader = datareaders["train"], datareaders["val"]
+    
     if cfg.resume_from :
         # This is a full resume including the model weights, optimizer, state
         # dataloader state, random seed, etc. Not indended for fine tuning or
@@ -54,9 +57,23 @@ def train(
             ckpt_dir / "main.pt",
             cfg.device,
         )
-        load_worker_state(ckpt_dir)
+        # Load worker state including dataloader state
+        load_worker_state(ckpt_dir, train_reader=train_reader)
+        # Sync substep with restored dataloader step to ensure consistency
+        if hasattr(train_reader, 'current_reader') and train_reader.current_reader is not None:
+            # MultiFileDataReader case: use the underlying reader's step
+            substep = train_reader.current_reader.step
+        elif hasattr(train_reader, 'step'):
+            # DataReader case: use the reader's step directly
+            substep = train_reader.step
+        else:
+            # Fallback: calculate from curr_iter
+            substep = curr_iter * cfg.acc_steps
     else:
         curr_iter = 0
+        # Set initial step for non-resume case
+        substep = curr_iter * cfg.acc_steps
+        train_reader.set_step(substep)
 
     if distributed_backend.is_master_process() and cfg.log_dynamics:
         with open(cfg.dynamics_logger_cfg, "r") as f:
@@ -67,10 +84,6 @@ def train(
             model, opt, dlcfg, cfg.results_base_folder, wandb=cfg.wandb
         )
         dlogger.iteration = curr_iter
-
-    substep = curr_iter * cfg.acc_steps
-    train_reader, val_reader = datareaders["train"], datareaders["val"]
-    train_reader.set_step(substep)
     stats = {"train_loss": [], "val_loss": [], "val_pp": [], "val_acc": []}
     grad_norms = []
     model.train()
@@ -83,7 +96,7 @@ def train(
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
-                save_worker_state(ckpt_dir)
+                save_worker_state(ckpt_dir, train_reader=train_reader)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
 
@@ -94,7 +107,7 @@ def train(
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] START latest    iter={curr_iter} -> {ckpt_dir}")
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
-                save_worker_state(ckpt_dir)
+                save_worker_state(ckpt_dir, train_reader=train_reader)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] END   latest    iter={curr_iter} -> {ckpt_dir}")
 
