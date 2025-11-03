@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --account=rrg-bengioy-ad
+#SBATCH --account=aip-gidelgau
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
@@ -31,18 +31,18 @@ export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=bece9f2099e3e85e0ae9922002616cf20bd26946
 export WANDB_PROJECT=danastar
 export WANDB_ENTITY=ep-rmt-ml-opt
-export WANDB_RUN_GROUP=eryngii_scaledGPT
+export WANDB_RUN_GROUP=test_checkpointing_restart
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
 
 module load arrow/21.0.0
 module load python/3.10.13
-#module load httpproxy
+module load httpproxy
 echo "Loaded modules"
 
-source ~/projects/rrg-bengioy-ad/dferbach/danastar/llm/bin/activate
+source ~/links/projects/aip-gidelgau/dferbach/benchmarking_optimizers/llm/bin/activate
 echo "Activated virtual environment"
 
-export DATASETS_DIR="$HOME/scratch/"
+export DATASETS_DIR="$HOME/links/scratch/fineweb"
 
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 
@@ -59,7 +59,7 @@ if [[ "$RESTART_ON_TIME_LIMIT" != "none" ]] && [[ "$RESTART_ON_TIME_LIMIT" =~ ^[
     # Extract SLURM job parameters for restart from scontrol
     # Extract values with fallbacks and track which were found
     account=$(echo "$scontext" | grep -o 'Account=[^ ]*' | cut -d= -f2)
-    account=${account:-"rrg-bengioy-ad"}
+    account=${account:-"aip-gidelgau"}
     [ -z "$(echo "$scontext" | grep -o 'Account=[^ ]*' | cut -d= -f2)" ] && echo "WARNING: Account not found in scontrol, using default: $account" || echo "Found Account: $account"
     
     nodes=$(echo "$scontext" | grep -o 'NumNodes=[^ ]*' | cut -d= -f2)
@@ -128,7 +128,7 @@ if [[ "$RESTART_ON_TIME_LIMIT" != "none" ]] && [[ "$RESTART_ON_TIME_LIMIT" =~ ^[
     trap 'term_handler' TERM
     
     # Call the main BigHead.sh script with filtered arguments in background
-    bash scripts/BigHead/Eryngii.sh --init-scheme ScaledGPT "${FILTERED_ARGS[@]}" &
+    bash scripts/BigHead/Eryngii.sh "${FILTERED_ARGS[@]}" &
     MAIN_PID=$!
     echo "Started main process with PID: $MAIN_PID"
     
@@ -139,5 +139,5 @@ if [[ "$RESTART_ON_TIME_LIMIT" != "none" ]] && [[ "$RESTART_ON_TIME_LIMIT" =~ ^[
     echo "Main process exited with code: $MAIN_EXIT"
 else
     # No restart logic - call script normally
-    bash scripts/BigHead/Eryngii.sh --init-scheme ScaledGPT "${FILTERED_ARGS[@]}"
+    bash scripts/BigHead/Eryngii.sh "${FILTERED_ARGS[@]}"
 fi
