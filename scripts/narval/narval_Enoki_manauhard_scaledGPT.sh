@@ -11,15 +11,15 @@ OMEGA_ARRAY=( 4.0 )
 HEADS_ARRAY=( 20 )
 LR_MULTIPLIERS=( 1.0 1.25 0.75 1.5 0.5)
 
-BATCH_SIZE=32 #32 #4
-ACC_STEPS=1 #1 #8
+BATCH_SIZE=4 #32 #4
+ACC_STEPS=8 #1 #8
 
 # SLURM configuration for Narval (4 GPUs)
 GPUS_PER_NODE=4 #4 #1
 CPUS_PER_GPU=8
 TOTAL_CPUS=32 #32 #8
 MEM=0  #80GB          # 0 = for 4 GPUs
-TIME_HOURS=24
+TIME_HOURS=40
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
