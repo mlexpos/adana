@@ -1,10 +1,11 @@
 #!/bin/bash
 #SBATCH --account=aip-gidelgau
-#SBATCH --time=24:00:00
+#SBATCH --time=00:02:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
-#SBATCH --mem=0                    # “alloc as needed” on Alliance
+#SBATCH --mem=0                    # "alloc as needed" on Alliance
+#SBATCH --signal=USR1@60
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"
@@ -24,13 +25,22 @@ echo "Activated virtual environment"
 
 DATASETS_DIR="$HOME/links/scratch/fineweb"
 
+handle_timeout() {
+    echo "Received timeout signal (USR1), requeuing job $SLURM_JOBID at $(date)"
+    trap '' 10
+    sbatch $0
+    exit 0
+}
+
+trap 'handle_timeout' 10
+
 torchrun --standalone --nproc_per_node=4 ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
     --n_embd 384 --qkv_dim 64 --n_head 6 --n_layer 4 \
     --mlp_hidden_dim 1536 \
     --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
     --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-    --iterations 30000 \
+    --iterations 100000 \
     --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
     --z_loss_coeff 0.0 \
     --opt adamw --lr 1e-3 --weight_decay 1e-3 \
