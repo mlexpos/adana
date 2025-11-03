@@ -1,14 +1,15 @@
 #!/bin/bash
 
-# Enoki D-Muon ScaledGPT Initialization Single-GPU Sweep for Narval
+# Enoki Manau-Hard ScaledGPT Initialization Single-GPU Sweep for Narval
 # Uses ScaledGPT initialization scheme with 4 GPUs
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
 # Learning rate formula: lr = 1.45e-05 + 2.33e+01 × P^{-0.562} where P = NON_EMB
+# Manau-Hard uses dana_momentum=True for adaptive EMA in both Muon and DANA-STAR-MK4
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
 HEADS_ARRAY=( 22 )
-LR_MULTIPLIERS=( 1.0 1.25 0.75 1.5 0.5 )
+LR_MULTIPLIERS=( 1.0 1.25 0.75 1.5 0.5)
 
 BATCH_SIZE=4 #32 #4
 ACC_STEPS=8 #1 #8
@@ -18,13 +19,13 @@ GPUS_PER_NODE=4 #4 #1
 CPUS_PER_GPU=8
 TOTAL_CPUS=32 #32 #8
 MEM=0  #80GB          # 0 = for 4 GPUs
-TIME_HOURS=35
+TIME_HOURS=40
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 
-echo "Starting Enoki D-Muon ScaledGPT Initialization sweep (Narval)"
+echo "Starting Enoki Manau-Hard ScaledGPT Initialization sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -122,14 +123,14 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --gpus-per-node=a100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=EN_MUON_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
+                   --job-name=EN_MANAUHARD_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
                    scripts/narval/Enoki_cypaq_scaledGPT.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer d-muon \
+                   --optimizer manau-hard \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
 
@@ -164,3 +165,8 @@ echo "  Memory: ${MEM} (allocate as needed)"
 echo "  Time: ${TIME_HOURS} hours"
 echo "  Init scheme: ${INIT_SCHEME}"
 echo "  Depth scalar exponent: ${DEPTH_SCALAR_EXPONENT}"
+echo ""
+echo "Manau-Hard Configuration:"
+echo "  - Muon parameters: Adaptive EMA with delta=8, momentum scaling with step^(1-kappa)"
+echo "  - DANA-STAR-MK4 parameters: Adaptive updates with kappa=0.75"
+echo "  - Weight decay: Decaying over time"
