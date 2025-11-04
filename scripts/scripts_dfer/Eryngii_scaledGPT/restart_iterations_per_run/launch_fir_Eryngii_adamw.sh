@@ -118,7 +118,7 @@ for HEADS in "${HEADS[@]}"; do
                --nproc_per_node ${GPUS_PER_NODE} \
                --num_restart ${NUM_RESTART} \
                --iterations_to_run ${ITERATIONS_TO_RUN} \
-               --latest_ckpt_interval 1000 \
+               --latest_ckpt_interval 1000 \ # still saving every 1000 iterations in case of error
                --auto_resume
 
         # Check if the job was successful
