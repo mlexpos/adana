@@ -74,6 +74,9 @@ def train(
         # Set initial step for non-resume case
         substep = curr_iter * cfg.acc_steps
         train_reader.set_step(substep)
+    
+    # Initialize iterations_in_run counter for iterations_to_run (always starts from 0, independent of checkpoint)
+    iterations_in_run = 0
 
     if distributed_backend.is_master_process() and cfg.log_dynamics:
         with open(cfg.dynamics_logger_cfg, "r") as f:
@@ -131,6 +134,29 @@ def train(
                 opt,
                 full_eval=(curr_iter in cfg.full_eval_at),
             )
+        
+        # Check if we've reached iterations_to_run (if set) - check at start of iteration
+        # iterations_to_run is independent of checkpoint, always counts from 0
+        if cfg.iterations_to_run is not None and iterations_in_run >= cfg.iterations_to_run:
+            # Save checkpoint before stopping
+            ckpt_dir = exp_dir / "ckpts" / "latest"
+            if distributed_backend.is_master_process():
+                print(f"[Checkpoint] START latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
+                save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+            save_worker_state(ckpt_dir, train_reader=train_reader)
+            if distributed_backend.is_master_process():
+                print(f"[Checkpoint] END   latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
+            # Also save permanent checkpoint if interval is set
+            if cfg.permanent_ckpt_interval > 0:
+                if curr_iter % cfg.permanent_ckpt_interval == 0:
+                    ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
+                    if distributed_backend.is_master_process():
+                        print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
+                        save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                    save_worker_state(ckpt_dir, train_reader=train_reader)
+                    if distributed_backend.is_master_process():
+                        print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
+            break
 
         if curr_iter == cfg.iterations:
             # Save checkpoints and evaluate at final iteration, but no need to train further
@@ -198,6 +224,7 @@ def train(
         dt = (time.perf_counter_ns() - t_start) / 1e9
 
         curr_iter += 1
+        iterations_in_run += 1
 
         if (
             cfg.log_interval

@@ -631,6 +631,7 @@ def get_exp_name(
         "seed",
         "resume_from_swa",
         "datasets_dir",
+        "iterations_to_run",
     ],
 ):
     # Get the default values

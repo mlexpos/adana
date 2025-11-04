@@ -69,6 +69,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--cos_inf_steps", default=0, type=int)
     # parser.add_argument("--cos-final-lr", default=1e-6, type=float)
     parser.add_argument("--iterations", default=15000, type=int)
+    parser.add_argument("--iterations_to_run", default=None, type=int, help="Maximum number of iterations to run, independent of checkpoint. Always starts counting from 0.")
     parser.add_argument("--warmup_steps", default=3000, type=int)
     parser.add_argument("--lr", default=1e-3, type=float)
     # wsd
