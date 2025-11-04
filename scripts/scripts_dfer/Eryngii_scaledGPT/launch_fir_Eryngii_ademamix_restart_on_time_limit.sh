@@ -3,7 +3,7 @@
 # Eryngii with ScaledGPT initialization for AdamW Multi-GPU Sweep on Fir
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr =  3.20e+02 × (5.00e + 06 + P)^-0.686
+# Base learning rate: lr =  6.48e+02 × (5.67e + 06 + P)^ -0.776
 
 OMEGA=4.0
 HEADS=(16)
@@ -17,7 +17,7 @@ MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
 RESTART_ON_TIME_LIMIT= 7
 
-echo "Starting Eryngii AdamW Multi-GPU sweep (Fir) with restart on time limit"
+echo "Starting Eryngii Ademamix Multi-GPU sweep (Fir) with restart on time limit"
 echo "Heads: ${HEADS[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -84,13 +84,13 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32 / (8.64e19))")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(3.20e+02 * (5.00e+06 + $NON_EMB)**(-0.686))")
+    BASE_LR=$(python3 -c "print(6.48e+02 * (5.67e+06 + $NON_EMB)**(-0.776))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
     echo "  C = $(python3 -c "print($C)") PetaFLOPS Days"
     echo "  Time allocation: ${TIME_SPEC}"
-    echo "  Base LR: $BASE_LR (Formula: lr = 3.20e+02 × (5.00e + 06 + P)^-0.686)"
+    echo "  Base LR: $BASE_LR (Formula: lr = 6.48e+02 × (5.67e + 06 + P)^ -0.776)"
     echo ""
 
     # Loop over learning rate multipliers
@@ -107,12 +107,12 @@ for HEADS in "${HEADS[@]}"; do
                --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=Eryngii_ScaledGPT_adamw_h${HEADS}_lr${MULT} \
+               --job-name=Eryngii_ScaledGPT_ademamix_h${HEADS}_lr${MULT} \
                scripts/scripts_dfer/Eryngii_scaledGPT/fir_Eryngii_dfer_restart.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
-               --optimizer adamw \
+               --optimizer ademamix \
                --nproc_per_node ${GPUS_PER_NODE} \
                --restart_on_time_limit ${RESTART_ON_TIME_LIMIT} \
                --latest_ckpt_interval 1000 \
