@@ -126,9 +126,9 @@ parser.add_argument('--entity', type=str, default='ep-rmt-ml-opt',
                     help='WandB entity name (default: ep-rmt-ml-opt)')
 parser.add_argument('--output', type=str, default=None,
                     help='Output filename for plot (default: auto-generated)')
-parser.add_argument('--n-steps', type=int, default=100000,
+parser.add_argument('--n-steps', type=int, default=200000,
                     help='Number of optimization steps for power law fitting (default: 100000)')
-parser.add_argument('--learning-rate', type=float, default=0.1,
+parser.add_argument('--learning-rate', type=float, default=1.0,
                     help='Optimizer learning rate for power law fitting (default: 100.0)')
 parser.add_argument('--exclude-small', action='store_true',
                     help='Exclude small model size (4 layers) from the fit')
