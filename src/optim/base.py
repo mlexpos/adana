@@ -99,6 +99,12 @@ def train(
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                    # Save wandb run ID when saving checkpoint
+                    if cfg.wandb and wandb.run is not None:
+                        wandb_id_file = exp_dir / "wandb_run_id.txt"
+                        exp_dir.mkdir(parents=True, exist_ok=True)
+                        with open(wandb_id_file, "w") as f:
+                            f.write(wandb.run.id)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
@@ -110,6 +116,12 @@ def train(
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] START latest    iter={curr_iter} -> {ckpt_dir}")
                     save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                    # Save wandb run ID when saving checkpoint
+                    if cfg.wandb and wandb.run is not None:
+                        wandb_id_file = exp_dir / "wandb_run_id.txt"
+                        exp_dir.mkdir(parents=True, exist_ok=True)
+                        with open(wandb_id_file, "w") as f:
+                            f.write(wandb.run.id)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] END   latest    iter={curr_iter} -> {ckpt_dir}")
@@ -143,6 +155,12 @@ def train(
             if distributed_backend.is_master_process():
                 print(f"[Checkpoint] START latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
                 save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                # Save wandb run ID when saving checkpoint
+                if cfg.wandb and wandb.run is not None:
+                    wandb_id_file = exp_dir / "wandb_run_id.txt"
+                    exp_dir.mkdir(parents=True, exist_ok=True)
+                    with open(wandb_id_file, "w") as f:
+                        f.write(wandb.run.id)
             save_worker_state(ckpt_dir, train_reader=train_reader)
             if distributed_backend.is_master_process():
                 print(f"[Checkpoint] END   latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
@@ -153,6 +171,12 @@ def train(
                     if distributed_backend.is_master_process():
                         print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
                         save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                        # Save wandb run ID when saving checkpoint
+                        if cfg.wandb and wandb.run is not None:
+                            wandb_id_file = exp_dir / "wandb_run_id.txt"
+                            exp_dir.mkdir(parents=True, exist_ok=True)
+                            with open(wandb_id_file, "w") as f:
+                                f.write(wandb.run.id)
                     save_worker_state(ckpt_dir, train_reader=train_reader)
                     if distributed_backend.is_master_process():
                         print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")

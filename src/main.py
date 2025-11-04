@@ -95,12 +95,37 @@ def main(args, parser):
         # Compute renormalized weight decay: W = weight_decay * lr * iterations
         args.renorm_weight_decay = args.weight_decay * args.lr * args.iterations
         
+        # Check if we're resuming from a checkpoint (either explicitly or via auto_resume)
+        is_resuming = (
+            args.resume_from is not None
+            or (args.auto_resume and (exp_dir / "ckpts" / "latest" / "main.pt").exists())
+        )
+        
+        # Load wandb run ID only if resuming from a checkpoint
+        wandb_run_id = None
+        wandb_id_file = exp_dir / "wandb_run_id.txt"
+        if is_resuming and wandb_id_file.exists():
+            # Load existing wandb run ID from file
+            try:
+                with open(wandb_id_file, "r") as f:
+                    wandb_run_id = f.read().strip()
+                if wandb_run_id:
+                    print(f"Resuming wandb run with ID: {wandb_run_id}")
+                else:
+                    print(f"Warning: wandb_run_id.txt exists but is empty, creating new run")
+            except Exception as e:
+                print(f"Warning: Failed to read wandb_run_id.txt: {e}, creating new run")
+                wandb_run_id = None
+        
         wandb.init(
             project=args.wandb_project,
             name=exp_name,
             config=vars(args),
             entity=args.wandb_entity,
+            id=wandb_run_id,
+            resume="allow" if wandb_run_id is not None else None,
         )
+        
         wandb.define_metric("iter")
         wandb.define_metric("train/*", step_metric="iter")
         wandb.define_metric("val/*", step_metric="iter")
