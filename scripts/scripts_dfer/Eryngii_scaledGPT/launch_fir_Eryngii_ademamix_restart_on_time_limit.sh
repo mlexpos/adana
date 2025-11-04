@@ -15,7 +15,7 @@ CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
-RESTART_ON_TIME_LIMIT= 7
+RESTART_ON_TIME_LIMIT=7
 
 echo "Starting Eryngii Ademamix Multi-GPU sweep (Fir) with restart on time limit"
 echo "Heads: ${HEADS[@]}"
