@@ -3,10 +3,10 @@
 # Eryngii with ScaledGPT initialization for AdamW Multi-GPU Sweep on Fir
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr =  2.30e-04×C ^-0.338
+# Base learning rate: lr =  3.20e+02 × (5.00e + 06 + P)^-0.686
 
 OMEGA=4.0
-HEADS=(8)
+HEADS=(15)
 LR_MULTIPLIERS=(1.0)
 
 # SLURM configuration for Tamia
@@ -15,8 +15,8 @@ CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
-NUM_RESTART=2
-ITERATIONS_TO_RUN=200
+NUM_RESTART=16
+ITERATIONS_TO_RUN=40000
 
 echo "Starting Eryngii AdamW Multi-GPU sweep (Tamia) with restart on iterations per run"
 echo "Heads: ${HEADS[@]}"
@@ -76,7 +76,7 @@ for HEADS in "${HEADS[@]}"; do
     elif [ $HEADS -le 12 ]; then
         TIME_SPEC="24:00:00"
     else
-        TIME_SPEC="48:00:00"
+        TIME_SPEC="24:00:00"
     fi
 
     # Calculate parameters for this heads
@@ -86,13 +86,13 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32 / (8.64e19))")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(2.30e-04 * $C**(-0.338))")
+    BASE_LR=$(python3 -c "print(3.20e+02 * (5.00e+06 + $NON_EMB)**(-0.686))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
     echo "  C = $(python3 -c "print($C)") PetaFLOPS Days"
     echo "  Time allocation: ${TIME_SPEC}"
-    echo "  Base LR: $BASE_LR (Formula: lr = 2.30e-04×C ^-0.338)"
+    echo "  Base LR: $BASE_LR (Formula: lr = 3.20e+02 * (5.00e+06 + $NON_EMB)**(-0.686))"
     echo ""
 
     # Loop over learning rate multipliers
@@ -103,7 +103,6 @@ for HEADS in "${HEADS[@]}"; do
         job_count=$((job_count + 1))
         echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
 
-        TIME_SPEC="00:02:00"
         # Submit the job with multi-GPU configuration
         sbatch --time=${TIME_SPEC} \
                --nodes=1 \
@@ -114,12 +113,14 @@ for HEADS in "${HEADS[@]}"; do
                scripts/scripts_dfer/Eryngii_scaledGPT/restart_iterations_per_run/tamia_Eryngii_dfer.sh \
                --heads $HEADS \
                --lr $LR \
-               --omega 4.02 \
+               --omega $OMEGA \
                --optimizer adamw \
+               --acc_steps 8 \
+               --batch_size 4 \
                --nproc_per_node ${GPUS_PER_NODE} \
                --num_restart ${NUM_RESTART} \
                --iterations_to_run ${ITERATIONS_TO_RUN} \
-               --latest_ckpt_interval 300 \
+               --latest_ckpt_interval 5000 \
                --auto_resume
 
         # Check if the job was successful

@@ -36,7 +36,7 @@ export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=bece9f2099e3e85e0ae9922002616cf20bd26946
 export WANDB_PROJECT=danastar
 export WANDB_ENTITY=ep-rmt-ml-opt
-export WANDB_RUN_GROUP=test_checkpointing_restart
+export WANDB_RUN_GROUP=eryngii_scaledGPT
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
 
 module load arrow/21.0.0
