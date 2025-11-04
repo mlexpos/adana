@@ -114,7 +114,7 @@ if [[ "$RESTART_STEPS_TO_RUN" != "none" ]] && [[ "$RESTART_STEPS_TO_RUN" =~ ^[0-
         --mlp_hidden_dim 1536 \
         --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
         --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-        --iterations 1233 --iterations_to_run 200\
+        --iterations 1234 --iterations_to_run 200\
         --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
         --z_loss_coeff 0.0 \
         --opt adamw --lr 1e-3 --weight_decay 1e-3 \
