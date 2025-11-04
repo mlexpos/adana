@@ -6,7 +6,7 @@
 # Base learning rate: lr =  3.20e+02 × (5.00e + 06 + P)^-0.686
 
 OMEGA=4.0
-HEADS=(16)
+HEADS=(7)
 LR_MULTIPLIERS=(1.0)
 
 # SLURM configuration for Fir
@@ -15,8 +15,8 @@ CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
-NUM_RESTART=7
-ITERATIONS_TO_RUN=200
+NUM_RESTART=4
+ITERATIONS_TO_RUN=5000
 
 echo "Starting Eryngii AdamW Multi-GPU sweep (Fir) with restart on iterations per run"
 echo "Heads: ${HEADS[@]}"
