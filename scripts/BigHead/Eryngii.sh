@@ -14,6 +14,8 @@ BETA2=0.999
 K=20
 INIT_SCHEME="KarpathyGPT2"
 DEPTH_SCALAR_EXPONENT=0.0
+LATEST_CKPT_INTERVAL=""
+AUTO_RESUME=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -70,6 +72,14 @@ while [[ $# -gt 0 ]]; do
             DEPTH_SCALAR_EXPONENT="$2"
             shift 2
             ;;
+        --latest_ckpt_interval)
+            LATEST_CKPT_INTERVAL="$2"
+            shift 2
+            ;;
+        --auto_resume)
+            AUTO_RESUME=true
+            shift
+            ;;
         *)
             echo "Unknown option $1"
             exit 1
@@ -102,6 +112,8 @@ if [ -z "$HEADS" ]; then
     echo "  --k <value>               K for snoo-dana (default: 20)"
     echo "  --init-scheme <type>      Initialization scheme: KarpathyGPT2, Standard (default: KarpathyGPT2)"
     echo "  --depth-scalar-exponent <value>  Exponent for depth-based residual scaling: scalar = n_layer^exp (default: 0.0)"
+    echo "  --latest_ckpt_interval <value>  Interval for saving latest checkpoints (optional)"
+    echo "  --auto_resume            Enable auto resume (optional)"
     exit 1
 fi
 
@@ -204,9 +216,23 @@ echo "Optimizer: $OPTIMIZER"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
 echo "Residual stream scalar: $RESIDUAL_STREAM_SCALAR"
+if [ -n "$LATEST_CKPT_INTERVAL" ]; then
+    echo "Latest checkpoint interval: $LATEST_CKPT_INTERVAL"
+fi
+if [ "$AUTO_RESUME" = true ]; then
+    echo "Auto resume: enabled"
+fi
 echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
+
+RESUME_ARGS=""
+if [ -n "$LATEST_CKPT_INTERVAL" ]; then
+    RESUME_ARGS="$RESUME_ARGS --latest_ckpt_interval $LATEST_CKPT_INTERVAL"
+fi
+if [ "$AUTO_RESUME" = true ]; then
+    RESUME_ARGS="$RESUME_ARGS --auto_resume"
+fi
 
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_format base --model diloco \
     --distributed_backend nccl --compile \
@@ -219,6 +245,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
     --z_loss_coeff 0.0 \
     $OPT_PARAMS \
+    $RESUME_ARGS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval $EVAL_INTERVAL --log_interval 50
