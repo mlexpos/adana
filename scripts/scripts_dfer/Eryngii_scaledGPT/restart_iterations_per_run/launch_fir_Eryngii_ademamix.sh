@@ -3,21 +3,22 @@
 # Eryngii with ScaledGPT initialization for AdamW Multi-GPU Sweep on Fir
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr =  2.30e-04×C ^-0.338
+# Base learning rate: lr =  6.48e+02 × (5.67e + 06 + P)^ -0.776
 
 OMEGA=4.0
-HEADS=(8)
+HEADS=(16)
 LR_MULTIPLIERS=(1.0)
 
-# SLURM configuration for Tamia
+# SLURM configuration for Fir
 GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
 TIME_HOURS=24
-RESTART_ON_TIME_LIMIT=2
+NUM_RESTART=7
+ITERATIONS_TO_RUN=200
 
-echo "Starting Eryngii AdamW Multi-GPU sweep (Fir) with restart on time limit"
+echo "Starting Eryngii Ademamix Multi-GPU sweep (Fir) with restart on iterations per run"
 echo "Heads: ${HEADS[@]}"
 echo "Omega: $OMEGA"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -26,7 +27,8 @@ echo "CPUs per GPU: $CPUS_PER_GPU"
 echo "Total CPUs: $TOTAL_CPUS"
 echo "Memory: ${MEM} (allocate as needed)"
 echo "Time allocation: ${TIME_HOURS}h"
-echo "Restart on time limit: ${RESTART_ON_TIME_LIMIT}"
+echo "Number of restarts: ${NUM_RESTART}"
+echo "Iterations to run: ${ITERATIONS_TO_RUN}"
 echo ""
 
 # Function to calculate model parameters for Eryngii
@@ -74,7 +76,7 @@ for HEADS in "${HEADS[@]}"; do
     elif [ $HEADS -le 12 ]; then
         TIME_SPEC="24:00:00"
     else
-        TIME_SPEC="48:00:00"
+        TIME_SPEC="24:00:00"
     fi
 
     # Calculate parameters for this heads
@@ -84,13 +86,13 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32 / (8.64e19))")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(2.30e-04 * $C**(-0.338))")
+    BASE_LR=$(python3 -c "print(6.48e+02 * (5.67e+06 + $NON_EMB)**(-0.776))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
     echo "  C = $(python3 -c "print($C)") PetaFLOPS Days"
     echo "  Time allocation: ${TIME_SPEC}"
-    echo "  Base LR: $BASE_LR (Formula: lr = 2.30e-04×C ^-0.338)"
+    echo "  Base LR: $BASE_LR (Formula: lr = 6.48e+02 × (5.67e + 06 + P)^ -0.776)"
     echo ""
 
     # Loop over learning rate multipliers
@@ -101,22 +103,22 @@ for HEADS in "${HEADS[@]}"; do
         job_count=$((job_count + 1))
         echo "  Job $job_count/$total_jobs: heads=$HEADS, lr=$LR (${MULT}x base)"
 
-        TIME_SPEC="00:02:00"
         # Submit the job with multi-GPU configuration
         sbatch --time=${TIME_SPEC} \
                --nodes=1 \
                --gpus-per-node=h100:${GPUS_PER_NODE} \
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
-               --job-name=Eryngii_ScaledGPT_adamw_h${HEADS}_lr${MULT} \
-               scripts/scripts_dfer/Eryngii_scaledGPT/tamia_Eryngii_dfer.sh \
+               --job-name=Eryngii_ScaledGPT_ademamix_h${HEADS}_lr${MULT} \
+               scripts/scripts_dfer/Eryngii_scaledGPT/restart_iterations_per_run/fir_Eryngii_dfer.sh \
                --heads $HEADS \
                --lr $LR \
-               --omega 4.02 \
-               --optimizer adamw \
+               --omega $OMEGA \
+               --optimizer ademamix \
                --nproc_per_node ${GPUS_PER_NODE} \
-               --restart_on_time_limit ${RESTART_ON_TIME_LIMIT} \
-               --latest_ckpt_interval 300 \
+               --num_restart ${NUM_RESTART} \
+               --iterations_to_run ${ITERATIONS_TO_RUN} \
+               --latest_ckpt_interval 1000 \
                --auto_resume
 
         # Check if the job was successful
@@ -140,3 +142,4 @@ echo "  GPUs: ${GPUS_PER_NODE} × H100"
 echo "  CPUs: ${TOTAL_CPUS} (${CPUS_PER_GPU} per GPU)"
 echo "  Memory: ${MEM} (allocate as needed)"
 echo "  Time: ${TIME_SPEC}"
+

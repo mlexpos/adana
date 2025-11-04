@@ -16,6 +16,7 @@ INIT_SCHEME="KarpathyGPT2"
 DEPTH_SCALAR_EXPONENT=0.0
 LATEST_CKPT_INTERVAL=""
 AUTO_RESUME=false
+ITERATIONS_TO_RUN=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -79,6 +80,10 @@ while [[ $# -gt 0 ]]; do
         --auto_resume)
             AUTO_RESUME=true
             shift
+            ;;
+        --iterations-to-run)
+            ITERATIONS_TO_RUN="$2"
+            shift 2
             ;;
         *)
             echo "Unknown option $1"
@@ -222,6 +227,9 @@ fi
 if [ "$AUTO_RESUME" = true ]; then
     echo "Auto resume: enabled"
 fi
+if [ -n "$ITERATIONS_TO_RUN" ]; then
+    echo "Iterations to run: $ITERATIONS_TO_RUN"
+fi
 echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
@@ -232,6 +240,11 @@ if [ -n "$LATEST_CKPT_INTERVAL" ]; then
 fi
 if [ "$AUTO_RESUME" = true ]; then
     RESUME_ARGS="$RESUME_ARGS --auto_resume"
+fi
+
+ITERATIONS_TO_RUN_ARGS=""
+if [ -n "$ITERATIONS_TO_RUN" ]; then
+    ITERATIONS_TO_RUN_ARGS="--iterations_to_run $ITERATIONS_TO_RUN"
 fi
 
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_format base --model diloco \
@@ -246,6 +259,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --z_loss_coeff 0.0 \
     $OPT_PARAMS \
     $RESUME_ARGS \
+    $ITERATIONS_TO_RUN_ARGS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
     --eval_interval $EVAL_INTERVAL --log_interval 50
