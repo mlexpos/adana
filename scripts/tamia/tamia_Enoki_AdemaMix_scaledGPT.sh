@@ -7,8 +7,8 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 18 )
-LR_MULTIPLIERS=( 1.5 )
+HEADS_ARRAY=( 22 24 )
+LR_MULTIPLIERS=( 1.75 )
 
 BATCH_SIZE=32
 ACC_STEPS=1
@@ -18,7 +18,7 @@ GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=10
+TIME_HOURS=17
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
