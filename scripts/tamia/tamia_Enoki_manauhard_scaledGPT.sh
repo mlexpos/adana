@@ -19,7 +19,7 @@ GPUS_PER_NODE=4
 CPUS_PER_GPU=12
 TOTAL_CPUS=48  # 4 GPUs × 12 CPUs/GPU
 MEM=0          # 0 = allocate as needed
-TIME_HOURS=12
+TIME_HOURS=15
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
