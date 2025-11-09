@@ -545,7 +545,7 @@ def fit_saturated_power_law_weighted(params_list, lrs_list, weights_list, n_step
 
         # Weighted MSE loss (multiply weights by params for larger model emphasis)
         residuals = (log_lrs - log_pred_lrs) ** 2
-        combined_weights = weights * params_arr
+        combined_weights = weights**2 * params_arr
         weighted_loss = jnp.sum(combined_weights * residuals) / jnp.sum(combined_weights)
 
         return weighted_loss

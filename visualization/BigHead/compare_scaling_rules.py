@@ -121,6 +121,8 @@ parser.add_argument('--fit-metric', type=str, default='compute',
                     help='Metric to use for fitting: compute (PFH) or non_emb (parameters) (default: compute)')
 parser.add_argument('--a-lower-bound', type=float, default=0.0,
                     help='Lower bound constant for saturation parameter a (default: 0.0)')
+parser.add_argument('--equal-weight', action='store_true',
+                    help='Use equal weights for all data points instead of weighting by compute (default: False)')
 args = parser.parse_args()
 
 # Map optimizer names
@@ -491,11 +493,17 @@ def fit_all_saturated_power_laws_joint(data_list, n_steps=50000, learning_rate=0
         print(f"    Compute range: {float(jnp.min(compute_arr)):.4e} to {float(jnp.max(compute_arr)):.4e}")
         print(f"    Loss range: {float(jnp.min(loss_arr)):.4f} to {float(jnp.max(loss_arr)):.4f}")
 
+        # Set weights: equal weights if requested, otherwise weight by compute
+        if args.equal_weight:
+            weights_arr = jnp.ones_like(compute_arr)
+        else:
+            weights_arr = compute_arr  # Weight by compute (larger models matter more)
+
         jax_data.append({
             'compute': compute_arr,
             'loss': loss_arr,
             'name': name,
-            'weights': compute_arr  # Weight by compute (larger models matter more)
+            'weights': weights_arr
         })
 
     # Initialize parameters
