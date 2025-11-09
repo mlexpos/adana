@@ -112,6 +112,13 @@ class AsyncFileLoader:
         if self.loader_thread is not None and self.loader_thread.is_alive():
             self.loader_thread.join(timeout=1.0)
 
+    def clear_queue(self):
+        """Clear any files in the queue (e.g., when resuming from checkpoint)"""
+        while not self.load_queue.empty():
+            try:
+                self.load_queue.get_nowait()
+            except queue.Empty:
+                break
 
 class MultiFileDataReader:
     def __init__(
@@ -414,6 +421,9 @@ class MultiFileDataReader:
         """Restore the state of the MultiFileDataReader from a checkpoint"""
         current_file_idx = state_dict.get("current_file_idx", 0)
         step = state_dict.get("step", 0)
+        
+        # Clear any files in the queue (e.g., when resuming from checkpoint)
+        self.async_loader.clear_queue()
         
         # Check if we need to switch to a different file
         if current_file_idx != self.current_file_idx:

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=aip-gidelgau
-#SBATCH --time=00:02:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
@@ -13,10 +13,6 @@ FILTERED_ARGS=()
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --restart_steps_to_run=*)
-            RESTART_STEPS_TO_RUN="${1#*=}"
-            shift
-            ;;
         --restart_steps_to_run)
             RESTART_STEPS_TO_RUN="$2"
             shift 2
@@ -114,7 +110,7 @@ if [[ "$RESTART_STEPS_TO_RUN" != "none" ]] && [[ "$RESTART_STEPS_TO_RUN" =~ ^[0-
         --mlp_hidden_dim 1536 \
         --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
         --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-        --iterations 1234 --iterations_to_run 200\
+        --iterations 90000 --iterations_to_run 15000\
         --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
         --z_loss_coeff 0.0 \
         --opt adamw --lr 1e-3 --weight_decay 1e-3 \
@@ -142,14 +138,14 @@ else
         --mlp_hidden_dim 1536 \
         --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
         --batch_size 32 --sequence_length 2048 --acc_steps 1 \
-        --iterations 1233 --iterations_to_run 200\
+        --iterations 10000 \
         --dropout 0.0 --warmup_steps 279 --grad_clip 0.5 --seed 0 \
         --z_loss_coeff 0.0 \
         --opt adamw --lr 1e-3 --weight_decay 1e-3 \
         --beta1 0.9 --beta2 0.999 \
         --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
         --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-        --eval_interval 100 --latest_ckpt_interval 1000 --auto_resume "${FILTERED_ARGS[@]}"
+        --eval_interval 100 --latest_ckpt_interval 1000 "${FILTERED_ARGS[@]}"
     
     echo "torchrun exited"
 fi

@@ -59,16 +59,7 @@ def train(
         )
         # Load worker state including dataloader state
         load_worker_state(ckpt_dir, train_reader=train_reader)
-        # Sync substep with restored dataloader step to ensure consistency
-        if hasattr(train_reader, 'current_reader') and train_reader.current_reader is not None:
-            # MultiFileDataReader case: use the underlying reader's step
-            substep = train_reader.current_reader.step
-        elif hasattr(train_reader, 'step'):
-            # DataReader case: use the reader's step directly
-            substep = train_reader.step
-        else:
-            # Fallback: calculate from curr_iter
-            substep = curr_iter * cfg.acc_steps
+        substep = curr_iter * cfg.acc_steps
     else:
         curr_iter = 0
         # Set initial step for non-resume case
