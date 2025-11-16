@@ -59,13 +59,20 @@ class DANA_STAR_MK4(Optimizer):
 
         super(DANA_STAR_MK4, self).__init__(params, defaults)
 
-        # Create compiled version of the update function with dynamic shapes
-        # This prevents recompilation for different tensor shapes and scalar values
-        self._update_param = torch.compile(
-            self._update_param_compiled,
-            dynamic=True,
-            fullgraph=False
-        )
+        # Create compiled versions of the update function, one per tensor rank
+        # This prevents excessive recompilation when mixing 1D (biases) and 2D (weights) tensors
+        # We use a cache to lazily compile for each unique rank encountered
+        self._compiled_functions = {}
+
+    def _get_compiled_fn(self, ndim):
+        """Get or create compiled function for given tensor rank."""
+        if ndim not in self._compiled_functions:
+            self._compiled_functions[ndim] = torch.compile(
+                self._update_param_compiled,
+                dynamic=False,  # Handle different sizes within same rank
+                fullgraph=False
+            )
+        return self._compiled_functions[ndim]
 
     def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
         """Convert scalar or schedule to callable function."""
@@ -260,8 +267,11 @@ class DANA_STAR_MK4(Optimizer):
                 lr_t = torch.tensor(lr, device=device, dtype=torch.float32)
                 wd_t = torch.tensor(wd, device=device, dtype=torch.float32)
 
-                # Call compiled update function
-                m_new, v_new, tau_new, diagnostics = self._update_param(
+                # Get compiled function for this tensor's shape
+                update_fn = self._get_compiled_fn(p.shape)
+
+                # Call rank-specific compiled update function
+                m_new, v_new, tau_new, diagnostics = update_fn(
                     p, grad, m, v, tau,
                     step_t, alpha_t, g2_t, g3_t, lr_t, wd_t,
                     epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
