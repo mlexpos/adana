@@ -190,11 +190,12 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device):
         model = model.module
 
     # PyTorch 2.6 defaults to weights_only=True; our checkpoints include optimizer/scheduler state
+    # Load to CPU first to avoid OOM when model is already on GPU
     # Try safe default first, then fall back to weights_only=False if needed
     try:
-        ckpt = torch.load(ckpt_path, map_location=device)
+        ckpt = torch.load(ckpt_path, map_location='cpu')
     except Exception:
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
     model.load_state_dict(ckpt["model"])
     opt.load_state_dict(ckpt["optimizer"])
     if scheduler is not None:
