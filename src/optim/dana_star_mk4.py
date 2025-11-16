@@ -402,7 +402,7 @@ class DANA_STAR_MK4(Optimizer):
         # Step 4: Tau regularization
         # clipped_tau = clamp(tau, max=0.5)
         # p_estimate = clipped_tau / (1 - clipped_tau)
-        clipped_tau = torch._foreach_clamp(taus, max=0.5)
+        clipped_tau = [torch.clamp(tau, max=0.5) for tau in taus]
 
         # Compute (1 - clipped_tau) using foreach ops (avoid list comprehension!)
         one_minus_clipped = torch._foreach_neg(clipped_tau)
@@ -420,7 +420,8 @@ class DANA_STAR_MK4(Optimizer):
         # Step 5: Effective time
         # effective_time = max(tau * step, 1) = clamp(tau * step, min=1)
         effective_time = torch._foreach_mul(taus, step_tensors)
-        effective_time = torch._foreach_clamp(effective_time, min=1.0)
+        ones_like_eff = [torch.ones_like(e) for e in effective_time]
+        effective_time = torch._foreach_maximum(effective_time, ones_like_eff)
 
         # Step 6: Normalization term
         # norm_term = sqrt(tau_reg) / (sqrt(v) + epsilon)
@@ -439,7 +440,7 @@ class DANA_STAR_MK4(Optimizer):
         # alpha_factor = clamp((effective_time^(1-kappa)) * mfac, max=clipsnr)
         eff_pow = torch._foreach_pow(effective_time, 1.0 - self.kappa)
         alpha_factor = torch._foreach_mul(eff_pow, mfac)
-        alpha_factor = torch._foreach_clamp(alpha_factor, max=clipsnr)
+        alpha_factor = [torch.clamp(af, max=clipsnr) for af in alpha_factor]
 
         # Step 9: Compute g3 term
         # g3_term = g3 * (tau_reg * sign(m) * alpha_factor + m * norm_term)
