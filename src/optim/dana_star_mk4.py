@@ -21,6 +21,7 @@ class DANA_STAR_MK4(Optimizer):
         weight_time: bool = False,
         wd_decaying: bool = False,
         wd_ts: float = 1.0,
+        use_foreach: bool = True,
         ):
         """
         DANA-STAR MK4 optimizer.
@@ -38,6 +39,7 @@ class DANA_STAR_MK4(Optimizer):
             weight_time: Whether to weight time by lr / lr_max factor.
             wd_decaying: Whether to decay weight decay over time.
             wd_ts: Timescale for weight decay decay.
+            use_foreach: Whether to use fused foreach operations (default: True).
         """
         # Enforce mk4A and mk4B are 0
         assert mk4A == 0.0, f"mk4A must be 0.0, got {mk4A}"
@@ -56,6 +58,7 @@ class DANA_STAR_MK4(Optimizer):
         self.weight_time = weight_time
         self.wd_decaying = wd_decaying
         self.wd_ts = wd_ts
+        self.use_foreach = use_foreach
 
         super(DANA_STAR_MK4, self).__init__(params, defaults)
 
@@ -232,6 +235,13 @@ class DANA_STAR_MK4(Optimizer):
             epsilon = group['epsilon']
             clipsnr = group['clipsnr']
 
+            # Use foreach path if enabled
+            if self.use_foreach:
+                self._foreach_step_group(
+                    group, g2, g3, lr, time_factor, delta, wd, epsilon, clipsnr
+                )
+                continue
+
             for p in group['params']:
                 grad = p.grad
                 if grad is None:
@@ -290,3 +300,192 @@ class DANA_STAR_MK4(Optimizer):
                 state["m_norm"] = diagnostics['m_norm'].detach()
 
         return loss
+
+    def _foreach_step_group(
+        self,
+        group,
+        g2: float,
+        g3: float,
+        lr: float,
+        time_factor: float,
+        delta: float,
+        wd: float,
+        epsilon: float,
+        clipsnr: float,
+    ) -> None:
+        """
+        Highly optimized foreach update with maximum fusion.
+
+        This implementation minimizes kernel launches by:
+        - Using lerp for EMA updates
+        - Using addcmul/addcdiv for fused operations
+        - Reusing intermediate results (sqrt_vs)
+        - Eliminating Python list comprehensions
+        - Using foreach operations wherever possible
+        """
+        # Collect parameters and state
+        params, grads, ms, vs, taus = [], [], [], [], []
+        alpha_tensors, step_tensors = [], []
+        states = []
+
+        for p in group['params']:
+            grad = p.grad
+            if grad is None:
+                continue
+
+            state = self.state[p]
+            if len(state) == 0:
+                state['step'] = 0
+                state['m'] = torch.zeros_like(p)
+                state['v'] = torch.zeros_like(p)
+                state['tau'] = torch.zeros_like(p)
+
+            state['step'] += 1
+
+            if self.weight_time:
+                step_value = group['weighted_step_count']
+                alpha = delta / (delta + step_value) * time_factor
+            else:
+                step_value = state['step']
+                alpha = delta / (delta + step_value)
+
+            device = p.device
+            alpha_tensors.append(torch.as_tensor(alpha, device=device, dtype=p.dtype))
+            step_tensors.append(torch.as_tensor(step_value, device=device, dtype=p.dtype))
+
+            params.append(p)
+            grads.append(grad)
+            ms.append(state['m'])
+            vs.append(state['v'])
+            taus.append(state['tau'])
+            states.append(state)
+
+        if not params:
+            return
+
+        # =====================================================================
+        # OPTIMIZED FOREACH OPERATIONS - MAXIMUM FUSION
+        # =====================================================================
+
+        # Step 1: Update first moment using lerp (linear interpolation)
+        # m = lerp(m, grad, alpha) = m + alpha * (grad - m) = m * (1-alpha) + grad * alpha
+        # This is more efficient than separate mul + add
+        torch._foreach_lerp_(ms, grads, alpha_tensors)
+
+        # Step 2: Update second moment using addcmul
+        # v = v * (1 - alpha) + alpha * grad^2
+        # First scale v by (1 - alpha)
+        one_minus_alphas = torch._foreach_neg(alpha_tensors)
+        torch._foreach_add_(one_minus_alphas, 1.0)
+        torch._foreach_mul_(vs, one_minus_alphas)
+        # Then add alpha * grad^2 using addcmul
+        torch._foreach_addcmul_(vs, grads, grads, value=alpha_tensors)
+
+        # Step 3: Update tau estimate
+        # tau_update = |grad| / (|grad| + sqrt(v) + epsilon)
+        abs_grads = torch._foreach_abs(grads)
+        sqrt_vs = torch._foreach_sqrt(vs)  # SAVE THIS - reuse later!
+
+        # Compute denominator: |grad| + sqrt(v) + epsilon
+        denom = torch._foreach_add(abs_grads, sqrt_vs)
+        torch._foreach_add_(denom, epsilon)
+
+        # tau_update = |grad| / denominator
+        tau_updates = torch._foreach_div(abs_grads, denom)
+
+        # Update tau using lerp
+        torch._foreach_lerp_(taus, tau_updates, alpha_tensors)
+
+        # Step 4: Tau regularization
+        # clipped_tau = clamp(tau, max=0.5)
+        # p_estimate = clipped_tau / (1 - clipped_tau)
+        clipped_tau = torch._foreach_clamp(taus, max=0.5)
+
+        # Compute (1 - clipped_tau) using foreach ops (avoid list comprehension!)
+        one_minus_clipped = torch._foreach_neg(clipped_tau)
+        torch._foreach_add_(one_minus_clipped, 1.0)
+
+        p_estimate = torch._foreach_div(clipped_tau, one_minus_clipped)
+
+        # tau_reg = max(p_estimate, 1/(1+step))
+        # This is equivalent to clamp(p_estimate, min=1/(1+step)), but since min varies per param,
+        # we use _foreach_maximum with computed min_p values
+        one_plus_step = torch._foreach_add(step_tensors, 1.0)
+        min_p = torch._foreach_reciprocal(one_plus_step)
+        tau_reg = torch._foreach_maximum(p_estimate, min_p)
+
+        # Step 5: Effective time
+        # effective_time = max(tau * step, 1) = clamp(tau * step, min=1)
+        effective_time = torch._foreach_mul(taus, step_tensors)
+        effective_time = torch._foreach_clamp(effective_time, min=1.0)
+
+        # Step 6: Normalization term
+        # norm_term = sqrt(tau_reg) / (sqrt(v) + epsilon)
+        # REUSE sqrt_vs from Step 3!
+        sqrt_tau_reg = torch._foreach_sqrt(tau_reg)
+        norm_den = torch._foreach_add(sqrt_vs, epsilon)
+        norm_term = torch._foreach_div(sqrt_tau_reg, norm_den)
+
+        # Step 7: Momentum factor
+        # mfac = norm_term * |m| / tau_reg
+        m_abs = torch._foreach_abs(ms)
+        m_over_tau = torch._foreach_div(m_abs, tau_reg)
+        mfac = torch._foreach_mul(norm_term, m_over_tau)
+
+        # Step 8: Alpha factor with clipping
+        # alpha_factor = clamp((effective_time^(1-kappa)) * mfac, max=clipsnr)
+        eff_pow = torch._foreach_pow(effective_time, 1.0 - self.kappa)
+        alpha_factor = torch._foreach_mul(eff_pow, mfac)
+        alpha_factor = torch._foreach_clamp(alpha_factor, max=clipsnr)
+
+        # Step 9: Compute g3 term
+        # g3_term = g3 * (tau_reg * sign(m) * alpha_factor + m * norm_term)
+        sign_m = torch._foreach_sign(ms)
+
+        # First part: tau_reg * sign(m) * alpha_factor
+        # Use temporary to avoid extra allocations
+        tau_sign = torch._foreach_mul(tau_reg, sign_m)
+        tau_sign_alpha = torch._foreach_mul(tau_sign, alpha_factor)
+
+        # Second part: m * norm_term
+        m_norm_term = torch._foreach_mul(ms, norm_term)
+
+        # Combine: tau_sign_alpha + m_norm_term
+        g3_inner = torch._foreach_add(tau_sign_alpha, m_norm_term)
+        g3_term = torch._foreach_mul(g3_inner, g3)
+
+        # Step 10: Compute g2 term
+        # g2_term = g2 * grad * norm_term
+        grad_norm = torch._foreach_mul(grads, norm_term)
+        g2_term = torch._foreach_mul(grad_norm, g2)
+
+        # Step 11: Combine updates and apply
+        # update = -(g2_term + g3_term)
+        update = torch._foreach_add(g2_term, g3_term)
+        torch._foreach_neg_(update)  # Negate in place
+        torch._foreach_add_(params, update)
+
+        # Step 12: Weight decay
+        if wd != 0:
+            if self.wd_decaying:
+                # wd_factor = -wd / (1 + step / wd_ts) * lr
+                # Use foreach operations to compute factors
+                step_over_ts = torch._foreach_div(step_tensors, self.wd_ts)
+                one_plus_ratio = torch._foreach_add(step_over_ts, 1.0)
+                wd_decay = torch._foreach_reciprocal(one_plus_ratio)
+                wd_factors = torch._foreach_mul(wd_decay, -wd * lr)
+            else:
+                # All factors are the same, but still use foreach for consistency
+                wd_factors = [torch.tensor(-wd * lr, device=p.device, dtype=p.dtype) for p in params]
+
+            # Apply weight decay: p = p + p * wd_factor
+            wd_updates = torch._foreach_mul(params, wd_factors)
+            torch._foreach_add_(params, wd_updates)
+
+        # Step 13: Store diagnostics (minimal Python loop)
+        for state, a_factor, g, m_tensor, m_fac in zip(states, alpha_factor, grads, ms, mfac):
+            state["current_alpha"] = a_factor.mean().detach()
+            state["gradient_norm"] = g.norm().detach()
+            state["auto_factor_mean"] = m_fac.mean().detach()
+            state["current_kappa_factor"] = state["current_alpha"] / state["auto_factor_mean"]
+            state["m_norm"] = m_tensor.norm().detach()
