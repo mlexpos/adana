@@ -3,6 +3,7 @@ import torch
 from torch.optim import Optimizer
 from typing import Union, Callable, Iterable
 
+torch._dynamo.config.cache_size_limit = 64
 
 class DANA_STAR_MK4(Optimizer):
 
@@ -58,6 +59,14 @@ class DANA_STAR_MK4(Optimizer):
 
         super(DANA_STAR_MK4, self).__init__(params, defaults)
 
+        # Create compiled version of the update function with dynamic shapes
+        # This prevents recompilation for different tensor shapes and scalar values
+        self._update_param = torch.compile(
+            self._update_param_compiled,
+            dynamic=True,
+            fullgraph=False
+        )
+
     def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
         """Convert scalar or schedule to callable function."""
         if callable(value):
@@ -107,6 +116,95 @@ class DANA_STAR_MK4(Optimizer):
         root_tau_reg = self._root_tau_reg(tau, step)
         return root_tau_reg / (torch.sqrt(v) + epsilon)
 
+    @staticmethod
+    def _update_param_compiled(
+        p: torch.Tensor,
+        grad: torch.Tensor,
+        m: torch.Tensor,
+        v: torch.Tensor,
+        tau: torch.Tensor,
+        step: torch.Tensor,
+        alpha: torch.Tensor,
+        g2: torch.Tensor,
+        g3: torch.Tensor,
+        lr: torch.Tensor,
+        wd: torch.Tensor,
+        epsilon: float,
+        clipsnr: float,
+        kappa: float,
+        wd_decaying: bool,
+        wd_ts: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
+        """
+        Compiled function for updating a single parameter.
+
+        Note: Dynamic hyperparameters (step, alpha, g2, g3, lr, wd) are passed
+        as 0-D tensors to avoid recompilation when values change.
+        Static hyperparameters (epsilon, clipsnr, kappa, wd_ts) remain as scalars.
+
+        Returns:
+            Updated (m, v, tau) and diagnostics dict
+        """
+        # Update first moment (EMA of gradient)
+        m = m.mul(1 - alpha).add(grad, alpha=alpha)
+
+        # Update second moment (EMA of gradient squared)
+        v = v.mul(1 - alpha).addcmul(grad, grad, value=alpha)
+
+        # Update tau estimate
+        tau_update = torch.abs(grad) / (torch.abs(grad) + torch.sqrt(v) + epsilon)
+        tau = tau.mul(1 - alpha).add(tau_update, alpha=alpha)
+
+        # Compute tau regularization
+        clipped_tau = torch.clamp(tau, max=0.5)
+        p_estimate = clipped_tau / (1.0 - clipped_tau)
+        min_p = 1.0 / (1.0 + step)
+        tau_reg = torch.maximum(p_estimate, torch.full_like(tau, min_p))
+
+        # Compute effective time
+        effective_time = torch.maximum(tau * step, torch.ones_like(tau))
+
+        # Compute normalization term
+        root_tau_reg = torch.sqrt(tau_reg)
+        norm_term = root_tau_reg / (torch.sqrt(v) + epsilon)
+
+        # Compute momentum factor and alpha factor
+        mfac = (norm_term * torch.abs(m) / tau_reg)
+        alpha_factor = torch.clamp(
+            (effective_time ** (1 - kappa)) * mfac,
+            max=clipsnr
+        )
+
+        # Compute g3 term (momentum-based update)
+        g3_term = g3 * (tau_reg * torch.sign(m) * alpha_factor + 1.0 * m * norm_term)
+
+        # Compute g2 term (gradient-based update)
+        g2_term = g2 * grad * norm_term
+
+        # Combine updates
+        update = -(g2_term + g3_term)
+
+        # Apply parameter update
+        p = p.add(update)
+
+        # Apply decoupled weight decay (AdamW-style)
+        # Use tensor operations to avoid .item() in compiled code
+        if wd_decaying:
+            wd_factor = -wd / (1 + step / wd_ts) * lr
+        else:
+            wd_factor = -wd * lr
+        p = p.add(p, alpha=wd_factor)
+
+        # Compute diagnostics
+        diagnostics = {
+            'current_alpha': alpha_factor.mean(),
+            'gradient_norm': grad.norm(),
+            'auto_factor_mean': mfac.mean(),
+            'm_norm': m.norm(),
+        }
+
+        return m, v, tau, diagnostics
+
     @torch.no_grad()
     def step(self, closure=None):
         """Perform a single optimization step."""
@@ -152,57 +250,33 @@ class DANA_STAR_MK4(Optimizer):
                     step = state['step']
                     alpha = delta / (delta + step)
 
-                # Update first moment (EMA of gradient)
-                m.mul_(1 - alpha).add_(grad, alpha=alpha)
+                # Convert dynamic scalars to 0-D tensors to avoid recompilation
+                # when values change. Static hyperparameters remain as Python scalars.
+                device = p.device
+                step_t = torch.tensor(step, device=device, dtype=torch.float32)
+                alpha_t = torch.tensor(alpha, device=device, dtype=torch.float32)
+                g2_t = torch.tensor(g2, device=device, dtype=torch.float32)
+                g3_t = torch.tensor(g3, device=device, dtype=torch.float32)
+                lr_t = torch.tensor(lr, device=device, dtype=torch.float32)
+                wd_t = torch.tensor(wd, device=device, dtype=torch.float32)
 
-                # Update second moment (EMA of gradient squared)
-                v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
-
-                # Update tau estimate
-                tau_update = self._tau_updater(grad, v, epsilon)
-                tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
-
-                # Compute effective time
-                effective_time = self._effective_time(tau, step)
-
-                # Store diagnostics
-                state["current_alpha"] = alpha
-
-                # Compute normalization term
-                norm_term = self._norm_term(v, tau, step, epsilon)
-
-                # Compute momentum factor (mfac) and alpha factor
-                # With mk4A = mk4B = 0, this simplifies significantly
-                mfac = (norm_term * torch.abs(m) / self._tau_reg(tau, step))
-                alpha_factor = torch.clamp(
-                    (effective_time ** (1 - self.kappa)) * mfac,
-                    max=clipsnr
+                # Call compiled update function
+                m_new, v_new, tau_new, diagnostics = self._update_param(
+                    p, grad, m, v, tau,
+                    step_t, alpha_t, g2_t, g3_t, lr_t, wd_t,
+                    epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
                 )
 
-                # Compute g3 term (momentum-based update)
-                g3_term = g3 * (self._tau_reg(tau, step) * torch.sign(m) * alpha_factor + 1.0 * m * norm_term)
+                # Update state tensors in-place
+                m.copy_(m_new)
+                v.copy_(v_new)
+                tau.copy_(tau_new)
 
-                # Store additional diagnostics
-                state["current_alpha"] = (alpha_factor).mean().detach()
-                state["gradient_norm"] = grad.norm().detach()
-                state["auto_factor_mean"] = mfac.mean().detach()
+                # Store diagnostics
+                state["current_alpha"] = diagnostics['current_alpha'].detach()
+                state["gradient_norm"] = diagnostics['gradient_norm'].detach()
+                state["auto_factor_mean"] = diagnostics['auto_factor_mean'].detach()
                 state["current_kappa_factor"] = state["current_alpha"] / state["auto_factor_mean"]
-                state["m_norm"] = m.norm().detach()
-
-                # Compute g2 term (gradient-based update)
-                g2_term = g2 * grad * norm_term
-
-                # Combine updates
-                update = -(g2_term + g3_term)
-
-                # Apply decoupled weight decay (AdamW-style)
-                if wd != 0:
-                    if self.wd_decaying:
-                        p.add_(p, alpha=-wd / (1 + step / self.wd_ts) * lr)
-                    else:
-                        p.add_(p, alpha=-wd * lr)
-
-                # Apply parameter update
-                p.add_(update)
+                state["m_norm"] = diagnostics['m_norm'].detach()
 
         return loss

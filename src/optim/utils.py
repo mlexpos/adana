@@ -402,8 +402,10 @@ def log_optimizer_schedules(optimizer, optimizer_name):
             for param in group["params"]:
                 if param in optimizer.state and "current_alpha" in optimizer.state[param]:
                     state = optimizer.state[param]
-                    alpha_values.append(state["current_alpha"])
-                    kappa_factor_values.append(state["current_kappa_factor"])
+                    if "current_alpha" in state:
+                        alpha_values.append(state["current_alpha"])
+                    if "current_kappa_factor" in state:
+                        kappa_factor_values.append(state["current_kappa_factor"])
                     if "auto_factor_mean" in state:
                         auto_factor_values.append(state["auto_factor_mean"])  # tensor scalar
                     if "g2_gradient_norm" in state:
