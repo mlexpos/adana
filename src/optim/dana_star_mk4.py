@@ -21,7 +21,7 @@ class DANA_STAR_MK4(Optimizer):
         weight_time: bool = False,
         wd_decaying: bool = False,
         wd_ts: float = 1.0,
-        use_foreach: bool = True,
+        use_foreach: bool = False,
         ):
         """
         DANA-STAR MK4 optimizer.
@@ -165,15 +165,21 @@ class DANA_STAR_MK4(Optimizer):
         Returns:
             Updated (m, v, tau) and diagnostics dict
         """
-        # Update first moment (EMA of gradient)
-        m = m.mul(1 - alpha).add(grad, alpha=alpha)
+        # Update first moment (EMA of gradient) using in-place lerp
+        # m = m * (1-alpha) + grad * alpha = lerp(m, grad, alpha)
+        m.lerp_(grad, alpha)
 
-        # Update second moment (EMA of gradient squared)
-        v = v.mul(1 - alpha).addcmul(grad, grad, value=alpha)
+        # Update second moment (EMA of gradient squared) using in-place ops
+        v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+
+        # Compute sqrt(v) + epsilon once and reuse
+        sqrt_v_eps = torch.sqrt(v).add_(epsilon)
 
         # Update tau estimate
-        tau_update = torch.abs(grad) / (torch.abs(grad) + torch.sqrt(v) + epsilon)
-        tau = tau.mul(1 - alpha).add(tau_update, alpha=alpha)
+        # tau_update = |grad| / (|grad| + sqrt_v_eps)
+        abs_grad = torch.abs(grad)
+        tau_update = abs_grad / (abs_grad + sqrt_v_eps)
+        tau.lerp_(tau_update, alpha)
 
         # Compute tau regularization
         clipped_tau = torch.clamp(tau, max=0.5)
@@ -181,39 +187,41 @@ class DANA_STAR_MK4(Optimizer):
         min_p = 1.0 / (1.0 + step)
         tau_reg = torch.clamp(p_estimate, min=min_p)
 
-        # Compute effective time
+        # Compute effective time (clamping is not needed since tau_reg is already clamped)
         effective_time = torch.clamp(tau * step, min=1.0)
+        #effective_time = tau_reg * (1.0 + step)
 
-        # Compute normalization term
+        # Compute normalization term (reusing sqrt_v_eps)
         root_tau_reg = torch.sqrt(tau_reg)
-        norm_term = root_tau_reg / (torch.sqrt(v) + epsilon)
-
+        norm_term = root_tau_reg / sqrt_v_eps
+        m_norm_term = torch.abs(m) * norm_term
         # Compute momentum factor and alpha factor
-        mfac = (norm_term * torch.abs(m) / tau_reg)
+        mfac = (m_norm_term / tau_reg)
         alpha_factor = torch.clamp(
             (effective_time ** (1 - kappa)) * mfac,
             max=clipsnr
         )
 
         # Compute g3 term (momentum-based update)
-        g3_term = g3 * (tau_reg * torch.sign(m) * alpha_factor + 1.0 * m * norm_term)
+        g3_term = (-g3) * (torch.sign(m) * (tau_reg * alpha_factor + m_norm_term))
 
         # Compute g2 term (gradient-based update)
-        g2_term = g2 * grad * norm_term
+        g2_term = (-g2) * grad * norm_term
 
         # Combine updates
-        update = -(g2_term + g3_term)
+        update = g2_term + g3_term
 
-        # Apply parameter update
-        p = p.add(update)
+        # Apply parameter update (in-place)
+        p.add_(update)
 
         # Apply decoupled weight decay (AdamW-style)
         # Use tensor operations to avoid .item() in compiled code
+        # Formula: p = p + wd_factor * p = p * (1 + wd_factor)
         if wd_decaying:
             wd_factor = -wd / (1 + step / wd_ts) * lr
         else:
             wd_factor = -wd * lr
-        p = p.add(p, alpha=wd_factor)
+        p.mul_(1 + wd_factor)
 
         # Compute diagnostics
         diagnostics = {
