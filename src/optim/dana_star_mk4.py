@@ -67,6 +67,16 @@ class DANA_STAR_MK4(Optimizer):
         # We use a cache to lazily compile for each unique rank encountered
         self._compiled_functions = {}
 
+        # Compile the foreach step function if using foreach
+        if self.use_foreach:
+            self._foreach_step_group_compiled = torch.compile(
+                self._foreach_step_group,
+                fullgraph=False,
+                dynamic=True
+            )
+        else:
+            self._foreach_step_group_compiled = None
+
     def _get_compiled_fn(self, ndim):
         """Get or create compiled function for given tensor rank."""
         if ndim not in self._compiled_functions:
@@ -237,9 +247,24 @@ class DANA_STAR_MK4(Optimizer):
 
             # Use foreach path if enabled
             if self.use_foreach:
-                self._foreach_step_group(
-                    group, g2, g3, lr, time_factor, delta, wd, epsilon, clipsnr
-                )
+                # Convert scalars to tensors to avoid recompilation
+                # Use CPU tensors since they'll be broadcast to each parameter's device
+                g2_t = torch.tensor(g2, dtype=torch.float32)
+                g3_t = torch.tensor(g3, dtype=torch.float32)
+                lr_t = torch.tensor(lr, dtype=torch.float32)
+                time_factor_t = torch.tensor(time_factor, dtype=torch.float32)
+                delta_t = torch.tensor(delta, dtype=torch.float32)
+                wd_t = torch.tensor(wd, dtype=torch.float32)
+
+                # Use compiled version if available
+                if self._foreach_step_group_compiled is not None:
+                    self._foreach_step_group_compiled(
+                        group, g2_t, g3_t, lr_t, time_factor_t, delta_t, wd_t, epsilon, clipsnr
+                    )
+                else:
+                    self._foreach_step_group(
+                        group, g2_t, g3_t, lr_t, time_factor_t, delta_t, wd_t, epsilon, clipsnr
+                    )
                 continue
 
             for p in group['params']:
@@ -304,12 +329,12 @@ class DANA_STAR_MK4(Optimizer):
     def _foreach_step_group(
         self,
         group,
-        g2: float,
-        g3: float,
-        lr: float,
-        time_factor: float,
-        delta: float,
-        wd: float,
+        g2: torch.Tensor,
+        g3: torch.Tensor,
+        lr: torch.Tensor,
+        time_factor: torch.Tensor,
+        delta: torch.Tensor,
+        wd: torch.Tensor,
         epsilon: float,
         clipsnr: float,
     ) -> None:
@@ -322,6 +347,11 @@ class DANA_STAR_MK4(Optimizer):
         - Reusing intermediate results (sqrt_vs)
         - Eliminating Python list comprehensions
         - Using foreach operations wherever possible
+
+        Args:
+            group: Parameter group
+            g2, g3, lr, time_factor, delta, wd: 0-D tensors to avoid recompilation
+            epsilon, clipsnr: Static scalars (won't cause recompilation)
         """
         # Collect parameters and state
         params, grads, ms, vs, taus = [], [], [], [], []
@@ -342,16 +372,22 @@ class DANA_STAR_MK4(Optimizer):
 
             state['step'] += 1
 
+            device = p.device
+
             if self.weight_time:
                 step_value = group['weighted_step_count']
-                alpha = delta / (delta + step_value) * time_factor
+                # alpha = delta / (delta + step_value) * time_factor
+                step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
+                alpha_t = delta / (delta + step_t) * time_factor
+                alpha_tensors.append(alpha_t.to(device))
             else:
                 step_value = state['step']
-                alpha = delta / (delta + step_value)
+                # alpha = delta / (delta + step_value)
+                step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
+                alpha_t = delta / (delta + step_t)
+                alpha_tensors.append(alpha_t.to(device))
 
-            device = p.device
-            alpha_tensors.append(torch.as_tensor(alpha, device=device, dtype=p.dtype))
-            step_tensors.append(torch.as_tensor(step_value, device=device, dtype=p.dtype))
+            step_tensors.append(step_t)
 
             params.append(p)
             grads.append(grad)
@@ -470,17 +506,22 @@ class DANA_STAR_MK4(Optimizer):
         torch._foreach_add_(params, update)
 
         # Step 12: Weight decay
-        if wd != 0:
+        # wd is a 0-D tensor, check if non-zero
+        if wd.item() != 0:
             if self.wd_decaying:
                 # wd_factor = -wd / (1 + step / wd_ts) * lr
                 # Use foreach operations to compute factors
                 step_over_ts = torch._foreach_div(step_tensors, self.wd_ts)
                 one_plus_ratio = torch._foreach_add(step_over_ts, 1.0)
                 wd_decay = torch._foreach_reciprocal(one_plus_ratio)
-                wd_factors = torch._foreach_mul(wd_decay, -wd * lr)
+                # Compute -wd * lr as a scalar tensor operation
+                neg_wd_lr = -wd * lr
+                wd_factors = torch._foreach_mul(wd_decay, neg_wd_lr)
             else:
-                # All factors are the same, but still use foreach for consistency
-                wd_factors = [torch.tensor(-wd * lr, device=p.device, dtype=p.dtype) for p in params]
+                # All factors are the same
+                # Compute -wd * lr and broadcast to each parameter
+                neg_wd_lr = -wd * lr
+                wd_factors = [neg_wd_lr.to(device=p.device, dtype=p.dtype) for p in params]
 
             # Apply weight decay: p = p + p * wd_factor
             wd_updates = torch._foreach_mul(params, wd_factors)
