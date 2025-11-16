@@ -67,15 +67,15 @@ class DANA_STAR_MK4(Optimizer):
         # We use a cache to lazily compile for each unique rank encountered
         self._compiled_functions = {}
 
-        # Compile the foreach step function if using foreach
+        # Compile the foreach computation kernel if using foreach
         if self.use_foreach:
-            self._foreach_step_group_compiled = torch.compile(
-                self._foreach_step_group,
+            self._foreach_compute_kernel = torch.compile(
+                self._foreach_compute_kernel_impl,
                 fullgraph=False,
                 dynamic=True
             )
         else:
-            self._foreach_step_group_compiled = None
+            self._foreach_compute_kernel = None
 
     def _get_compiled_fn(self, ndim):
         """Get or create compiled function for given tensor rank."""
@@ -256,15 +256,10 @@ class DANA_STAR_MK4(Optimizer):
                 delta_t = torch.tensor(delta, dtype=torch.float32)
                 wd_t = torch.tensor(wd, dtype=torch.float32)
 
-                # Use compiled version if available
-                if self._foreach_step_group_compiled is not None:
-                    self._foreach_step_group_compiled(
-                        group, g2_t, g3_t, lr_t, time_factor_t, delta_t, wd_t, epsilon, clipsnr
-                    )
-                else:
-                    self._foreach_step_group(
-                        group, g2_t, g3_t, lr_t, time_factor_t, delta_t, wd_t, epsilon, clipsnr
-                    )
+                # Call the foreach step (with state extraction outside compiled region)
+                self._foreach_step_group(
+                    group, g2_t, g3_t, lr_t, time_factor_t, delta_t, wd_t, epsilon, clipsnr
+                )
                 continue
 
             for p in group['params']:
@@ -339,21 +334,14 @@ class DANA_STAR_MK4(Optimizer):
         clipsnr: float,
     ) -> None:
         """
-        Highly optimized foreach update with maximum fusion.
+        Foreach update with state extraction (uncompiled) + computation kernel (compiled).
 
-        This implementation minimizes kernel launches by:
-        - Using lerp for EMA updates
-        - Using addcmul/addcdiv for fused operations
-        - Reusing intermediate results (sqrt_vs)
-        - Eliminating Python list comprehensions
-        - Using foreach operations wherever possible
-
-        Args:
-            group: Parameter group
-            g2, g3, lr, time_factor, delta, wd: 0-D tensors to avoid recompilation
-            epsilon, clipsnr: Static scalars (won't cause recompilation)
+        This method extracts state and prepares tensors (uncompiled, can access self.state),
+        then calls a compiled computation kernel for the actual math operations.
         """
-        # Collect parameters and state
+        # ===================================================================
+        # STATE EXTRACTION (UNCOMPILED - accesses self.state and group)
+        # ===================================================================
         params, grads, ms, vs, taus = [], [], [], [], []
         alpha_tensors, step_tensors = [], []
         states = []
@@ -376,13 +364,11 @@ class DANA_STAR_MK4(Optimizer):
 
             if self.weight_time:
                 step_value = group['weighted_step_count']
-                # alpha = delta / (delta + step_value) * time_factor
                 step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
                 alpha_t = delta / (delta + step_t) * time_factor
                 alpha_tensors.append(alpha_t.to(device))
             else:
                 step_value = state['step']
-                # alpha = delta / (delta + step_value)
                 step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
                 alpha_t = delta / (delta + step_t)
                 alpha_tensors.append(alpha_t.to(device))
@@ -398,6 +384,59 @@ class DANA_STAR_MK4(Optimizer):
 
         if not params:
             return
+
+        # ===================================================================
+        # CALL COMPILED COMPUTATION KERNEL
+        # ===================================================================
+        if self._foreach_compute_kernel is not None:
+            alpha_factors, mfacs = self._foreach_compute_kernel(
+                params, grads, ms, vs, taus, alpha_tensors, step_tensors,
+                g2, g3, lr, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+            )
+        else:
+            alpha_factors, mfacs = self._foreach_compute_kernel_impl(
+                params, grads, ms, vs, taus, alpha_tensors, step_tensors,
+                g2, g3, lr, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+            )
+
+        # ===================================================================
+        # STORE DIAGNOSTICS (UNCOMPILED - accesses self.state)
+        # ===================================================================
+        for state, a_factor, g, m_tensor, m_fac in zip(states, alpha_factors, grads, ms, mfacs):
+            state["current_alpha"] = a_factor.mean().detach()
+            state["gradient_norm"] = g.norm().detach()
+            state["auto_factor_mean"] = m_fac.mean().detach()
+            state["current_kappa_factor"] = state["current_alpha"] / state["auto_factor_mean"]
+            state["m_norm"] = m_tensor.norm().detach()
+
+    def _foreach_compute_kernel_impl(
+        self,
+        params,
+        grads,
+        ms,
+        vs,
+        taus,
+        alpha_tensors,
+        step_tensors,
+        g2: torch.Tensor,
+        g3: torch.Tensor,
+        lr: torch.Tensor,
+        wd: torch.Tensor,
+        epsilon: float,
+        clipsnr: float,
+        kappa: float,
+        wd_decaying: bool,
+        wd_ts: float,
+    ):
+        """
+        Pure computation kernel (compilable) - no access to self.state or group.
+
+        This function contains only tensor operations and can be compiled without
+        triggering guards on self.state or group['params'].
+
+        Returns:
+            alpha_factors, mfacs: For diagnostics
+        """
 
         # =====================================================================
         # OPTIMIZED FOREACH OPERATIONS - MAXIMUM FUSION
@@ -474,7 +513,7 @@ class DANA_STAR_MK4(Optimizer):
 
         # Step 8: Alpha factor with clipping
         # alpha_factor = clamp((effective_time^(1-kappa)) * mfac, max=clipsnr)
-        eff_pow = torch._foreach_pow(effective_time, 1.0 - self.kappa)
+        eff_pow = torch._foreach_pow(effective_time, 1.0 - kappa)
         alpha_factor = torch._foreach_mul(eff_pow, mfac)
         alpha_factor = [torch.clamp(af, max=clipsnr) for af in alpha_factor]
 
@@ -506,31 +545,26 @@ class DANA_STAR_MK4(Optimizer):
         torch._foreach_add_(params, update)
 
         # Step 12: Weight decay
-        # wd is a 0-D tensor, check if non-zero
-        if wd.item() != 0:
-            if self.wd_decaying:
-                # wd_factor = -wd / (1 + step / wd_ts) * lr
-                # Use foreach operations to compute factors
-                step_over_ts = torch._foreach_div(step_tensors, self.wd_ts)
-                one_plus_ratio = torch._foreach_add(step_over_ts, 1.0)
-                wd_decay = torch._foreach_reciprocal(one_plus_ratio)
-                # Compute -wd * lr as a scalar tensor operation
-                neg_wd_lr = -wd * lr
-                wd_factors = torch._foreach_mul(wd_decay, neg_wd_lr)
-            else:
-                # All factors are the same
-                # Compute -wd * lr and broadcast to each parameter
-                neg_wd_lr = -wd * lr
-                wd_factors = [neg_wd_lr.to(device=p.device, dtype=p.dtype) for p in params]
+        # Apply weight decay unconditionally (if wd=0, the update is zero anyway)
+        if wd_decaying:
+            # wd_factor = -wd / (1 + step / wd_ts) * lr
+            # Use foreach operations to compute factors
+            step_over_ts = torch._foreach_div(step_tensors, wd_ts)
+            one_plus_ratio = torch._foreach_add(step_over_ts, 1.0)
+            wd_decay = torch._foreach_reciprocal(one_plus_ratio)
+            # Compute -wd * lr as a scalar tensor operation
+            neg_wd_lr = -wd * lr
+            wd_factors = torch._foreach_mul(wd_decay, neg_wd_lr)
+        else:
+            # All factors are the same
+            # Compute -wd * lr and broadcast to each parameter
+            neg_wd_lr = -wd * lr
+            wd_factors = [neg_wd_lr.to(device=p.device, dtype=p.dtype) for p in params]
 
-            # Apply weight decay: p = p + p * wd_factor
-            wd_updates = torch._foreach_mul(params, wd_factors)
-            torch._foreach_add_(params, wd_updates)
+        # Apply weight decay: p = p + p * wd_factor
+        # If wd=0, this is a no-op (adds zero), but keeps graph intact
+        wd_updates = torch._foreach_mul(params, wd_factors)
+        torch._foreach_add_(params, wd_updates)
 
-        # Step 13: Store diagnostics (minimal Python loop)
-        for state, a_factor, g, m_tensor, m_fac in zip(states, alpha_factor, grads, ms, mfac):
-            state["current_alpha"] = a_factor.mean().detach()
-            state["gradient_norm"] = g.norm().detach()
-            state["auto_factor_mean"] = m_fac.mean().detach()
-            state["current_kappa_factor"] = state["current_alpha"] / state["auto_factor_mean"]
-            state["m_norm"] = m_tensor.norm().detach()
+        # Return diagnostics for storage outside compiled region
+        return alpha_factor, mfac
