@@ -379,7 +379,10 @@ class DANA_STAR_MK4(Optimizer):
         torch._foreach_add_(one_minus_alphas, 1.0)
         torch._foreach_mul_(vs, one_minus_alphas)
         # Then add alpha * grad^2 using addcmul
-        torch._foreach_addcmul_(vs, grads, grads, value=alpha_tensors)
+        # Note: _foreach_addcmul_ expects scalars tuple, not keyword arg
+        grad_sq_scaled = torch._foreach_mul(grads, grads)
+        grad_sq_scaled = torch._foreach_mul(grad_sq_scaled, alpha_tensors)
+        torch._foreach_add_(vs, grad_sq_scaled)
 
         # Step 3: Update tau estimate
         # tau_update = |grad| / (|grad| + sqrt(v) + epsilon)
