@@ -36,14 +36,15 @@ class DANA_STAR_MK4(Optimizer):
             epsilon: Small constant for numerical stability.
             weight_decay: Weight decay parameter.
             clipsnr: SNR clipping parameter.
-            weight_time: Whether to weight time by lr / lr_max factor.
+            weight_time: Must be False (kept for compatibility).
             wd_decaying: Whether to decay weight decay over time.
             wd_ts: Timescale for weight decay decay.
-            use_foreach: Whether to use fused foreach operations (default: True).
+            use_foreach: Whether to use fused foreach operations (default: False).
         """
-        # Enforce mk4A and mk4B are 0
+        # Enforce mk4A, mk4B, and weight_time constraints
         assert mk4A == 0.0, f"mk4A must be 0.0, got {mk4A}"
         assert mk4B == 0.0, f"mk4B must be 0.0, got {mk4B}"
+        assert weight_time == False, f"weight_time must be False, got {weight_time}"
 
         defaults = dict(
             lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, weight_decay=weight_decay, weighted_step_count=0)
@@ -55,7 +56,7 @@ class DANA_STAR_MK4(Optimizer):
         self.clipsnr = clipsnr
         self.epsilon = epsilon
         self.weight_decay = weight_decay
-        self.weight_time = weight_time
+        self.weight_time = False  # Hardcoded
         self.wd_decaying = wd_decaying
         self.wd_ts = wd_ts
         self.use_foreach = use_foreach
@@ -93,48 +94,6 @@ class DANA_STAR_MK4(Optimizer):
             return value
         else:
             return lambda step: value
-
-    def _clip_to_half(self, tau: torch.Tensor) -> torch.Tensor:
-        """Clip tau values to at most 0.5."""
-        return torch.clamp(tau, max=0.5)
-
-    def _tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
-        """
-        Tau regularization: converts tau/(1-tau) to p estimate and clips to prevent
-        poor estimation when p << 1/t.
-        """
-        clipped_tau = self._clip_to_half(tau)
-        p_estimate = clipped_tau / (1.0 - clipped_tau)
-        min_p = torch.full_like(tau, 1.0 / (1.0 + step))
-        return torch.maximum(p_estimate, min_p)
-
-    def _root_tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
-        """Square root of tau regularization."""
-        return torch.sqrt(self._tau_reg(tau, step))
-
-    def _effective_time(self, tau: torch.Tensor, step: int) -> torch.Tensor:
-        """Compute effective time for tau regularization."""
-        return torch.maximum(tau * step, torch.ones_like(tau))
-
-    def _tau_updater(
-        self,
-        g: torch.Tensor,
-        v: torch.Tensor,
-        epsilon: float
-    ) -> torch.Tensor:
-        """Update tau estimate based on gradient and second moment."""
-        return torch.abs(g) / (torch.abs(g) + torch.sqrt(v) + epsilon)
-
-    def _norm_term(
-        self,
-        v: torch.Tensor,
-        tau: torch.Tensor,
-        step: int,
-        epsilon: float
-    ) -> torch.Tensor:
-        """Compute normalization term for parameter updates."""
-        root_tau_reg = self._root_tau_reg(tau, step)
-        return root_tau_reg / (torch.sqrt(v) + epsilon)
 
     @staticmethod
     def _update_param_compiled(
@@ -260,13 +219,12 @@ class DANA_STAR_MK4(Optimizer):
                 g2_t = torch.tensor(g2, dtype=torch.float32)
                 g3_t = torch.tensor(g3, dtype=torch.float32)
                 lr_t = torch.tensor(lr, dtype=torch.float32)
-                time_factor_t = torch.tensor(time_factor, dtype=torch.float32)
                 delta_t = torch.tensor(delta, dtype=torch.float32)
                 wd_t = torch.tensor(wd, dtype=torch.float32)
 
                 # Call the foreach step (with state extraction outside compiled region)
                 self._foreach_step_group(
-                    group, g2_t, g3_t, lr_t, time_factor_t, delta_t, wd_t, epsilon, clipsnr
+                    group, g2_t, g3_t, lr_t, delta_t, wd_t, epsilon, clipsnr
                 )
                 continue
 
@@ -288,12 +246,8 @@ class DANA_STAR_MK4(Optimizer):
                 state['step'] += 1
 
                 # Compute EMA coefficient: alpha = delta / (delta + t)
-                if self.weight_time:
-                    step = group['weighted_step_count']
-                    alpha = delta / (delta + step) * time_factor
-                else:
-                    step = state['step']
-                    alpha = delta / (delta + step)
+                step = state['step']
+                alpha = delta / (delta + step)
 
                 # Convert dynamic scalars to 0-D tensors to avoid recompilation
                 # when values change. Static hyperparameters remain as Python scalars.
@@ -335,7 +289,6 @@ class DANA_STAR_MK4(Optimizer):
         g2: torch.Tensor,
         g3: torch.Tensor,
         lr: torch.Tensor,
-        time_factor: torch.Tensor,
         delta: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
@@ -370,16 +323,10 @@ class DANA_STAR_MK4(Optimizer):
 
             device = p.device
 
-            if self.weight_time:
-                step_value = group['weighted_step_count']
-                step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
-                alpha_t = delta / (delta + step_t) * time_factor
-                alpha_tensors.append(alpha_t.to(device))
-            else:
-                step_value = state['step']
-                step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
-                alpha_t = delta / (delta + step_t)
-                alpha_tensors.append(alpha_t.to(device))
+            step_value = state['step']
+            step_t = torch.tensor(step_value, device=device, dtype=p.dtype)
+            alpha_t = delta / (delta + step_t)
+            alpha_tensors.append(alpha_t.to(device))
 
             step_tensors.append(step_t)
 
