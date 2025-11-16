@@ -3,14 +3,13 @@ import torch
 from torch.optim import Optimizer
 from typing import Union, Callable, Iterable
 
+
 class DANA_STAR_MK4(Optimizer):
-    
+
     def __init__(
         self,
         params: Iterable[torch.Tensor],
-        lr: float = 1.0, # learning rate for debugging
-        # g2: float = 1e-4,
-        # g3: float = 1e-5,
+        lr: float = 1.0,
         delta: float = 8.0,
         kappa: float = 1.0,
         mk4A: float = 0.0,
@@ -22,28 +21,34 @@ class DANA_STAR_MK4(Optimizer):
         wd_decaying: bool = False,
         wd_ts: float = 1.0,
         ):
-
         """
-        DANA-STAR optimizer.
-        
+        DANA-STAR MK4 optimizer.
+
         Args:
             params: Iterable of parameters to optimize.
-            lr: Learning rate. In the code, g2=g3 are taken equal to lr.
-            delta: Delta parameter.
-            epsilon: Epsilon parameter.
+            lr: Learning rate.
+            delta: Delta parameter for EMA coefficient.
+            kappa: Kappa parameter for effective time scaling.
+            mk4A: Must be 0.0 (kept for compatibility).
+            mk4B: Must be 0.0 (kept for compatibility).
+            epsilon: Small constant for numerical stability.
             weight_decay: Weight decay parameter.
-            clipsnr: Clipsnr parameter.
-            weight_time: Whether to use a weighting of the time by a factor lr / lr_max when using scheduler to better handle annealing (doesn't work currently).
-            wd_decaying: Whether to decay the wd parameter along training by a (1 + t) factor.
+            clipsnr: SNR clipping parameter.
+            weight_time: Whether to weight time by lr / lr_max factor.
+            wd_decaying: Whether to decay weight decay over time.
+            wd_ts: Timescale for weight decay decay.
         """
+        # Enforce mk4A and mk4B are 0
+        assert mk4A == 0.0, f"mk4A must be 0.0, got {mk4A}"
+        assert mk4B == 0.0, f"mk4B must be 0.0, got {mk4B}"
 
         defaults = dict(
             lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, weight_decay=weight_decay, weighted_step_count=0)
         self.lr = lr
         self.delta = delta
         self.kappa = kappa
-        self.mk4A = mk4A
-        self.mk4B = mk4B
+        self.mk4A = 0.0  # Hardcoded
+        self.mk4B = 0.0  # Hardcoded
         self.clipsnr = clipsnr
         self.epsilon = epsilon
         self.weight_decay = weight_decay
@@ -52,70 +57,56 @@ class DANA_STAR_MK4(Optimizer):
         self.wd_ts = wd_ts
 
         super(DANA_STAR_MK4, self).__init__(params, defaults)
-        
-        # Global step counter
-        self._step_count = 0
-    
+
     def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
         """Convert scalar or schedule to callable function."""
         if callable(value):
             return value
         else:
             return lambda step: value
-    
+
     def _clip_to_half(self, tau: torch.Tensor) -> torch.Tensor:
         """Clip tau values to at most 0.5."""
         return torch.clamp(tau, max=0.5)
-    
+
     def _tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
         """
-        Tau regularization function that:
-        1. Ensures tau is not a poor estimate when p << 1/t
-        2. Converts tau/(1-tau) form to proper p estimate  
-        3. Clips to prevent numerical issues
+        Tau regularization: converts tau/(1-tau) to p estimate and clips to prevent
+        poor estimation when p << 1/t.
         """
         clipped_tau = self._clip_to_half(tau)
         p_estimate = clipped_tau / (1.0 - clipped_tau)
         min_p = torch.full_like(tau, 1.0 / (1.0 + step))
         return torch.maximum(p_estimate, min_p)
-    
+
     def _root_tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
         """Square root of tau regularization."""
         return torch.sqrt(self._tau_reg(tau, step))
-    
-    # def _quarter_root_tau_reg(self, tau: torch.Tensor, step: int) -> torch.Tensor:
-    #     """Quarter root of tau regularization."""
-    #     return torch.pow(self._tau_reg(tau, step), 0.25)
-    
+
     def _effective_time(self, tau: torch.Tensor, step: int) -> torch.Tensor:
         """Compute effective time for tau regularization."""
         return torch.maximum(tau * step, torch.ones_like(tau))
-    
+
     def _tau_updater(
-        self, 
-        # tau: torch.Tensor, 
-        g: torch.Tensor, # gradient
-        v: torch.Tensor, # second moment
+        self,
+        g: torch.Tensor,
+        v: torch.Tensor,
         epsilon: float
     ) -> torch.Tensor:
+        """Update tau estimate based on gradient and second moment."""
         return torch.abs(g) / (torch.abs(g) + torch.sqrt(v) + epsilon)
-        
-    
+
     def _norm_term(
-        self, 
-        # g : torch.Tensor, # gradient
-        # md: torch.Tensor, 
-        v: torch.Tensor, 
-        tau: torch.Tensor, 
-        step: int, 
-        #clipsnr: float, 
+        self,
+        v: torch.Tensor,
+        tau: torch.Tensor,
+        step: int,
         epsilon: float
     ) -> torch.Tensor:
-    
+        """Compute normalization term for parameter updates."""
         root_tau_reg = self._root_tau_reg(tau, step)
         return root_tau_reg / (torch.sqrt(v) + epsilon)
-    
-    #@torch.compile
+
     @torch.no_grad()
     def step(self, closure=None):
         """Perform a single optimization step."""
@@ -123,11 +114,9 @@ class DANA_STAR_MK4(Optimizer):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-        
-        self._step_count += 1
-        
+
         for group in self.param_groups:
-            # Get schedule functions
+            # Extract hyperparameters
             g2 = group['lr']
             g3 = group['lr']
             lr = group['lr']
@@ -137,193 +126,83 @@ class DANA_STAR_MK4(Optimizer):
             wd = group['weight_decay']
             epsilon = group['epsilon']
             clipsnr = group['clipsnr']
-            
+
             for p in group['params']:
                 grad = p.grad
                 if grad is None:
                     continue
-                
+
                 state = self.state[p]
-                
-                # State initialization
+
+                # Initialize state
                 if len(state) == 0:
                     state['step'] = 0
-                    state['m'] = torch.zeros_like(p)  # First moment
-                    state['v'] = torch.zeros_like(p)  # Second moment
-                    state['tau'] = torch.zeros_like(p)  # Tau estimates
-                
+                    state['m'] = torch.zeros_like(p)
+                    state['v'] = torch.zeros_like(p)
+                    state['tau'] = torch.zeros_like(p)
+
                 m, v, tau = state['m'], state['v'], state['tau']
                 state['step'] += 1
-                
-                # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
-                if self.weight_time: # potentially take one during warmup
+
+                # Compute EMA coefficient: alpha = delta / (delta + t)
+                if self.weight_time:
                     step = group['weighted_step_count']
                     alpha = delta / (delta + step) * time_factor
                 else:
                     step = state['step']
                     alpha = delta / (delta + step)
-                
-                # Update first moment
+
+                # Update first moment (EMA of gradient)
                 m.mul_(1 - alpha).add_(grad, alpha=alpha)
-                # Update second moment
+
+                # Update second moment (EMA of gradient squared)
                 v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
-                
-                # Update tau using the specified tau updater
+
+                # Update tau estimate
                 tau_update = self._tau_updater(grad, v, epsilon)
                 tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
+
                 # Compute effective time
                 effective_time = self._effective_time(tau, step)
-                
-                # Store current alpha and kappa-based factor for logging
+
+                # Store diagnostics
                 state["current_alpha"] = alpha
-                #state["current_kappa_factor"] = (1 + effective_time)**(1-kappa)
-                # Compute momentum terms
+
+                # Compute normalization term
                 norm_term = self._norm_term(v, tau, step, epsilon)
-                #0. clip_g3_term = torch.minimum(clipsnr * m**2/((self._tau_reg(tau, step))*torch.sqrt(v) + epsilon),effective_time)
-                #0a.clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #0b. no-norm
-                #1. clip_g3_term = torch.minimum(m**2/(torch.sqrt(v) + epsilon),effective_time)
-                #1a. clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #1b ?no-norm?
-                #2. clip_g3_term = torch.minimum(m**2/((self._tau_reg(tau, step))*torch.sqrt(v) + epsilon),effective_time)
-                #2a.clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #2b. no-norm
-                #3. clip_g3_term = torch.minimum(m**2/((self._tau_reg(tau, step)**(1.5))*torch.sqrt(v) + epsilon),effective_time)
-                #3a.clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #3b.norm-term
-                #4. clip_g3_term = torch.minimum(torch.abs(m)/ (torch.sqrt(v) + epsilon),self._root_tau_reg(tau, step)*effective_time)
-                #5. clip_g3_term = torch.minimum(torch.abs(m)/ (torch.sqrt(v) + epsilon),effective_time)
 
-                #WORKS LIKE CRAP  ##FP16??ERRORS
-                #clip_g3_term = torch.minimum(clipsnr*torch.sqrt((effective_time)*(m**2/(self._tau_reg(tau, step)*v+epsilon))),effective_time)
-                #WORKS GREAT ##FP16??ERRORS
-#                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/(torch.sqrt(v)+epsilon)),effective_time)
-#                clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/(self._root_tau_reg(tau, step)*torch.sqrt(v)+epsilon)),effective_time)
-                #clip_g3_term = torch.clamp(clipsnr*(m**2)/(v+epsilon**2)/self._tau_reg(tau, step), max=1.0)*effective_time
-                #clip_g3_term = torch.clamp(clipsnr*(m**2)/(v+epsilon**2)/(self._tau_reg(tau, step)**2), max=1.0)*effective_time
-              
-#  clip_g3_term = torch.minimum(clipsnr*(effective_time)*(torch.abs(m)/(self._root_tau_reg(tau, step)*torch.sqrt(v)+epsilon))**2,effective_time)
-                #clip_g3_term = torch.minimum(clipsnr*(effective_time)*torch.sqrt((m**2/(self._tau_reg(tau, step)*v+epsilon))),effective_time)
-                #clip_g3_term = torch.minimum((effective_time)*clipsnr*(m**2/(self._tau_reg(tau, step)*v+epsilon)),effective_time)
-                
-                #formula 1
-                #clip_g3_term = torch.minimum((effective_time**0.5)*clipsnr*(torch.abs(m)/((torch.sqrt(v)+epsilon)*self._root_tau_reg(tau, step))),effective_time)
-                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #g3_term = g3 * clip_g3_term * m * norm_term
-
-                #formula 2
-                #clip_g3_term = torch.minimum((effective_time)*clipsnr*(m**2/(self._tau_reg(tau, step)**2)),effective_time)
-                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #g3_term = g3 * clip_g3_term * m * norm_term
-
-                #formula 3 (CORRESPONDS to A,B 0.5/-0.5/KAPPA0.0)
-                #g3_term = g3 * clipsnr * torch.sign(m) * self._tau_reg(tau, step)
-
-                #formula 4 (CORRESPONDS to A,B 0.0/0.5/KAPPA0.0, but correctly clips from below)
-                #g3_term = g3 * ( 0.125*torch.sign(m) * self._tau_reg(tau, step) + clipsnr * m * norm_term)
-                #(The above is the best so far LR 1e-3, clipsnr 4.0.  Trying below, to test the 0.125)
-                #g3_term = g3 * ( 0.50*torch.sign(m) * self._tau_reg(tau, step) + clipsnr * m * norm_term)
-
-                #formula 5 (CORRESPONDS to A,B -1.0/1.0/KAPPA1.0) but now attempting to stabilize it differently
-                #g3_term = g3 * self._tau_reg(tau, step)*(0.0625*torch.sign(m))*(1.0 + clipsnr*torch.clamp(effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**3),max=1.0)) 
-                #(At first, this didn't appear to improve anything, but after further review, it appears that the clipsnr was too low)
-                #(So to improve behavior, I further dropped the snr constant on the 0.125 to 0.0625, and then launched a larger sweep, with larger clipsnr.)
-
-                #formula 6 (CORRESPONDS to A,B 0.5/-0.5/KAPPA0.0) Boosted with a clipped dana-star recipe.
-                #g3_term = g3 * self._tau_reg(tau, step)*(0.125*torch.sign(m))*(1.0 + clipsnr*torch.clamp(effective_time**0.25*(norm_term*torch.abs(m)),max=1.0)) 
-
-                #formula 7 (CORRESPONDS to A,B -1.0/1.0/KAPPA1.0) clipped at one, which appears preferable to the sign mechanism.  
-                # To add the lower clip, we add an m * norm_term.
-                #g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**3),max=1.0)) + clipsnr * m * norm_term) 
-
-                #formula 8 (CORRESPONDS to A,B 0.0/0.5/KAPPA1.0) -- Based on the hypothesis that v**2 slower than expected (or indeed not at all)
-                #clip_g3_term = effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**(1.5))
-                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
-                #g3_term = g3 * m * norm_term * clip_g3_term
-                # mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
-                # g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*(mfac**2),max=1.0)) + clipsnr * m * norm_term) 
-                # state["current_kappa_factor"] = (torch.clamp(effective_time*(mfac**2),max=1.0)).mean().detach()
-                # state["gradient_norm"] = grad.norm().detach()
-                # state["auto_factor_mean"] = mfac.norm().detach()
-                # state["m_norm"] = m.norm().detach()
-
-                #formula 9 (CORRESPONDS to A,B 0.0/0.75/KAPPA1.0) -- Based on the hypothesis that v**2 slower than expected (or indeed not at all)
-                #clip_g3_term = effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**(1.5))
-                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
-                #g3_term = g3 * m * norm_term * clip_g3_term
-                # mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
-                # g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp(effective_time*(mfac**2.5),max=1.0)) + clipsnr * m * norm_term) 
-                # state["current_kappa_factor"] = (torch.clamp(effective_time*(mfac**2),max=1.0)).mean().detach()
-                # state["gradient_norm"] = grad.norm().detach()
-                # state["auto_factor_mean"] = mfac.norm().detach()
-                # state["m_norm"] = m.norm().detach()
-
-                #formula 10 (CORRESPONDS to A,B 1.0/-1.0/KAPPA1.2)
-                #clip_g3_term = effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**(1.5))
-                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
-                #g3_term = g3 * m * norm_term * clip_g3_term
-                # mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
-                # g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(torch.clamp((effective_time**(1.2))*(mfac**3),max=clipsnr)) + 1.0 * m * norm_term) 
-                # state["current_alpha"] = (torch.clamp((effective_time**(1.2))*(mfac**3),max=clipsnr)).mean().detach()
-                # state["current_kappa_factor"] = ((effective_time**(1.2))*(mfac**2)).mean().detach()
-                # state["gradient_norm"] = grad.norm().detach()
-                # state["auto_factor_mean"] = mfac.mean().detach()
-                # state["m_norm"] = m.norm().detach()
-
-                #formula 11 (CORRESPONDS to A,B 1.0/-1.0/KAPPA1.2)  NORM-BASED
-                #clip_g3_term = effective_time*((norm_term*torch.abs(m)/self._tau_reg(tau, step))**(1.5))
-                #clip_g3_term = torch.clamp(clip_g3_term, min=1.0)
-                #clip_g3_term = torch.minimum(clip_g3_term, effective_time)
-                #g3_term = g3 * m * norm_term * clip_g3_term
-                # mfac=(norm_term*m/self._tau_reg(tau, step))
-                # mnormsquared = torch.sum((m/self._tau_reg(tau, step))**2)
-                # gradnormsquared = torch.sum(v/self._tau_reg(tau, step))
-                # kappa_factor = torch.minimum(effective_time**(1.2) * (mnormsquared/(gradnormsquared+epsilon**2)),effective_time)
-                # kappa_factor = torch.clamp(kappa_factor, min=1.0)
-
-                #formula 12 (CORRESPONDS to A,B 0.0/0.0/KAPPA)  We threshold DanaStar for fixed kappa with a clip,
-                #so the algorithm adjusts automatically between formula4 and DanaStar.
-
-                #formula 13 (CORRESPONDS to A,B mk4A/mk4B/KAPPA)  We use a powerlaw schedule for the kappa factor,
-                # THOUGH with a built in clipping, which is stronger than what is in the ODEs
-
-                mfac=(norm_term*torch.abs(m)/self._tau_reg(tau, step))
+                # Compute momentum factor (mfac) and alpha factor
+                # With mk4A = mk4B = 0, this simplifies significantly
+                mfac = (norm_term * torch.abs(m) / self._tau_reg(tau, step))
                 alpha_factor = torch.clamp(
-                        (effective_time**(1-self.kappa))
-                        *(mfac**(2*self.mk4B+1))
-                        *(norm_term**(2*(-self.mk4A-self.mk4B)))
-                        ,max=clipsnr)
-                g3_term = g3 * (self._tau_reg(tau, step)*(torch.sign(m))*(alpha_factor) + 1.0 * m * norm_term) 
+                    (effective_time ** (1 - self.kappa)) * mfac,
+                    max=clipsnr
+                )
+
+                # Compute g3 term (momentum-based update)
+                g3_term = g3 * (self._tau_reg(tau, step) * torch.sign(m) * alpha_factor + 1.0 * m * norm_term)
+
+                # Store additional diagnostics
                 state["current_alpha"] = (alpha_factor).mean().detach()
                 state["gradient_norm"] = grad.norm().detach()
                 state["auto_factor_mean"] = mfac.mean().detach()
-                state["current_kappa_factor"] = state["current_alpha"]/state["auto_factor_mean"]
+                state["current_kappa_factor"] = state["current_alpha"] / state["auto_factor_mean"]
                 state["m_norm"] = m.norm().detach()
 
-                # g3_term = g3 * (kappa_factor * mfac)
-                # state["current_alpha"] = (torch.abs(kappa_factor * mfac)).mean().detach()
-                # state["current_kappa_factor"] = kappa_factor.mean().detach()
-                # state["gradient_norm"] = grad.norm().detach()
-                # state["auto_factor_mean"] = (torch.abs(mfac)).mean().detach()
-                # state["m_norm"] = m.norm().detach()
+                # Compute g2 term (gradient-based update)
+                g2_term = g2 * grad * norm_term
 
-                # Compute parameter updates using effective time for g2 and g3 scheduling
-                g2_term = g2 * grad * norm_term #* clip_g2_term
-
-                # Apply the main update
+                # Combine updates
                 update = -(g2_term + g3_term)
 
-                # Decoupled weight decay (AdamW-style)
+                # Apply decoupled weight decay (AdamW-style)
                 if wd != 0:
                     if self.wd_decaying:
-                        p.add_(p, alpha= - wd / (1 + step / self.wd_ts) * lr)
+                        p.add_(p, alpha=-wd / (1 + step / self.wd_ts) * lr)
                     else:
-                        p.add_(p, alpha= - wd * lr)
-                
-                # Apply update to parameters with scheduled LR
+                        p.add_(p, alpha=-wd * lr)
+
+                # Apply parameter update
                 p.add_(update)
-        
+
         return loss
