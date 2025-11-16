@@ -166,10 +166,10 @@ class DANA_STAR_MK4(Optimizer):
         clipped_tau = torch.clamp(tau, max=0.5)
         p_estimate = clipped_tau / (1.0 - clipped_tau)
         min_p = 1.0 / (1.0 + step)
-        tau_reg = torch.maximum(p_estimate, torch.full_like(tau, min_p))
+        tau_reg = torch.clamp(p_estimate, min=min_p)
 
         # Compute effective time
-        effective_time = torch.maximum(tau * step, torch.ones_like(tau))
+        effective_time = torch.clamp(tau * step, min=1.0)
 
         # Compute normalization term
         root_tau_reg = torch.sqrt(tau_reg)
