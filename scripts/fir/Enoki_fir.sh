@@ -36,3 +36,4 @@ wandb offline
 
 # Call the main Enoki.sh script with all arguments
 bash scripts/BigHead/Enoki.sh "$@"
+

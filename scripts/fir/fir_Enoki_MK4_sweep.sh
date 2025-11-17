@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Enoki MK4 Sweep for Rorqual across sizes {4,8,12,16}
+# Enoki MK4 Sweep for fir across sizes {4,8,12,16}
 # Uses 1 GPU per node
 # For each size (heads), runs multiple learning rates: 0.5x, 0.75x, 1.0x, 1.25x, and 1.5x the formula prediction
 # Learning rate formula: lr = 9.14e-06 + 6.91e+00 × P^{-0.559} where P = NON_EMB
@@ -10,13 +10,13 @@ CLIPSNR=2.0
 SIZES=( 16 )
 LR_MULTIPLIERS=( 1.0 1.25 0.75 )
 
-# SLURM configuration for Rorqual
+# SLURM configuration for fir
 GPUS_PER_NODE=1
 CPUS_PER_GPU=8
 MEM=80GB          # 80GB
 TIME_HOURS=8
 
-echo "Starting Enoki MK4 sweep (Rorqual)"
+echo "Starting Enoki MK4 sweep (fir)"
 echo "Sizes (heads): ${SIZES[@]}"
 echo "Omega: $OMEGA"
 echo "ClipSNR: $CLIPSNR"
@@ -100,7 +100,7 @@ for HEADS in "${SIZES[@]}"; do
                --cpus-per-gpu=${CPUS_PER_GPU} \
                --mem=${MEM} \
                --job-name=EN_MK4_h${HEADS}_lr${MULT} \
-               scripts/rorqual/Enoki_rorqual.sh \
+               scripts/fir/Enoki_fir.sh \
                --heads $HEADS \
                --lr $LR \
                --omega $OMEGA \
@@ -128,3 +128,4 @@ echo "  GPUs: ${GPUS_PER_NODE} × H100"
 echo "  CPUs: ${CPUS_PER_GPU} per GPU"
 echo "  Memory: ${MEM} (allocate as needed)"
 echo "  Time: ${TIME_HOURS} hours"
+
