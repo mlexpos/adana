@@ -7,8 +7,8 @@
 
 OMEGA=4.0
 CLIPSNR=2.0
-SIZES=( 10 12 14 )
-LR_MULTIPLIERS=(1.0 0.75 1.25 1.5 0.5)
+SIZES=( 16 )
+LR_MULTIPLIERS=( 1.0 1.25 0.75 )
 
 # SLURM configuration for Rorqual
 GPUS_PER_NODE=1
