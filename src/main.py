@@ -117,6 +117,8 @@ def main(args, parser):
                 print(f"Warning: Failed to read wandb_run_id.txt: {e}, creating new run")
                 wandb_run_id = None
         
+        # Set wandb dir to experiment directory to avoid multiple offline-run folders
+        wandb_dir = exp_dir
         wandb.init(
             project=args.wandb_project,
             name=exp_name,
@@ -124,6 +126,7 @@ def main(args, parser):
             entity=args.wandb_entity,
             id=wandb_run_id,
             resume="allow" if wandb_run_id is not None else None,
+            dir=str(wandb_dir),
         )
         
         wandb.define_metric("iter")
