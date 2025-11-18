@@ -271,7 +271,7 @@ if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]];
         else
             gpus_per_node=$(echo "$gres_raw" | sed 's/^gpu://')
         fi
-        mem=$(echo "$scontext" | grep -o 'MinMemoryCPU=[^ ]*' | cut -d= -f2); mem=${mem:-"0"}
+        mem=$(echo "$scontext" | grep -o 'MinMemoryNode=[^ ]*' | cut -d= -f2); mem=${mem:-"0"}
         job_name=$(echo "$scontext" | grep -o 'JobName=[^ ]*' | cut -d= -f2); job_name=${job_name:-""}
 
         SLURM_ARGS=(
