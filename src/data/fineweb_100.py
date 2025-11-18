@@ -85,8 +85,8 @@ def get_fineweb_100_data(
         for batch_start in tqdm(range(0, len(tokenized_val), batch_size), desc="writing validation"):
             batch_end = min(batch_start + batch_size, len(tokenized_val))
             batch = tokenized_val[batch_start:batch_end]
-            # Concatenate all token_ids in the batch
-            batch_tokens = np.concatenate([np.array(ex["ids"], dtype=dtype) for ex in batch])
+            # HuggingFace datasets return dict of lists when sliced, so batch["ids"] is a list of token lists
+            batch_tokens = np.concatenate([np.array(ids, dtype=dtype) for ids in batch["ids"]])
             val_arr[idx:idx + len(batch_tokens)] = batch_tokens
             idx += len(batch_tokens)
 
@@ -137,8 +137,8 @@ def get_fineweb_100_data(
         for batch_start in tqdm(range(0, len(tokenized_train), batch_size), desc=f"writing train {i:04d}"):
             batch_end = min(batch_start + batch_size, len(tokenized_train))
             batch = tokenized_train[batch_start:batch_end]
-            # Concatenate all token_ids in the batch
-            batch_tokens = np.concatenate([np.array(ex["ids"], dtype=dtype) for ex in batch])
+            # HuggingFace datasets return dict of lists when sliced, so batch["ids"] is a list of token lists
+            batch_tokens = np.concatenate([np.array(ids, dtype=dtype) for ids in batch["ids"]])
             train_arr[idx:idx + len(batch_tokens)] = batch_tokens
             idx += len(batch_tokens)
 
