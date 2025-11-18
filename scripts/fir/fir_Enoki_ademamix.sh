@@ -34,9 +34,9 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 
 # Allow wandb to resume runs (works with wandb_run_id.txt in checkpoint dir)
 # Note: WANDB_DIR is set in main.py to exp_dir to avoid multiple offline-run folders
-export WANDB_RESUME=allow
+# export WANDB_RESUME=allow
 
-wandb offline
+# wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
 export RESTART_WRAPPER_SCRIPT="scripts/fir/fir_Enoki_ademamix.sh"
