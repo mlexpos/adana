@@ -12,7 +12,7 @@
 export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=03c99521910548176ebfa4f418db1c9602e2afa3
 export WANDB_PROJECT=danastar
-export WANDB_RUN_GROUP=Enoki_ScaledGPT_DanaStar_MK4
+export WANDB_RUN_GROUP=Enoki_ScaledGPT
 export WANDB_ENTITY=ep-rmt-ml-opt
 
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
@@ -36,7 +36,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 # Note: WANDB_DIR is set in main.py to exp_dir to avoid multiple offline-run folders
 # export WANDB_RESUME=allow
 
-# wandb offline
+wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
 export RESTART_WRAPPER_SCRIPT="scripts/fir/fir_Enoki_mk4.sh"

@@ -12,7 +12,8 @@ OMEGA_ARRAY=( 4.0 )
 HEADS_ARRAY=( 43 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-# for ademamix: batch/accum depend on HEADS (set per-job later)
+BATCH_SIZE=32
+ACC_STEPS=1
 
 # SLURM configuration for Fir (4 GPUs)
 GPUS_PER_NODE=4
@@ -111,20 +112,6 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         echo "    Base LR (formula): $BASE_LR"
         echo ""
 
-        # Set batch size and accumulation steps per HEADS for ademamix
-        if [ "$HEADS" -le 32 ]; then
-            BATCH_SIZE=32
-            ACC_STEPS=1
-        elif [ "$HEADS" -le 40 ]; then
-            BATCH_SIZE=2
-            ACC_STEPS=16
-        elif [ "$HEADS" -le 46 ]; then
-            BATCH_SIZE=1
-            ACC_STEPS=32
-        else
-            BATCH_SIZE=1
-            ACC_STEPS=32
-        fi
 
         echo "    BATCH_SIZE = $BATCH_SIZE"
         echo "    ACC_STEPS = $ACC_STEPS"
@@ -137,7 +124,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             LR=$(python3 -c "print($MULT * $BASE_LR)")
 
             # Calculate iterations to run
-            ITERATIONS_TO_RUN=$(python3 -c "print(int(24 * 3600 / (5.83e-04 * ($TOTAL_PARAMS/1e6) ** 0.91) / 2))")
+            #ITERATIONS_TO_RUN=$(python3 -c "print(int(24 * 3600 / (5.83e-04 * ($TOTAL_PARAMS/1e6) ** 0.91) / 2))")
 
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"

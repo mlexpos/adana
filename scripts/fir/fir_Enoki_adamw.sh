@@ -36,7 +36,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 # Note: WANDB_DIR is set in main.py to exp_dir to avoid multiple offline-run folders
 # export WANDB_RESUME=allow
 
-# wandb offline
+wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
 export RESTART_WRAPPER_SCRIPT="scripts/fir/fir_Enoki_adamw.sh"
