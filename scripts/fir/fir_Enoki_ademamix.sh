@@ -32,6 +32,11 @@ export RESULTS_BASE_FOLDER="$HOME/links/scratch/checkpoints"
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 
+# Set wandb to use a consistent directory (avoids multiple offline-run-* folders)
+export WANDB_DIR="$RESULTS_BASE_FOLDER"
+# Allow wandb to resume runs (works with wandb_run_id.txt in checkpoint dir)
+export WANDB_RESUME=allow
+
 wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
