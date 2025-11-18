@@ -246,12 +246,71 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
         --results_base_folder "$RESULTS_BASE_FOLDER" \
         --eval_interval $EVAL_INTERVAL --log_interval 50
 
+# Capture the exit code
+TRAINING_EXIT_CODE=$?
+
 # Restart logic (modeled after tamia_test_steps-to-run.sh)
 if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]]; then
     MAX_RESTARTS=$(python3 -c "print(int($ITERATIONS // $ITERATIONS_TO_RUN))")
-    if [[ $RESTART_COUNT -lt $MAX_RESTARTS ]]; then
-        NEW_RESTART_COUNT=$((RESTART_COUNT + 1))
-        echo "Process completed successfully, requeuing for next chunk (restart $NEW_RESTART_COUNT / $MAX_RESTARTS)"
+
+    # Only increment restart count if training succeeded
+    if [ $TRAINING_EXIT_CODE -eq 0 ]; then
+        if [[ $RESTART_COUNT -lt $MAX_RESTARTS ]]; then
+            NEW_RESTART_COUNT=$((RESTART_COUNT + 1))
+            echo "Training completed successfully, requeuing for next chunk (restart $NEW_RESTART_COUNT / $MAX_RESTARTS)"
+
+        # Check if a restart wrapper script was specified
+        if [ -z "$RESTART_WRAPPER_SCRIPT" ]; then
+            echo "Error: RESTART_WRAPPER_SCRIPT environment variable not set"
+            echo "Cannot requeue job without knowing which wrapper script to use"
+            exit 1
+        fi
+
+        # Extract original SLURM args to preserve resources
+        scontext=$(scontrol show job $SLURM_JOB_ID 2>/dev/null || echo "")
+        account=$(echo "$scontext" | grep -o 'Account=[^ ]*' | cut -d= -f2)
+        nodes=$(echo "$scontext" | grep -o 'NumNodes=[^ ]*' | cut -d= -f2); nodes=${nodes:-"1"}
+        timelimit=$(echo "$scontext" | grep -o 'TimeLimit=[^ ]*' | cut -d= -f2)
+        gres_raw=$(echo "$scontext" | grep -o 'Gres=[^ ]*' | cut -d= -f2)
+        if [ -z "$gres_raw" ]; then
+            if [ -n "$SLURM_GPUS_PER_NODE" ]; then
+                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]]; then
+                    gpus_per_node="$SLURM_GPUS_PER_NODE"
+                else
+                    gpus_per_node="h100:${SLURM_GPUS_PER_NODE}"
+                fi
+            else
+                gpus_per_node="h100:4"
+            fi
+        else
+            gpus_per_node=$(echo "$gres_raw" | sed 's/^gpu://')
+        fi
+        mem=$(echo "$scontext" | grep -o 'MinMemoryNode=[^ ]*' | cut -d= -f2); mem=${mem:-"0"}
+        job_name=$(echo "$scontext" | grep -o 'JobName=[^ ]*' | cut -d= -f2); job_name=${job_name:-""}
+
+        SLURM_ARGS=(
+            --time="$timelimit"
+            --nodes="$nodes"
+            --gpus-per-node="$gpus_per_node"
+            --cpus-per-gpu="${SLURM_CPUS_PER_GPU:-8}"
+            --mem="$mem"
+            --job-name="$job_name"
+        )
+
+        # Only add account if it was extracted successfully
+        if [ -n "$account" ]; then
+            SLURM_ARGS+=(--account="$account")
+        fi
+
+            echo "Using original SLURM args for requeue: ${SLURM_ARGS[@]}"
+            sbatch --export=ALL,RESTART_COUNT=$NEW_RESTART_COUNT "${SLURM_ARGS[@]}" "$RESTART_WRAPPER_SCRIPT" "${ORIG_ARGS[@]}"
+        else
+            echo "Max restarts ($MAX_RESTARTS) reached, not requeuing"
+        fi
+    else
+        # Training failed, requeue without incrementing restart count
+        echo "Training failed with exit code $TRAINING_EXIT_CODE"
+        echo "Requeuing job without incrementing restart count (keeping RESTART_COUNT=$RESTART_COUNT)"
 
         # Check if a restart wrapper script was specified
         if [ -z "$RESTART_WRAPPER_SCRIPT" ]; then
@@ -297,8 +356,6 @@ if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]];
         fi
 
         echo "Using original SLURM args for requeue: ${SLURM_ARGS[@]}"
-        sbatch --export=ALL,RESTART_COUNT=$NEW_RESTART_COUNT "${SLURM_ARGS[@]}" "$RESTART_WRAPPER_SCRIPT" "${ORIG_ARGS[@]}"
-    else
-        echo "Max restarts ($MAX_RESTARTS) reached or not needed, not requeuing"
+        sbatch --export=ALL,RESTART_COUNT=$RESTART_COUNT "${SLURM_ARGS[@]}" "$RESTART_WRAPPER_SCRIPT" "${ORIG_ARGS[@]}"
     fi
 fi
