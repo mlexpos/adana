@@ -56,6 +56,9 @@ def get_fineweb_100_data(
         ids.append(tknzr.eot_token)  # add end-of-text token
         return {"ids": ids, "len": len(ids)}
 
+    # Define dtype for all files
+    dtype = np.uint16  # gpt2 vocab fits
+
     # Process validation set from first parquet file
     if not os.path.exists(val_file_path):
         print(f"Processing validation set from first parquet file with {validation_examples:,} examples...")
@@ -74,7 +77,6 @@ def get_fineweb_100_data(
 
         # Write validation file
         val_arr_len = int(np.sum(tokenized_val["len"]))
-        dtype = np.uint16  # gpt2 vocab fits
 
         print(f"Writing validation to {val_file_path} ({val_arr_len:,} tokens)...")
         val_arr = np.memmap(val_file_path, dtype=dtype, mode="w+", shape=(val_arr_len,))
