@@ -12,7 +12,7 @@
 export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=03c99521910548176ebfa4f418db1c9602e2afa3
 export WANDB_PROJECT=danastar
-export WANDB_RUN_GROUP=Enoki_ScaledGPT_AdamW
+export WANDB_RUN_GROUP=Enoki_ScaledGPT
 export WANDB_ENTITY=ep-rmt-ml-opt
 
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
