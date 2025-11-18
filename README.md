@@ -90,7 +90,7 @@ Go to the danastar folder:
 source $HOME/danastarenv/bin/activate
 cd $HOME/danastar
 
-python download_fineweb_100bt.py --local-dir=$HOME/links/scratch/fineweb/
+python src/data/download_fineweb_100bt.py --local-dir=$HOME/links/scratch/fineweb/
 
 sbatch scripts/rorqual_get_fineweb100.sh
 
