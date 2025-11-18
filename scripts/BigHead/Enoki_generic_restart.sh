@@ -16,6 +16,7 @@ OPTIMIZER="dana-star-mk4"
 INIT_SCHEME="KarpathyGPT2"
 DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=none
+RESULTS_BASE_FOLDER="./exps"
 RESTART_COUNT=${RESTART_COUNT:-0}
 RESTART_WRAPPER_SCRIPT=${RESTART_WRAPPER_SCRIPT:-""}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -68,6 +69,10 @@ while [[ $# -gt 0 ]]; do
             ITERATIONS_TO_RUN="$2"
             shift 2
             ;;
+        --results_base_folder)
+            RESULTS_BASE_FOLDER="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option $1"
             exit 1
@@ -98,6 +103,7 @@ if [ -z "$HEADS" ]; then
     echo "  --init-scheme <type>      Initialization scheme: KarpathyGPT2, Standard, ScaledGPT (default: KarpathyGPT2)"
     echo "  --depth-scalar-exponent <value>  Exponent for depth-based residual scaling: scalar = n_layer^exp (default: 0.0)"
     echo "  --iterations_to_run <value>  Iterations to run (default: none)"
+    echo "  --results_base_folder <path>  Base folder for checkpoints (default: ./exps)"
     exit 1
 fi
 
@@ -218,6 +224,7 @@ echo "Optimizer: $OPTIMIZER"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
 echo "Residual stream scalar: $RESIDUAL_STREAM_SCALAR"
+echo "Results base folder: $RESULTS_BASE_FOLDER"
 echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
@@ -236,6 +243,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
         $OPT_PARAMS $EXTRA_RUN_FLAGS \
         --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
         --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
+        --results_base_folder "$RESULTS_BASE_FOLDER" \
         --eval_interval $EVAL_INTERVAL --log_interval 50
 
 # Restart logic (modeled after tamia_test_steps-to-run.sh)
