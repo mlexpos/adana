@@ -135,7 +135,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
                    --job-name=EN_AdamW_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/fir/fir_Enoki_adamw.sh \
+                   scripts/tamia/fir_Enoki_adamw.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
