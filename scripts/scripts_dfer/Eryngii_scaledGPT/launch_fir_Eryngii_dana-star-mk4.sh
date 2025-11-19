@@ -3,11 +3,11 @@
 # Eryngii DANA-STAR-MK4 Multi-GPU Sweep for Fir (heads 4 to 10)
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr = 3.21e-05×C^ -0.435
+# Base learning rate: lr = 4.11e+02 × (5.11e + 06 + P)^-0.788
 
 OMEGA=4.0
-HEADS=(4 5 6 7 8 9 10)
-LR_MULTIPLIERS=(0.1 0.3 0.5 0.75 1.0 1.25 1.5 3.0 10.0)
+HEADS=(11 12)
+LR_MULTIPLIERS=(0.5 0.75 1.0 1.25 1.5)
 
 # SLURM configuration for Fir
 GPUS_PER_NODE=4
@@ -82,13 +82,13 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32 /(8.64e19))")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(3.21e-05 * $C**(-0.435))")
+    BASE_LR=$(python3 -c "print(4.11e+02 * (5.11e+06 + $NON_EMB)**(-0.788))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
     echo "  C = $(python3 -c "print($C)") PetaFLOPS Day"
     echo "  Time allocation: ${TIME_SPEC}"
-    echo "  Base LR: $BASE_LR"
+    echo "  Base LR: $BASE_LR (Formula: lr = 4.11e+02 × (5.11e + 06 + P)^-0.788)"
     echo ""
 
     # Loop over learning rate multipliers

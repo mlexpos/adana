@@ -3,11 +3,11 @@
 # Eryngii with ScaledGPT initialization for AdamW Multi-GPU Sweep on Fir
 # Uses 4 GPUs per node for larger models
 # For each n_head value, runs multiple learning rates: multipliers of base LR
-# Base learning rate: lr =  2.30e-04×C ^-0.338
+# Base learning rate: lr =  3.20e+02 × (5.00e + 06 + P)^ -0.686
 
 OMEGA=4.0
-HEADS=(4 5 6 7 8 9 10)
-LR_MULTIPLIERS=(0.1 0.3 0.5 0.75 1.0 1.25 1.5 3.0 10.0)
+HEADS=(11 12)
+LR_MULTIPLIERS=(0.5 0.75 1.0 1.25 1.5)
 
 # SLURM configuration for Tamia
 GPUS_PER_NODE=4
@@ -82,13 +82,13 @@ for HEADS in "${HEADS[@]}"; do
     C=$(python3 -c "print($NON_EMB * $ITERATIONS * 6 * 2048 * 32 / (8.64e19))")
 
     # Base learning rate
-    BASE_LR=$(python3 -c "print(2.30e-04 * $C**(-0.338))")
+    BASE_LR=$(python3 -c "print(3.20e+02 * (5.00e+06 + $NON_EMB)**(-0.686))")
 
     echo "  NON_EMB = $NON_EMB"
     echo "  ITERATIONS = $ITERATIONS"
     echo "  C = $(python3 -c "print($C)") PetaFLOPS Days"
     echo "  Time allocation: ${TIME_SPEC}"
-    echo "  Base LR: $BASE_LR (Formula: lr = 2.30e-04×C ^-0.338)"
+    echo "  Base LR: $BASE_LR (Formula: lr = 3.20e+02 × (5.00e + 06 + P)^ -0.686)"
     echo ""
 
     # Loop over learning rate multipliers
