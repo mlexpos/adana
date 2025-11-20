@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --time=24:00:00
-#SBATCH --account=rrg-bengioy-ad
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
 #SBATCH --cpus-per-gpu=8
@@ -10,7 +9,7 @@
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"
-export WANDB_API_KEY=03c99521910548176ebfa4f418db1c9602e2afa3
+export WANDB_API_KEY=d2f72ec36001f518a4ecf4fe12149a8267e526b0
 export WANDB_PROJECT=danastar
 export WANDB_RUN_GROUP=Enoki_ScaledGPT
 export WANDB_ENTITY=ep-rmt-ml-opt
@@ -39,7 +38,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
-export RESTART_WRAPPER_SCRIPT="scripts/fir/fir_Enoki_ademamix.sh"
+export RESTART_WRAPPER_SCRIPT="scripts/tamia/fir_Enoki_ademamix.sh"
 
 # Call the generic Enoki restart script with all arguments and force ScaledGPT init scheme
 bash scripts/BigHead/Enoki_generic_restart.sh --init-scheme ScaledGPT --results_base_folder "$RESULTS_BASE_FOLDER" "$@"
