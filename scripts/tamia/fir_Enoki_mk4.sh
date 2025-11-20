@@ -28,7 +28,7 @@ echo "Activated virtual environment"
 export DATASETS_DIR="$HOME/links/scratch/datasets"
 export RESULTS_BASE_FOLDER="$HOME/links/scratch/checkpoints"
 
-echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
+echo "Using FineWeb 100BT dataset from: $RESULTS_BASE_FOLDER"
 echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 
 # Allow wandb to resume runs (works with wandb_run_id.txt in checkpoint dir)
@@ -38,7 +38,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
-export RESTART_WRAPPER_SCRIPT="scripts/tamia/fir_Enoki_adamw.sh"
+export RESTART_WRAPPER_SCRIPT="scripts/tamia/fir_Enoki_mk4.sh"
 
 # Call the generic Enoki restart script with all arguments and force ScaledGPT init scheme
 bash scripts/BigHead/Enoki_generic_restart.sh --init-scheme ScaledGPT --results_base_folder "$RESULTS_BASE_FOLDER" "$@"

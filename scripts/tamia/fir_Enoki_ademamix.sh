@@ -38,7 +38,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
-export RESTART_WRAPPER_SCRIPT="scripts/tamia/fir_Enoki_adamw.sh"
+export RESTART_WRAPPER_SCRIPT="scripts/tamia/fir_Enoki_ademamix.sh"
 
 # Call the generic Enoki restart script with all arguments and force ScaledGPT init scheme
 bash scripts/BigHead/Enoki_generic_restart.sh --init-scheme ScaledGPT --results_base_folder "$RESULTS_BASE_FOLDER" "$@"
