@@ -123,6 +123,8 @@ parser.add_argument('--a-lower-bound', type=float, default=0.0,
                     help='Lower bound constant for saturation parameter a (default: 0.0)')
 parser.add_argument('--equal-weight', action='store_true',
                     help='Use equal weights for all data points instead of weighting by compute (default: False)')
+parser.add_argument('--fit-relative-to-adamw', action='store_true',
+                    help='Plot relative to AdamW baseline (AdamW appears as horizontal line at 0)')
 args = parser.parse_args()
 
 # Map optimizer names
@@ -760,6 +762,207 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
 
     return fig
 
+def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric):
+    """
+    Plot comparison with AdamW normalized to horizontal line (slope 0 in log-log space).
+    
+    In log-log space, we plot log(loss) vs log(metric).
+    The fit is: log(loss) = log(a + b * metric^c)
+    
+    To make AdamW have slope 0, we subtract its log-loss from all curves:
+    y_normalized = log(loss) - log(loss_adamw)
+    
+    This makes AdamW a horizontal line at y=0, and other optimizers' slopes 
+    become relative to AdamW's scaling behavior.
+
+    Args:
+        data_dict: Dict {optimizer_type: {scaling_rule: DataFrame}}
+        fit_results: Dict with 'a' and 'curves' from joint fitting
+        scaling_rules: List of scaling rule names
+        optimizer_shorts: List of short optimizer names
+        optimizer_types: List of full optimizer type names
+        fit_metric: 'compute' or 'non_emb'
+    """
+    fig, ax = plt.subplots(figsize=(18, 10))
+
+    # Color scheme for optimizers
+    opt_colors = {
+        'adamw': 'tab:blue',
+        'mk4': 'tab:red',
+        'dana': 'tab:green',
+        'ademamix': 'tab:purple',
+        'd-muon': 'tab:orange',
+        'manau': 'tab:brown',
+        'manau-hard': 'tab:pink'
+    }
+
+    # Scaling rule markers
+    rule_markers = {
+        'BigHead': 'D',
+        'EggHead': 's',
+        'Enoki': 'o',
+        'Eryngii': '^'
+    }
+
+    # Scaling rule line styles
+    rule_linestyles = {
+        'BigHead': '-',
+        'EggHead': '--',
+        'Enoki': ':',
+        'Eryngii': '-.'
+    }
+
+    # Collect all metric values for plot range
+    all_metric_vals = []
+    for opt_type in optimizer_types:
+        for rule in scaling_rules:
+            df = data_dict[opt_type][rule]
+            if len(df) > 0:
+                all_metric_vals.extend(df[fit_metric].values)
+
+    if len(all_metric_vals) > 0:
+        metric_min = np.min(all_metric_vals)
+        metric_max = np.max(all_metric_vals)
+        plot_range = np.logspace(np.log10(metric_min * 0.5), np.log10(metric_max * 2.0), 200)
+    else:
+        plot_range = None
+
+    # Collect handles and labels for custom legend ordering
+    fit_handles = {}
+    obs_handles = {}
+
+    metric_symbol = 'C' if fit_metric == 'compute' else 'P'
+
+    # Get AdamW fitted curves for each scaling rule (for normalization)
+    adamw_fits = {}
+    a = fit_results['a']
+    
+    for rule in scaling_rules:
+        curve_name = f'adamw_{rule}'
+        if curve_name in fit_results['curves']:
+            adamw_fits[rule] = {
+                'a': a,
+                'b': fit_results['curves'][curve_name]['b'],
+                'c': fit_results['curves'][curve_name]['c']
+            }
+
+    # Plot each optimizer x scaling_rule combination
+    for opt_idx, opt_type in enumerate(optimizer_types):
+        opt_short = optimizer_shorts[opt_idx]
+        color = opt_colors.get(opt_short, 'black')
+
+        for rule in scaling_rules:
+            df = data_dict[opt_type][rule]
+
+            if len(df) == 0:
+                continue
+
+            marker = rule_markers.get(rule, 'x')
+            linestyle = rule_linestyles.get(rule, '-')
+
+            # Get AdamW fit for this scaling rule
+            if rule not in adamw_fits:
+                continue  # Skip if no AdamW baseline
+
+            adamw_a = adamw_fits[rule]['a']
+            adamw_b = adamw_fits[rule]['b']
+            adamw_c = adamw_fits[rule]['c']
+
+            # Calculate normalized observed losses in log-log space
+            # y_norm = log(loss) - log(loss_adamw) = log(loss / loss_adamw)
+            metric_vals = df[fit_metric].values
+            observed_losses = df['val_loss'].values
+            adamw_baseline = adamw_a + adamw_b * np.power(metric_vals, adamw_c)
+            
+            # Ratio in log space = difference of logs
+            normalized_losses = observed_losses / adamw_baseline
+
+            # Plot normalized observed data (log scale for y)
+            scatter = ax.scatter(metric_vals, normalized_losses,
+                      s=120, marker=marker, c=color, edgecolors='black', linewidths=1.5,
+                      zorder=10, alpha=0.8)
+
+            obs_key = (rule, opt_short)
+            obs_handles[obs_key] = (scatter, f'{opt_short} {rule} (observed)')
+
+            # Plot normalized fitted curve if available
+            curve_name = f'{opt_short}_{rule}'
+            if curve_name in fit_results['curves'] and plot_range is not None:
+                opt_a = fit_results['a']
+                opt_b = fit_results['curves'][curve_name]['b']
+                opt_c = fit_results['curves'][curve_name]['c']
+                r2 = fit_results['curves'][curve_name]['r_squared']
+
+                # Calculate normalized fit in log-log space
+                # y_norm = loss / loss_adamw
+                opt_fit = opt_a + opt_b * np.power(plot_range, opt_c)
+                adamw_baseline_curve = adamw_a + adamw_b * np.power(plot_range, adamw_c)
+                normalized_fit = opt_fit / adamw_baseline_curve
+
+                line, = ax.plot(plot_range, normalized_fit, linestyle=linestyle, color=color, linewidth=2.5,
+                       zorder=9)
+
+                fit_key = (rule, opt_short)
+                
+                # For AdamW, it will be a constant at 1.0 (log scale makes this a horizontal line)
+                if opt_short == 'adamw':
+                    fit_handles[fit_key] = (line, f'{opt_short} {rule}: baseline (slope 0)')
+                else:
+                    # Show the formula as ratio
+                    # Calculate effective slope in log-log space: d(log(y_norm))/d(log(x))
+                    # For normalized curve: y_norm = (a + b*x^c) / (a + b_adamw*x^c_adamw)
+                    # Effective slope ≈ c - c_adamw for large x
+                    slope_diff = opt_c - adamw_c
+                    fit_handles[fit_key] = (line, f'{opt_short} {rule}: ({opt_a:.3f} + {opt_b:.2e} × {metric_symbol}$^{{{opt_c:.4f}}}$) / adamw, Δc={slope_diff:.4f} ($R^2$={r2:.3f})')
+
+    # Create custom ordered legend
+    legend_handles = []
+    legend_labels = []
+
+    for rule in scaling_rules:
+        # First, all fit curves for this scaling rule
+        for opt_short in optimizer_shorts:
+            fit_key = (rule, opt_short)
+            if fit_key in fit_handles:
+                handle, label = fit_handles[fit_key]
+                legend_handles.append(handle)
+                legend_labels.append(label)
+
+        # Then, all observed data for this scaling rule
+        for opt_short in optimizer_shorts:
+            obs_key = (rule, opt_short)
+            if obs_key in obs_handles:
+                handle, label = obs_handles[obs_key]
+                legend_handles.append(handle)
+                legend_labels.append(label)
+
+    # Get metric info
+    if fit_metric == 'compute':
+        xlabel = 'Compute (PetaFlop-Hours)'
+    else:  # non_emb
+        xlabel = 'Non-embedding Parameters'
+
+    # Formatting - both axes in log scale
+    ax.set_xlabel(xlabel, fontsize=20)
+    ax.set_ylabel('Validation Loss Ratio (Loss / Loss$_{AdamW}$)', fontsize=20)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    
+    # Horizontal line at y=1 represents AdamW baseline (slope 0 in log-log)
+    ax.axhline(y=1.0, color='black', linestyle='--', linewidth=1.5, alpha=0.7, label='AdamW baseline (ratio=1)')
+
+    opts_str = ', '.join(optimizer_shorts)
+    rules_str = ' vs '.join(scaling_rules)
+    ax.set_title(f'Scaling Laws Comparison (Relative to AdamW, Log-Log): {rules_str}\nOptimizers: {opts_str}',
+                fontsize=18, fontweight='bold')
+
+    ax.legend(legend_handles, legend_labels, fontsize=11, loc='best', framealpha=0.9, ncol=2)
+    ax.grid(True, alpha=0.3, linestyle='--')
+
+    plt.tight_layout()
+
+    return fig
+
 # =============================================================================
 # MAIN EXECUTION
 # =============================================================================
@@ -842,15 +1045,39 @@ if __name__ == '__main__':
         print(f"  c = {curve_params['c']:.6f}")
         print(f"  R² = {curve_params['r_squared']:.6f}")
 
-    # Create single comparison plot
-    fig = plot_comparison_multi_optimizer(
-        data_dict,
-        fit_results,
-        args.scaling_rules,
-        args.optimizers,
-        optimizer_types,
-        args.fit_metric
-    )
+    # Choose which plot to create based on --fit-relative-to-adamw flag
+    if args.fit_relative_to_adamw:
+        # Create relative plot with AdamW as baseline
+        if 'adamw' not in args.optimizers:
+            print("\nWarning: --fit-relative-to-adamw requires 'adamw' in optimizers list. Falling back to standard plot.")
+            fig = plot_comparison_multi_optimizer(
+                data_dict,
+                fit_results,
+                args.scaling_rules,
+                args.optimizers,
+                optimizer_types,
+                args.fit_metric
+            )
+        else:
+            print(f"\nCreating relative comparison plot (AdamW as baseline)...")
+            fig = plot_comparison_relative_to_adamw(
+                data_dict,
+                fit_results,
+                args.scaling_rules,
+                args.optimizers,
+                optimizer_types,
+                args.fit_metric
+            )
+    else:
+        # Create standard comparison plot
+        fig = plot_comparison_multi_optimizer(
+            data_dict,
+            fit_results,
+            args.scaling_rules,
+            args.optimizers,
+            optimizer_types,
+            args.fit_metric
+        )
 
     # Save plot
     if args.output:
@@ -858,7 +1085,8 @@ if __name__ == '__main__':
     else:
         rules_str = '_'.join(args.scaling_rules)
         opts_str = '_'.join(args.optimizers)
-        output_file = f'ScalingComparison_{rules_str}_{opts_str}.pdf'
+        suffix = '_relative' if args.fit_relative_to_adamw and 'adamw' in args.optimizers else ''
+        output_file = f'ScalingComparison_{rules_str}_{opts_str}{suffix}.pdf'
 
     plt.savefig(output_file, dpi=300, bbox_inches='tight', transparent=True)
     print(f"\n{'='*70}")
