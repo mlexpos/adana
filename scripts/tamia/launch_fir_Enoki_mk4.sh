@@ -9,7 +9,7 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 34 36 )
+HEADS_ARRAY=( 34)
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 BATCH_SIZE=2 #32
@@ -25,7 +25,7 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=110000
+ITERATIONS_TO_RUN=140000
 
 echo "Starting Enoki DanaStar-MK4 ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"

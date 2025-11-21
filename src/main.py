@@ -470,7 +470,6 @@ def main(args, parser):
             group_specs,
             lr=args.lr,
             betas=(args.beta1, args.beta2),
-            epsilon=args.epsilon,
             weight_decay=args.weight_decay,
             wd_decaying=args.wd_decaying,
             wd_ts=args.wd_ts,
@@ -481,12 +480,10 @@ def main(args, parser):
             lr=args.lr,
             delta=args.delta,
             kappa=args.kappa,
-            epsilon=args.epsilon,
             weight_decay=args.weight_decay,
             clipsnr=args.clipsnr,
             wd_decaying=args.wd_decaying,
             wd_ts=args.wd_ts,
-            use_foreach=args.use_foreach,
         )
     else:
         opt = torch.optim.SGD(
