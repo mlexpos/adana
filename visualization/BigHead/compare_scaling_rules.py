@@ -102,7 +102,7 @@ parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
                     choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
-                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4'],
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd'],
                     help='Optimizer types to analyze (can specify multiple, e.g., --optimizers adamw mk4)')
 parser.add_argument('--project', type=str, default='danastar',
                     help='WandB project name (default: danastar)')
@@ -129,7 +129,7 @@ args = parser.parse_args()
 
 # Map optimizer names
 optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix',
-                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4'}
+                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd'}
 optimizer_types = [optimizer_map[opt] for opt in args.optimizers]
 
 # =============================================================================
