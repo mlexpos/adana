@@ -160,6 +160,13 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
+    ademamix-decaying-wd)
+        # For ademamix-decaying-wd: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+        ;;
     d-muon)
         # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")

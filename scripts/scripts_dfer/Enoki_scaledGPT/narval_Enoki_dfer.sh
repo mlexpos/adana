@@ -1,7 +1,6 @@
 #!/bin/bash
 #SBATCH --account=def-bengioy
 #SBATCH --time=24:00:00
-#SBATCH --nodes=1
 #SBATCH --gpus-per-node=a100:1
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -24,7 +23,7 @@ echo "Loaded modules"
 source ~/danastar/llm/bin/activate
 echo "Activated virtual environment"
 
-export DATASETS_DIR="$HOME/scratch/fineweb-100BT"
+export DATASETS_DIR="$HOME/scratch"
 
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 

@@ -35,7 +35,7 @@ from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
 from optim.snoo_dana import snoo_DANA, snoo
-from optim.ablation import AdamWDecayingWD, DANA_MK4
+from optim.ablation import AdamWDecayingWD, DANA_MK4, AdEMAMix_DecayingWD
 import pdb
 
 
@@ -266,6 +266,19 @@ def main(args, parser):
                 alpha_warmup=args.adema_alpha_warmup,
                 weight_decay=args.weight_decay,
                 gamma_3_factor=args.gamma_3_factor,
+            )
+    elif args.opt == "ademamix-decaying-wd":
+            opt = AdEMAMix_DecayingWD(
+                group_specs,
+                lr=args.lr,
+                betas=(args.beta1, args.beta2, args.adema_beta3),
+                alpha=args.adema_alpha,
+                beta3_warmup=args.adema_beta3_warmup,
+                alpha_warmup=args.adema_alpha_warmup,
+                weight_decay=args.weight_decay,
+                gamma_3_factor=args.gamma_3_factor,
+                wd_decaying=args.wd_decaying,
+                wd_ts=args.wd_ts,
             )
     elif args.opt == "lion":
             opt = Lion(
