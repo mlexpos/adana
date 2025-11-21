@@ -102,7 +102,7 @@ parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
                     choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
-                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard'],
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4'],
                     help='Optimizer types to analyze (can specify multiple, e.g., --optimizers adamw mk4)')
 parser.add_argument('--project', type=str, default='danastar',
                     help='WandB project name (default: danastar)')
@@ -129,7 +129,7 @@ args = parser.parse_args()
 
 # Map optimizer names
 optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix',
-                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard'}
+                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4'}
 optimizer_types = [optimizer_map[opt] for opt in args.optimizers]
 
 # =============================================================================
@@ -758,6 +758,37 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
     ax.legend(legend_handles, legend_labels, fontsize=11, loc='best', framealpha=0.9, ncol=2)
     ax.grid(True, alpha=0.3, linestyle='--')
 
+    # Add second x-axis showing size (heads or depth) on top
+    ax2 = ax.twiny()
+    ax2.set_xscale('log')
+    ax2.set_xlim(ax.get_xlim())
+    
+    # Collect all sizes from data
+    all_sizes = set()
+    size_to_metric = {}
+    for opt_type in optimizer_types:
+        for rule in scaling_rules:
+            df = data_dict[opt_type][rule]
+            if len(df) > 0:
+                for _, row in df.iterrows():
+                    size = row['size']
+                    metric_val = row[fit_metric]
+                    all_sizes.add(size)
+                    if size not in size_to_metric:
+                        size_to_metric[size] = metric_val
+    
+    if len(all_sizes) > 0:
+        all_sizes_sorted = sorted(all_sizes)
+        ax2.set_xticks([size_to_metric[size] for size in all_sizes_sorted])
+        ax2.set_xticklabels([str(size) for size in all_sizes_sorted])
+        
+        # Determine label based on scaling rules (use 'Heads' for head-based, 'Depth' for BigHead)
+        if 'BigHead' in scaling_rules and len(scaling_rules) == 1:
+            size_label = 'Depth'
+        else:
+            size_label = 'Heads'
+        ax2.set_xlabel(size_label, fontsize=20)
+
     plt.tight_layout()
 
     return fig
@@ -958,6 +989,37 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
 
     ax.legend(legend_handles, legend_labels, fontsize=11, loc='best', framealpha=0.9, ncol=2)
     ax.grid(True, alpha=0.3, linestyle='--')
+
+    # Add second x-axis showing size (heads or depth) on top
+    ax2 = ax.twiny()
+    ax2.set_xscale('log')
+    ax2.set_xlim(ax.get_xlim())
+    
+    # Collect all sizes from data
+    all_sizes = set()
+    size_to_metric = {}
+    for opt_type in optimizer_types:
+        for rule in scaling_rules:
+            df = data_dict[opt_type][rule]
+            if len(df) > 0:
+                for _, row in df.iterrows():
+                    size = row['size']
+                    metric_val = row[fit_metric]
+                    all_sizes.add(size)
+                    if size not in size_to_metric:
+                        size_to_metric[size] = metric_val
+    
+    if len(all_sizes) > 0:
+        all_sizes_sorted = sorted(all_sizes)
+        ax2.set_xticks([size_to_metric[size] for size in all_sizes_sorted])
+        ax2.set_xticklabels([str(size) for size in all_sizes_sorted])
+        
+        # Determine label based on scaling rules (use 'Depth' for BigHead, 'Heads' for head-based)
+        if 'BigHead' in scaling_rules and len(scaling_rules) == 1:
+            size_label = 'Depth'
+        else:
+            size_label = 'Heads'
+        ax2.set_xlabel(size_label, fontsize=20)
 
     plt.tight_layout()
 
