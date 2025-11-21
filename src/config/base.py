@@ -122,7 +122,9 @@ def parse_args(base_parser, args, namespace):
             "auto-dana",
             "dana-star-mk4",
             "snoo-dana",
-            "snoo"
+            "snoo",
+            "adamw-decaying-wd",
+            "dana-mk4"
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)

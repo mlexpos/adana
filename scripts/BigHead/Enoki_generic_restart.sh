@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Generic Enoki restart script - can be used by all users
+# This script contains all the architecture and training logic
+# User-specific settings (account, API keys, etc.) should be set in wrapper scripts
+
 # Default values
 LR=15e-4
 OMEGA=4.0
@@ -11,8 +15,14 @@ HEADS=""
 OPTIMIZER="dana-star-mk4"
 INIT_SCHEME="KarpathyGPT2"
 DEPTH_SCALAR_EXPONENT=0.0
+ITERATIONS_TO_RUN=none
+RESULTS_BASE_FOLDER="./exps"
+RESTART_COUNT=${RESTART_COUNT:-0}
+RESTART_WRAPPER_SCRIPT=${RESTART_WRAPPER_SCRIPT:-""}
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # Parse command line arguments
+ORIG_ARGS=( "$@" )
 while [[ $# -gt 0 ]]; do
     case $1 in
         --heads)
@@ -55,6 +65,14 @@ while [[ $# -gt 0 ]]; do
             DEPTH_SCALAR_EXPONENT="$2"
             shift 2
             ;;
+        --iterations_to_run)
+            ITERATIONS_TO_RUN="$2"
+            shift 2
+            ;;
+        --results_base_folder)
+            RESULTS_BASE_FOLDER="$2"
+            shift 2
+            ;;
         *)
             echo "Unknown option $1"
             exit 1
@@ -65,7 +83,7 @@ done
 # Validate required arguments
 if [ -z "$HEADS" ]; then
     echo "Error: --heads argument is required"
-    echo "Usage: ./Enoki.sh --heads <heads> [options]"
+    echo "Usage: ./Enoki_generic_restart.sh --heads <heads> [options]"
     echo ""
     echo "Enoki uses DiLoco scaling with fixed aspect ratio:"
     echo "  - head_dim = 64 (fixed)"
@@ -84,6 +102,8 @@ if [ -z "$HEADS" ]; then
     echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard (default: dana-star-mk4)"
     echo "  --init-scheme <type>      Initialization scheme: KarpathyGPT2, Standard, ScaledGPT (default: KarpathyGPT2)"
     echo "  --depth-scalar-exponent <value>  Exponent for depth-based residual scaling: scalar = n_layer^exp (default: 0.0)"
+    echo "  --iterations_to_run <value>  Iterations to run (default: none)"
+    echo "  --results_base_folder <path>  Base folder for checkpoints (default: ./exps)"
     exit 1
 fi
 
@@ -124,13 +144,6 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
-    dana-mk4)
-        # For dana-mk4 with no tau adaptation: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
-        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
-        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
-        ;;
     adamw)
         # For adamw: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
@@ -138,14 +151,6 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt adamw --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999"
         ;;
-    adamw-decaying-wd)
-        # For adamw-decaying-wd: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
-        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
-        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt adamw-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
-        ;;
-    
     dana)
         # For dana: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
@@ -191,6 +196,13 @@ case $OPTIMIZER in
         ;;
 esac
 
+# Conditionally add iterations_to_run and auto-resume flags if provided
+if [ "$ITERATIONS_TO_RUN" != "none" ]; then
+    EXTRA_RUN_FLAGS="--iterations_to_run $ITERATIONS_TO_RUN --latest_ckpt_interval 1000 --auto_resume"
+else
+    EXTRA_RUN_FLAGS=""
+fi
+
 echo "=== Enoki Configuration: $HEADS heads ==="
 echo "n_layer: $N_LAYER (= 3 * $HEADS / 4)"
 echo "n_head: $N_HEAD"
@@ -199,6 +211,7 @@ echo "n_embd: $N_EMBD (= $HEADS * 64)"
 echo "mlp_hidden_dim: $MLP_HIDDEN (= 4 * $N_EMBD)"
 echo "Total parameters: $TOTAL_PARAMS"
 echo "Iterations: $ITERATIONS"
+echo "Iterations to run: $ITERATIONS_TO_RUN"
 echo "Learning rate: $LR"
 echo "Omega: $OMEGA"
 echo "Weight decay: $WEIGHT_DECAY"
@@ -211,21 +224,138 @@ echo "Optimizer: $OPTIMIZER"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
 echo "Residual stream scalar: $RESIDUAL_STREAM_SCALAR"
+echo "Results base folder: $RESULTS_BASE_FOLDER"
 echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
 
+# Run training
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_format base --model diloco \
-    --distributed_backend nccl --compile \
-    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
-    --n_embd $N_EMBD --qkv_dim $HEAD_DIM --n_head $N_HEAD --n_layer $N_LAYER \
-    --mlp_hidden_dim $MLP_HIDDEN \
-    --batch_size $BATCH_SIZE --sequence_length 2048 --acc_steps $ACC_STEPS \
-    --iterations $ITERATIONS \
-    --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
-    --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
-    --z_loss_coeff 0.0 \
-    $OPT_PARAMS \
-    --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
-    --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-    --eval_interval $EVAL_INTERVAL --log_interval 50
+        --distributed_backend nccl --compile \
+        --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+        --n_embd $N_EMBD --qkv_dim $HEAD_DIM --n_head $N_HEAD --n_layer $N_LAYER \
+        --mlp_hidden_dim $MLP_HIDDEN \
+        --batch_size $BATCH_SIZE --sequence_length 2048 --acc_steps $ACC_STEPS \
+        --iterations $ITERATIONS \
+        --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
+        --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
+        --z_loss_coeff 0.0 \
+        $OPT_PARAMS $EXTRA_RUN_FLAGS \
+        --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
+        --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
+        --results_base_folder "$RESULTS_BASE_FOLDER" \
+        --eval_interval $EVAL_INTERVAL --log_interval 50
+
+# Capture the exit code
+TRAINING_EXIT_CODE=$?
+
+# Restart logic (modeled after tamia_test_steps-to-run.sh)
+if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]]; then
+    MAX_RESTARTS=$(python3 -c "print(int($ITERATIONS // $ITERATIONS_TO_RUN))")
+
+    # Only increment restart count if training succeeded
+    if [ $TRAINING_EXIT_CODE -eq 0 ]; then
+        if [[ $RESTART_COUNT -lt $MAX_RESTARTS ]]; then
+            NEW_RESTART_COUNT=$((RESTART_COUNT + 1))
+            echo "Training completed successfully, requeuing for next chunk (restart $NEW_RESTART_COUNT / $MAX_RESTARTS)"
+
+        # Check if a restart wrapper script was specified
+        if [ -z "$RESTART_WRAPPER_SCRIPT" ]; then
+            echo "Error: RESTART_WRAPPER_SCRIPT environment variable not set"
+            echo "Cannot requeue job without knowing which wrapper script to use"
+            exit 1
+        fi
+
+        # Extract original SLURM args to preserve resources
+        scontext=$(scontrol show job $SLURM_JOB_ID 2>/dev/null || echo "")
+        account=$(echo "$scontext" | grep -o 'Account=[^ ]*' | cut -d= -f2)
+        nodes=$(echo "$scontext" | grep -o 'NumNodes=[^ ]*' | cut -d= -f2); nodes=${nodes:-"1"}
+        timelimit=$(echo "$scontext" | grep -o 'TimeLimit=[^ ]*' | cut -d= -f2)
+        gres_raw=$(echo "$scontext" | grep -o 'Gres=[^ ]*' | cut -d= -f2)
+        if [ -z "$gres_raw" ]; then
+            if [ -n "$SLURM_GPUS_PER_NODE" ]; then
+                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]]; then
+                    gpus_per_node="$SLURM_GPUS_PER_NODE"
+                else
+                    gpus_per_node="h100:${SLURM_GPUS_PER_NODE}"
+                fi
+            else
+                gpus_per_node="h100:4"
+            fi
+        else
+            gpus_per_node=$(echo "$gres_raw" | sed 's/^gpu://')
+        fi
+        mem=$(echo "$scontext" | grep -o 'MinMemoryNode=[^ ]*' | cut -d= -f2); mem=${mem:-"0"}
+        job_name=$(echo "$scontext" | grep -o 'JobName=[^ ]*' | cut -d= -f2); job_name=${job_name:-""}
+
+        SLURM_ARGS=(
+            --time="$timelimit"
+            --nodes="$nodes"
+            --gpus-per-node="$gpus_per_node"
+            --cpus-per-gpu="${SLURM_CPUS_PER_GPU:-8}"
+            --mem="$mem"
+            --job-name="$job_name"
+        )
+
+        # Only add account if it was extracted successfully
+        if [ -n "$account" ]; then
+            SLURM_ARGS+=(--account="$account")
+        fi
+
+            echo "Using original SLURM args for requeue: ${SLURM_ARGS[@]}"
+            sbatch --export=ALL,RESTART_COUNT=$NEW_RESTART_COUNT "${SLURM_ARGS[@]}" "$RESTART_WRAPPER_SCRIPT" "${ORIG_ARGS[@]}"
+        else
+            echo "Max restarts ($MAX_RESTARTS) reached, not requeuing"
+        fi
+    else
+        # Training failed, requeue without incrementing restart count
+        echo "Training failed with exit code $TRAINING_EXIT_CODE"
+        echo "Requeuing job without incrementing restart count (keeping RESTART_COUNT=$RESTART_COUNT)"
+
+        # Check if a restart wrapper script was specified
+        if [ -z "$RESTART_WRAPPER_SCRIPT" ]; then
+            echo "Error: RESTART_WRAPPER_SCRIPT environment variable not set"
+            echo "Cannot requeue job without knowing which wrapper script to use"
+            exit 1
+        fi
+
+        # Extract original SLURM args to preserve resources
+        scontext=$(scontrol show job $SLURM_JOB_ID 2>/dev/null || echo "")
+        account=$(echo "$scontext" | grep -o 'Account=[^ ]*' | cut -d= -f2)
+        nodes=$(echo "$scontext" | grep -o 'NumNodes=[^ ]*' | cut -d= -f2); nodes=${nodes:-"1"}
+        timelimit=$(echo "$scontext" | grep -o 'TimeLimit=[^ ]*' | cut -d= -f2)
+        gres_raw=$(echo "$scontext" | grep -o 'Gres=[^ ]*' | cut -d= -f2)
+        if [ -z "$gres_raw" ]; then
+            if [ -n "$SLURM_GPUS_PER_NODE" ]; then
+                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]]; then
+                    gpus_per_node="$SLURM_GPUS_PER_NODE"
+                else
+                    gpus_per_node="h100:${SLURM_GPUS_PER_NODE}"
+                fi
+            else
+                gpus_per_node="h100:4"
+            fi
+        else
+            gpus_per_node=$(echo "$gres_raw" | sed 's/^gpu://')
+        fi
+        mem=$(echo "$scontext" | grep -o 'MinMemoryNode=[^ ]*' | cut -d= -f2); mem=${mem:-"0"}
+        job_name=$(echo "$scontext" | grep -o 'JobName=[^ ]*' | cut -d= -f2); job_name=${job_name:-""}
+
+        SLURM_ARGS=(
+            --time="$timelimit"
+            --nodes="$nodes"
+            --gpus-per-node="$gpus_per_node"
+            --cpus-per-gpu="${SLURM_CPUS_PER_GPU:-8}"
+            --mem="$mem"
+            --job-name="$job_name"
+        )
+
+        # Only add account if it was extracted successfully
+        if [ -n "$account" ]; then
+            SLURM_ARGS+=(--account="$account")
+        fi
+
+        echo "Using original SLURM args for requeue: ${SLURM_ARGS[@]}"
+        sbatch --export=ALL,RESTART_COUNT=$RESTART_COUNT "${SLURM_ARGS[@]}" "$RESTART_WRAPPER_SCRIPT" "${ORIG_ARGS[@]}"
+    fi
+fi

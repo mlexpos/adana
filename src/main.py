@@ -35,6 +35,7 @@ from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
 from optim.snoo_dana import snoo_DANA, snoo
+from optim.ablation import AdamWDecayingWD, DANA_MK4
 import pdb
 
 
@@ -117,6 +118,8 @@ def main(args, parser):
                 print(f"Warning: Failed to read wandb_run_id.txt: {e}, creating new run")
                 wandb_run_id = None
         
+        # Set wandb dir to experiment directory to avoid multiple offline-run folders
+        wandb_dir = exp_dir
         wandb.init(
             project=args.wandb_project,
             name=exp_name,
@@ -124,6 +127,7 @@ def main(args, parser):
             entity=args.wandb_entity,
             id=wandb_run_id,
             resume="allow" if wandb_run_id is not None else None,
+            dir=str(wandb_dir),
         )
         
         wandb.define_metric("iter")
@@ -460,6 +464,29 @@ def main(args, parser):
             beta2=args.beta2,
             mu=args.mu,
             k=args.k,
+        )
+    elif args.opt == "adamw-decaying-wd":
+        opt = AdamWDecayingWD(
+            group_specs,
+            lr=args.lr,
+            betas=(args.beta1, args.beta2),
+            epsilon=args.epsilon,
+            weight_decay=args.weight_decay,
+            wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
+        )
+    elif args.opt == "dana-mk4":
+        opt = DANA_MK4(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
+            kappa=args.kappa,
+            epsilon=args.epsilon,
+            weight_decay=args.weight_decay,
+            clipsnr=args.clipsnr,
+            wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
+            use_foreach=args.use_foreach,
         )
     else:
         opt = torch.optim.SGD(

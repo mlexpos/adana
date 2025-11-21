@@ -56,6 +56,9 @@ def get_fineweb_100_data(
         ids.append(tknzr.eot_token)  # add end-of-text token
         return {"ids": ids, "len": len(ids)}
 
+    # Define dtype for all files
+    dtype = np.uint16  # gpt2 vocab fits
+
     # Process validation set from first parquet file
     if not os.path.exists(val_file_path):
         print(f"Processing validation set from first parquet file with {validation_examples:,} examples...")
@@ -74,17 +77,20 @@ def get_fineweb_100_data(
 
         # Write validation file
         val_arr_len = int(np.sum(tokenized_val["len"]))
-        dtype = np.uint16  # gpt2 vocab fits
 
         print(f"Writing validation to {val_file_path} ({val_arr_len:,} tokens)...")
         val_arr = np.memmap(val_file_path, dtype=dtype, mode="w+", shape=(val_arr_len,))
 
-        # Use direct iteration over dataset - more efficient than sharding
+        # Write in batches for better performance
+        batch_size = 1000  # Process 1000 examples at a time
         idx = 0
-        for example in tqdm(tokenized_val, desc="writing validation"):
-            token_ids = np.array(example["ids"], dtype=dtype)
-            val_arr[idx:idx + len(token_ids)] = token_ids
-            idx += len(token_ids)
+        for batch_start in tqdm(range(0, len(tokenized_val), batch_size), desc="writing validation"):
+            batch_end = min(batch_start + batch_size, len(tokenized_val))
+            batch = tokenized_val[batch_start:batch_end]
+            # HuggingFace datasets return dict of lists when sliced, so batch["ids"] is a list of token lists
+            batch_tokens = np.concatenate([np.array(ids, dtype=dtype) for ids in batch["ids"]])
+            val_arr[idx:idx + len(batch_tokens)] = batch_tokens
+            idx += len(batch_tokens)
 
         val_arr.flush()
 
@@ -127,12 +133,16 @@ def get_fineweb_100_data(
         print(f"Writing train to {train_file_path} ({train_arr_len:,} tokens)...")
         train_arr = np.memmap(train_file_path, dtype=dtype, mode="w+", shape=(train_arr_len,))
 
-        # Use direct iteration over dataset - more efficient than sharding
+        # Write in batches for better performance
+        batch_size = 1000  # Process 1000 examples at a time
         idx = 0
-        for example in tqdm(tokenized_train, desc=f"writing train {i:04d}"):
-            token_ids = np.array(example["ids"], dtype=dtype)
-            train_arr[idx:idx + len(token_ids)] = token_ids
-            idx += len(token_ids)
+        for batch_start in tqdm(range(0, len(tokenized_train), batch_size), desc=f"writing train {i:04d}"):
+            batch_end = min(batch_start + batch_size, len(tokenized_train))
+            batch = tokenized_train[batch_start:batch_end]
+            # HuggingFace datasets return dict of lists when sliced, so batch["ids"] is a list of token lists
+            batch_tokens = np.concatenate([np.array(ids, dtype=dtype) for ids in batch["ids"]])
+            train_arr[idx:idx + len(batch_tokens)] = batch_tokens
+            idx += len(batch_tokens)
 
         train_arr.flush()
         train_files.append(train_file_path)
