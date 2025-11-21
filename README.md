@@ -92,5 +92,7 @@ cd $HOME/danastar
 
 python src/data/download_fineweb_100bt.py --local-dir=$HOME/links/scratch/fineweb/
 
+mkdir $HOME/danastar/logs
+
 sbatch scripts/rorqual_get_fineweb100.sh
 
