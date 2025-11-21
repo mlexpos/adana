@@ -11,3 +11,5 @@ zstandard
 numpy
 matplotlib
 seaborn
+jax
+optax
