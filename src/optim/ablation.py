@@ -913,7 +913,8 @@ class AdEMAMix_DecayingBETA2_DecayingWD(torch.optim.Optimizer):
                 else:
                     exp_avg_fast = grad
                 exp_avg_slow.mul_(beta3).add_(grad, alpha=1 - beta3)
-                beta_2 = 
+                beta_2 = 0.0
+                raise RuntimeError("beta_2 set to 0, because of git error.  Fix line 916.")
                 exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
 
                 denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
