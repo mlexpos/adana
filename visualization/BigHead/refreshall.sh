@@ -3,28 +3,33 @@
 # Multi-regime runtime analysis for BigHead AdamW
 #python bighead_adamw_multiregime_runtime.py
 
-python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers adamw mk4 d-muon manau ademamix --fit-relative-to-adamw
-python compare_scaling_rules.py --scaling-rules Eryngii_Scaled --optimizers adamw mk4 d-muon ademamix --fit-relative-to-adamw
-python compare_scaling_rules.py --scaling-rules Enoki Enoki_Scaled Eryngii Eryngii_Scaled --optimizers adamw mk4 d-muon manau ademamix --fit-relative-to-adamw
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer dana-star-no-tau --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer dana-star --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer ademamix-decaying-wd --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer dana-mk4 --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer adamw --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer adamw-decaying-wd --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer mk4 --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer d-muon --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer manau --target-omega 4.0 --top-k 5
+python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer ademamix --target-omega 4.0 --top-k 5
+
+# python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers adamw adamw-decaying-wd --equal-weight
+# python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers mk4 dana-mk4 --equal-weight
 
 
-python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer adamw --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer mk4 --target-omega 4.0 --top-k 7 
-python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer d-muon --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer manau --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Enoki_Scaled --optimizer ademamix --target-omega 4.0 --top-k 7
+# python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers adamw mk4 d-muon manau ademamix --fit-relative-to-adamw
+# python compare_scaling_rules.py --scaling-rules Enoki Enoki_Scaled Eryngii Eryngii_Scaled --optimizers adamw mk4 d-muon manau ademamix --fit-relative-to-adamw
 
-python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer adamw --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer mk4 --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer d-muon --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer manau --target-omega 4.0 --top-k 7
-python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer ademamix --target-omega 4.0 --top-k 7
+python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers ademamix ademamix-decaying-wd mk4 adamw --equal-weight
+python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers adamw adamw-decaying-wd --equal-weight
+python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers ademamix ademamix-decaying-wd mk4 adamw dana-star-no-tau dana-star manau d-muon adamw-decaying-wd dana-mk4 --equal-weight
 
-# python compare_scaling_rules.py --scaling-rules BigHead --optimizers adamw mk4 d-muon manau ademamix
-python compare_scaling_rules.py --scaling-rules Enoki_Scaled --optimizers adamw mk4 d-muon manau ademamix
-python compare_scaling_rules.py --scaling-rules Eryngii_Scaled --optimizers adamw mk4 d-muon ademamix
-python compare_scaling_rules.py --scaling-rules Enoki Enoki_Scaled Eryngii Eryngii_Scaled --optimizers adamw mk4
-
+# python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer adamw --target-omega 4.0 --top-k 7
+# python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer mk4 --target-omega 4.0 --top-k 7
+# python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer d-muon --target-omega 4.0 --top-k 7
+# python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer manau --target-omega 4.0 --top-k 7
+# python bighead_lr_scaling.py --scaling-rule Eryngii_Scaled --optimizer ademamix --target-omega 4.0 --top-k 7
 
 # python bighead_lr_scaling.py --scaling-rule BigHead --optimizer adamw --target-omega 4.0 --top-k 5
 # python bighead_lr_scaling.py --scaling-rule BigHead --optimizer mk4 --target-omega 4.0 --top-k 5

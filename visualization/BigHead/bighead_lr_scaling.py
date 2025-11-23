@@ -110,8 +110,8 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
 parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Eryngii_Scaled'],
                     help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Eryngii (increased head dim and depth), or Eryngii_Scaled (ScaledGPT init)')
-parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd'],
-                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, manau, adamw-decaying-wd, dana-mk4, or ademamix-decaying-wd')
+parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star'],
+                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, manau, adamw-decaying-wd, dana-mk4, ademamix-decaying-wd, dana-star-no-tau, or dana-star')
 parser.add_argument('--target-omega', type=float, default=4.0,
                     help='Target omega value to find optimal LR (default: 4.0)')
 parser.add_argument('--target-residual-exponent', type=float, default=None,
@@ -147,7 +147,7 @@ parser.add_argument('--show-predictions', action='store_true',
 args = parser.parse_args()
 
 # Map optimizer abbreviations
-optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon', 'manau': 'manau', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd'}
+optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix', 'd-muon': 'd-muon', 'manau': 'manau', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd', 'dana-star-no-tau': 'dana-star-no-tau', 'dana-star': 'dana-star'}
 optimizer_type = optimizer_map[args.optimizer]
 
 # Get scaling rule configuration
@@ -455,7 +455,7 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
                 continue
 
         # Calculate omega based on optimizer type
-        if optimizer_type in ['dana-star-mk4', 'dana', 'adamw-decaying-wd', 'ademamix-decaying-wd', 'dana-mk4']:
+        if optimizer_type in ['dana-star-mk4', 'dana', 'adamw-decaying-wd', 'ademamix-decaying-wd', 'dana-mk4', 'dana-star-no-tau', 'dana-star']:
             wd_ts = config.get('wd_ts', 1.0)
             weight_decay = config.get('weight_decay', 1.0)
             omega = wd_ts * lr * weight_decay
@@ -908,7 +908,7 @@ if __name__ == '__main__':
     ax2.set_xticklabels([str(size) for size in all_sizes_for_axis])
     ax2.set_xlabel(f'{size_name.capitalize()}', fontsize=20)
 
-    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau', 'adamw-decaying-wd': 'AdamW-Decaying-WD', 'dana-mk4': 'Dana-MK4', 'ademamix-decaying-wd': 'Ademamix-Decaying-WD'}
+    optimizer_title_map = {'adamw': 'AdamW', 'mk4': 'Dana-Star-MK4', 'dana': 'Dana-Star', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau', 'adamw-decaying-wd': 'AdamW-Decaying-WD', 'dana-mk4': 'Dana-MK4', 'ademamix-decaying-wd': 'Ademamix-Decaying-WD', 'dana-star-no-tau': 'Dana-Star-No-Tau', 'dana-star': 'Dana-Star'}
     optimizer_title = optimizer_title_map[args.optimizer]
 
     title_parts = [f'ω = {args.target_omega}', f'Top-K = {args.top_k}']
@@ -933,7 +933,7 @@ if __name__ == '__main__':
     if args.output:
         output_file = args.output
     else:
-        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau', 'adamw-decaying-wd': 'AdamW-Decaying-WD', 'dana-mk4': 'Dana-MK4', 'ademamix-decaying-wd': 'Ademamix-Decaying-WD'}
+        optimizer_filename_map = {'adamw': 'AdamW', 'mk4': 'DanaStar-MK4', 'dana': 'DanaStar', 'ademamix': 'AdemaMix', 'd-muon': 'D-Muon', 'manau': 'Manau', 'adamw-decaying-wd': 'AdamW-Decaying-WD', 'dana-mk4': 'Dana-MK4', 'ademamix-decaying-wd': 'Ademamix-Decaying-WD', 'dana-star-no-tau': 'Dana-Star-No-Tau', 'dana-star': 'Dana-Star'}
         optimizer_name = optimizer_filename_map[args.optimizer]
         output_file = f'{args.scaling_rule}-{optimizer_name}-lr-extrapolation.pdf'
 
