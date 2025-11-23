@@ -24,7 +24,7 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=80000
+ITERATIONS_TO_RUN=75000
 
 echo "Starting Enoki Muon ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
