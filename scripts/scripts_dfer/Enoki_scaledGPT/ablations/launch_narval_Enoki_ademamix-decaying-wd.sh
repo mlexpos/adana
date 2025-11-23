@@ -1,13 +1,13 @@
 #!/bin/bash
 
-# Enoki AdamW-Decaying-WD ScaledGPT Initialization Single-GPU Sweep for Narval
+# Enoki Ademamix-Decaying-WD ScaledGPT Initialization Single-GPU Sweep for Narval
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
 # Learning rate formula: lr = 1.28e+01 × (1.62e + 04 + P)^-0.515 where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 16 18)
+HEADS_ARRAY=( 18)
 #HEADS_ARRAY=( 6 )
 LR_MULTIPLIERS=( 1.0 0.3 0.1 3.0 10.0)
 #LR_MULTIPLIERS=( 1.0 )
@@ -26,7 +26,7 @@ TIME_HOURS=24
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 
-echo "Starting Enoki AdamW-Decaying-WD ScaledGPT Initialization sweep (Narval)"
+echo "Starting Enoki Ademamix-Decaying-WD ScaledGPT Initialization sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -122,8 +122,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                 BATCH_SIZE=32
                 ACC_STEPS=1
             elif [ $HEADS -le 18 ]; then
-                BATCH_SIZE=4
-                ACC_STEPS=8
+                BATCH_SIZE=16
+                ACC_STEPS=2
             else
                 BATCH_SIZE=1
                 ACC_STEPS=32
@@ -135,14 +135,14 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --gpus-per-node=a100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=EN_AW-decaying-wd_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
+                   --job-name=EN_AdemaMix-decaying-wd_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
                    scripts/scripts_dfer/Enoki_scaledGPT/narval_Enoki_dfer.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer adamw-decaying-wd \
+                   --optimizer ademamix-decaying-wd \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
 

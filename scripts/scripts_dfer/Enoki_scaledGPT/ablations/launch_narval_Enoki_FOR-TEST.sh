@@ -7,10 +7,8 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 16 18)
-#HEADS_ARRAY=( 6 )
-LR_MULTIPLIERS=( 1.0 0.3 0.1 3.0 10.0)
-#LR_MULTIPLIERS=( 1.0 )
+HEADS_ARRAY=( 18 )
+LR_MULTIPLIERS=( 1.0 )
 
 BATCH_SIZE=32
 ACC_STEPS=1
@@ -20,7 +18,7 @@ GPUS_PER_NODE=1
 CPUS_PER_GPU=4
 TOTAL_CPUS=4
 MEM=64GB          # 0 = allocate as needed
-TIME_HOURS=24
+TIME_HOURS=1
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
@@ -122,8 +120,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                 BATCH_SIZE=32
                 ACC_STEPS=1
             elif [ $HEADS -le 18 ]; then
-                BATCH_SIZE=4
-                ACC_STEPS=8
+                BATCH_SIZE=16
+                ACC_STEPS=2
             else
                 BATCH_SIZE=1
                 ACC_STEPS=32
@@ -135,14 +133,14 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --gpus-per-node=a100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=EN_AW-decaying-wd_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
+                   --job-name=EN_AW-FOR-TEST_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
                    scripts/scripts_dfer/Enoki_scaledGPT/narval_Enoki_dfer.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer adamw-decaying-wd \
+                   --optimizer ademamix \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
 

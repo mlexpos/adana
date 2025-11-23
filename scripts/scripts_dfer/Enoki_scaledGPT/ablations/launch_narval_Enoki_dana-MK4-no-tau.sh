@@ -7,21 +7,21 @@
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-#HEADS_ARRAY=( 6 8 10 12 14 16)
-HEADS_ARRAY=( 6 )
-#LR_MULTIPLIERS=( 1.0 0.3 0.1 3.0 10.0 )
-LR_MULTIPLIERS=( 1.0 )
+HEADS_ARRAY=( 18 )
+#HEADS_ARRAY=( 6 )
+LR_MULTIPLIERS=( 1.0 0.3 0.1 3.0 10.0 )
+#LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 
 BATCH_SIZE=32
 ACC_STEPS=1
 
 # SLURM configuration for Narval (1 GPU per node)
-GPUS_PER_NODE=4
-CPUS_PER_GPU=8
-TOTAL_CPUS=32
+GPUS_PER_NODE=1
+CPUS_PER_GPU=4
+TOTAL_CPUS=4
 MEM=64GB          # 0 = allocate as needed
-TIME_HOURS=1
+TIME_HOURS=24
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
@@ -120,17 +120,19 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
-            # if [ $HEADS -le 16 ]; then
-            #     TIME_HOURS=3
-            # elif [ $HEADS -le 20 ]; then
-            #     TIME_HOURS=12
-            # elif [ $HEADS -le 24 ]; then
-            #     TIME_HOURS=24
-            # fi
+            if [ $HEADS -le 14 ]; then
+                BATCH_SIZE=32
+                ACC_STEPS=1
+            elif [ $HEADS -le 18 ]; then
+                BATCH_SIZE=16
+                ACC_STEPS=2
+            else
+                BATCH_SIZE=1
+                ACC_STEPS=32
+            fi
 
             # Submit the job with single-GPU configuration and ScaledGPT initialization
             sbatch --time=${TIME_HOURS}:00:00 \
-                   --nodes=1 \
                    --gpus-per-node=a100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \

@@ -35,7 +35,7 @@ from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
 from optim.snoo_dana import snoo_DANA, snoo
-from optim.ablation import AdamWDecayingWD, DANA_MK4, AdEMAMix_DecayingWD
+from optim.ablation import AdamWDecayingWD, DANA_MK4, AdEMAMix_DecayingWD, DANA_STAR_NO_TAU  #AdEMAMix_DecayingBETA2_DecayingWD
 import pdb
 
 
@@ -280,6 +280,19 @@ def main(args, parser):
                 wd_decaying=args.wd_decaying,
                 wd_ts=args.wd_ts,
             )
+    # elif args.opt == "ademamix-beta2-decaying-wd_decaying":
+    #         opt = AdEMAMix_DecayingBETA2_DecayingWD(
+    #             group_specs,
+    #             lr=args.lr,
+    #             betas=(args.beta1, args.beta2, args.adema_beta3), # beta_1, beta_2, beta_3 in AdEMAMix. beta_2 is unused.
+    #             alpha=args.adema_alpha,
+    #             beta3_warmup=args.adema_beta3_warmup,
+    #             alpha_warmup=args.adema_alpha_warmup,
+    #             weight_decay=args.weight_decay,
+    #             gamma_3_factor=args.gamma_3_factor,
+    #             wd_decaying=args.wd_decaying,
+    #             wd_ts=args.wd_ts,
+    #         )
     elif args.opt == "lion":
             opt = Lion(
                 group_specs,
@@ -374,6 +387,19 @@ def main(args, parser):
     elif args.opt == "dana-star":
         # Map generic CLI args to DANA-STAR hyperparameters
         opt = DANA_STAR(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
+            kappa=args.kappa,
+            weight_decay=args.weight_decay,
+            clipsnr=args.clipsnr,
+            weight_time=args.weight_time,
+            wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
+        )
+    elif args.opt == "dana-star-no-tau":
+        # Map generic CLI args to DANA-STAR hyperparameters
+        opt = DANA_STAR_NO_TAU(
             group_specs,
             lr=args.lr,
             delta=args.delta,

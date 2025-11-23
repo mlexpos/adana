@@ -124,6 +124,20 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
+    dana-star-no-tau)
+        # For dana-star-no-tau: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star-no-tau --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
+    dana-star)
+        # For dana-star: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
     dana-mk4)
         # For dana-mk4 with no tau adaptation: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
@@ -165,8 +179,15 @@ case $OPTIMIZER in
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt ademamix-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
         ;;
+    # ademamix-beta2-decaying-wd-decaying)
+    #     # For ademamix-beta2-decaying-wd-decaying: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+    #     WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+    #     WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+    #     WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+    #     OPT_PARAMS="--opt ademamix-beta2-decaying-wd-decaying --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+    #     ;;
     d-muon)
         # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")

@@ -753,184 +753,332 @@ class AdEMAMix_DecayingWD(torch.optim.Optimizer):
                 
         return loss
 
+# class AdEMAMix_DecayingBETA2_DecayingWD(torch.optim.Optimizer):
+#     r"""Implements the AdEMAMix_DecayingBETA2_DecayingWD algorithm.
 
-class AdEMAMix_DecayingBETA2_DecayingWD(torch.optim.Optimizer):
-    r"""Implements the AdEMAMix_DecayingBETA2_DecayingWD algorithm.
+#     Arguments:
+#         params (iterable): iterable of parameters to optimize or dicts defining
+#             parameter groups
+#         lr (float, optional): learning rate (default: 1e-3)
+#         betas (Tuple[float, float, float], optional): coefficients used for computing
+#             running averages of gradient and its square (default: (0.9, 0.999, 0.9999))
+#             corresponding to beta_1, beta_2, beta_3 in AdEMAMix
+#         alpha (float): AdEMAMix alpha coeficient mixing the slow and fast EMAs (default: 2)
+#         beta3_warmup (int, optional): number of warmup steps used to increase beta3 (default: None)
+#         alpha_warmup: (int, optional): number of warmup steps used to increase alpha (default: None)
+#         eps (float, optional): term added to the denominator to improve
+#             numerical stability (default: 1e-8)
+#         weight_decay (float, optional): weight decay as in AdamW (default: 0)
+#         wd_decaying: Whether to decay weight decay over time.
+#         wd_ts: Timescale for weight decay decay.
+#     """
 
-    Arguments:
-        params (iterable): iterable of parameters to optimize or dicts defining
-            parameter groups
-        lr (float, optional): learning rate (default: 1e-3)
-        betas (Tuple[float, float, float], optional): coefficients used for computing
-            running averages of gradient and its square (default: (0.9, 0.999, 0.9999))
-            corresponding to beta_1, beta_2, beta_3 in AdEMAMix
-        alpha (float): AdEMAMix alpha coeficient mixing the slow and fast EMAs (default: 2)
-        beta3_warmup (int, optional): number of warmup steps used to increase beta3 (default: None)
-        alpha_warmup: (int, optional): number of warmup steps used to increase alpha (default: None)
-        eps (float, optional): term added to the denominator to improve
-            numerical stability (default: 1e-8)
-        weight_decay (float, optional): weight decay as in AdamW (default: 0)
-        wd_decaying: Whether to decay weight decay over time.
-        wd_ts: Timescale for weight decay decay.
-    """
+#     def __init__(
+#         self,
+#         params,
+#         lr=1e-3,
+#         betas=(0.9, 0.999, 0.9999), # beta_1, beta_2, beta_3 in AdEMAMix. beta_2 is unused.
+#         alpha=2.0,
+#         beta3_warmup=None,
+#         alpha_warmup=None,
+#         delta=8.0,
+#         eps=1e-8,
+#         weight_decay=0,
+#         gamma_3_factor=1.0,
+#         wd_decaying=False,
+#         wd_ts=1.0,
+#     ):
+#         if not 0.0 <= lr:
+#             raise ValueError("Invalid learning rate: {}".format(lr))
+#         if not 0.0 <= eps:
+#             raise ValueError("Invalid epsilon value: {}".format(eps))
+#         if not 0.0 <= betas[0] < 1.0:
+#             raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
+#         if not 0.0 <= betas[1] < 1.0:
+#             raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
+#         if not 0.0 <= betas[2] < 1.0:
+#             raise ValueError("Invalid beta parameter at index 2: {}".format(betas[2]))
+#         if not 0.0 <= weight_decay:
+#             raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
+#         if not 0.0 <= alpha:
+#             raise ValueError("Invalid alpha value: {}".format(alpha))
+#         defaults = dict(
+#             lr=lr,
+#             betas=betas,
+#             eps=eps,
+#             alpha=alpha,
+#             beta3_warmup=beta3_warmup,
+#             alpha_warmup=alpha_warmup,
+#             delta=delta,
+#             weight_decay=weight_decay,
+#             gamma_3_factor=gamma_3_factor,
+#             wd_decaying=wd_decaying,
+#             wd_ts=wd_ts,
+#         )
+#         super(AdEMAMix_DecayingBETA2_DecayingWD, self).__init__(params, defaults)
 
+#     def __setstate__(self, state):
+#         super(AdEMAMix_DecayingBETA2_DecayingWD, self).__setstate__(state)
+
+#     @torch.no_grad()
+#     def step(self, closure=None):
+#         """Performs a single optimization step.
+
+#         Arguments:
+#             closure (callable, optional): A closure that reevaluates the model
+#                 and returns the loss.
+#         """
+#         loss = None
+#         if closure is not None:
+#             with torch.enable_grad():
+#                 loss = closure()
+
+#         for group in self.param_groups:
+#             lr = group["lr"]
+#             wd = group["weight_decay"]
+#             eps = group["eps"]
+#             beta1, beta2, beta3_final = group["betas"]
+#             beta3_warmup = group["beta3_warmup"]
+#             alpha_final = group["alpha"]
+#             alpha_warmup = group["alpha_warmup"]
+#             delta = group["delta"]
+#             gamma_3_factor = group["gamma_3_factor"]
+#             wd_decaying = group["wd_decaying"]
+#             wd_ts = group["wd_ts"]
+
+#             for p in group["params"]:
+#                 if p.grad is None:
+#                     continue
+#                 grad = p.grad
+#                 if grad.is_sparse:
+#                     raise RuntimeError("AdEMAMix does not support sparse gradients.")
+
+#                 state = self.state[p]
+
+#                 # State initialization
+#                 if len(state) == 0:
+#                     state["step"] = 0
+#                     # Exponential moving average of gradient values
+#                     if beta1 != 0.0:  # save memory in case beta1 is 0.0
+#                         state["exp_avg_fast"] = torch.zeros_like(
+#                             p, memory_format=torch.preserve_format 
+#                         )
+#                     else:
+#                         state["exp_avg_fast"] = None
+#                     state["exp_avg_slow"] = torch.zeros_like(
+#                         p, memory_format=torch.preserve_format
+#                     )
+#                     # Exponential moving average of squared gradient values
+#                     state["exp_avg_sq"] = torch.zeros_like(
+#                         p, memory_format=torch.preserve_format
+#                     )
+
+#                 exp_avg_fast, exp_avg_slow, exp_avg_sq = (
+#                     state["exp_avg_fast"],
+#                     state["exp_avg_slow"],
+#                     state["exp_avg_sq"],
+#                 )
+
+#                 state["step"] += 1
+#                 #bias_correction1 = 1 - beta1 ** state["step"]
+#                 #bias_correction2 = 1 - beta2 ** state["step"]
+
+#                 # Compute the effective alpha and beta3 in case warmup is used
+#                 if alpha_warmup is not None:
+#                     alpha = linear_warmup_scheduler(
+#                         state["step"],
+#                         alpha_end=alpha_final,
+#                         alpha_start=0,
+#                         warmup=alpha_warmup,
+#                     )
+#                 else:
+#                     alpha = alpha_final
+
+#                 if beta3_warmup is not None:
+#                     beta3 = linear_hl_warmup_scheduler(
+#                         state["step"],
+#                         beta_end=beta3_final,
+#                         beta_start=beta1,
+#                         warmup=beta3_warmup,
+#                     )
+#                 else:
+#                     beta3 = beta3_final
+
+#                 # Store current alpha and beta_3 values for logging
+#                 state["current_alpha"] = alpha
+#                 state["current_beta3"] = beta3
+#                 state["current_one_minus_beta3"] = 1 - beta3
+
+#                 # Decay the first and second moment running average coefficient
+#                 if beta1 != 0.0:
+#                     exp_avg_fast.mul_(beta1).add_(grad, alpha=1 - beta1)
+#                 else:
+#                     exp_avg_fast = grad
+#                 exp_avg_slow.mul_(beta3).add_(grad, alpha=1 - beta3)
+                
+#                 # Compute decaying beta2 (increases from low to high, approaching 1.0)
+#                 # Similar to DANA's alpha formula but inverted: starts at ~0.5, increases toward 1.0
+#                 beta2_decaying = 1 - (delta / (delta + state["step"]))
+#                 # Clamp to ensure beta2 is in valid range [0, 1)
+#                 exp_avg_sq.mul_(beta2_decaying).addcmul_(grad, grad, value=1 - beta2_decaying)
+
+                
+#                 denom = (exp_avg_sq.sqrt()).add_(eps)
+                
+#                 update = (
+#                     exp_avg_fast + alpha * exp_avg_slow * gamma_3_factor
+#                 ) / denom
+
+#                 # decay weight decay
+#                 if wd_decaying:
+#                     wd_factor = -wd / (1 + state["step"] / wd_ts) * lr
+#                 else:
+#                     wd_factor = -wd * lr
+#                 p.mul_(1 + wd_factor)
+
+#                 p.add_(-lr * update)
+                
+#         return loss
+
+class DANA_STAR_NO_TAU(Optimizer):
+    
     def __init__(
         self,
-        params,
-        lr=1e-3,
-        betas=(0.9, 0.999, 0.9999), # beta_1, beta_2, beta_3 in AdEMAMix. beta_2 is unused.
-        alpha=2.0,
-        beta3_warmup=None,
-        alpha_warmup=None,
-        eps=1e-8,
-        weight_decay=0,
-        gamma_3_factor=1.0,
-        wd_decaying=False,
-        wd_ts=1.0,
-    ):
-        if not 0.0 <= lr:
-            raise ValueError("Invalid learning rate: {}".format(lr))
-        if not 0.0 <= eps:
-            raise ValueError("Invalid epsilon value: {}".format(eps))
-        if not 0.0 <= betas[0] < 1.0:
-            raise ValueError("Invalid beta parameter at index 0: {}".format(betas[0]))
-        if not 0.0 <= betas[1] < 1.0:
-            raise ValueError("Invalid beta parameter at index 1: {}".format(betas[1]))
-        if not 0.0 <= betas[2] < 1.0:
-            raise ValueError("Invalid beta parameter at index 2: {}".format(betas[2]))
-        if not 0.0 <= weight_decay:
-            raise ValueError("Invalid weight_decay value: {}".format(weight_decay))
-        if not 0.0 <= alpha:
-            raise ValueError("Invalid alpha value: {}".format(alpha))
+        params: Iterable[torch.Tensor],
+        lr: float = 1.0, # learning rate for debugging
+        # g2: float = 1e-4,
+        # g3: float = 1e-5,
+        delta: float = 8.0,
+        kappa: float = 1.0,
+        epsilon: float = 1e-8,
+        weight_decay: float = 0.0,
+        clipsnr: float = 1.0,
+        weight_time: bool = False,
+        wd_decaying: bool = False,
+        wd_ts: float = 1.0,
+        ):
+
+        """
+        DANA-STAR NO TAU optimizer.
+        
+        Args:
+            params: Iterable of parameters to optimize.
+            lr: Learning rate. In the code, g2=g3 are taken equal to lr.
+            delta: Delta parameter.
+            kappa: Kappa parameter.
+            epsilon: Epsilon parameter.
+            weight_decay: Weight decay parameter.
+            clipsnr: Clipsnr parameter.
+            weight_time: Whether to use a weighting of the time by a factor lr / lr_max when using scheduler to better handle annealing (doesn't work currently).
+            wd_decaying: Whether to decay the wd parameter along training by a (1 + t) factor.
+        """
+
         defaults = dict(
-            lr=lr,
-            betas=betas,
-            eps=eps,
-            alpha=alpha,
-            beta3_warmup=beta3_warmup,
-            alpha_warmup=alpha_warmup,
-            weight_decay=weight_decay,
-            gamma_3_factor=gamma_3_factor,
-            wd_decaying=wd_decaying,
-            wd_ts=wd_ts,
-        )
-        super(AdEMAMix_DecayingWD, self).__init__(params, defaults)
+            lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, kappa=kappa, weight_decay=weight_decay, weighted_step_count=0)
+        self.lr = lr
+        self.delta = delta
+        self.clipsnr = clipsnr
+        self.epsilon = epsilon
+        self.kappa = kappa
+        self.weight_decay = weight_decay
+        self.weight_time = weight_time
+        self.wd_decaying = wd_decaying
+        self.wd_ts = wd_ts
 
-    def __setstate__(self, state):
-        super(AdEMAMix_DecayingWD, self).__setstate__(state)
-
+        super(DANA_STAR_NO_TAU, self).__init__(params, defaults)
+        
+        # Global step counter
+        self._step_count = 0
+    
+    def _make_schedule(self, value: Union[float, Callable[[int], float]]) -> Callable[[int], float]:
+        """Convert scalar or schedule to callable function."""
+        if callable(value):
+            return value
+        else:
+            return lambda step: value    
+    
+    #@torch.compile
     @torch.no_grad()
     def step(self, closure=None):
-        """Performs a single optimization step.
-
-        Arguments:
-            closure (callable, optional): A closure that reevaluates the model
-                and returns the loss.
-        """
+        """Perform a single optimization step."""
         loss = None
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-
+        
+        self._step_count += 1
+        
         for group in self.param_groups:
-            lr = group["lr"]
-            wd = group["weight_decay"]
-            eps = group["eps"]
-            beta1, beta2, beta3_final = group["betas"]
-            beta3_warmup = group["beta3_warmup"]
-            alpha_final = group["alpha"]
-            alpha_warmup = group["alpha_warmup"]
-            gamma_3_factor = group["gamma_3_factor"]
-            wd_decaying = group["wd_decaying"]
-            wd_ts = group["wd_ts"]
-
-            for p in group["params"]:
-                if p.grad is None:
-                    continue
+            # Get schedule functions
+            g2 = group['lr']
+            g3 = group['lr']
+            lr = group['lr']
+            time_factor = group['lr'] / self.lr
+            group['weighted_step_count'] += time_factor
+            delta = group['delta']
+            kappa = group['kappa']
+            wd = group['weight_decay']
+            epsilon = group['epsilon']
+            clipsnr = group['clipsnr']
+            
+            for p in group['params']:
                 grad = p.grad
-                if grad.is_sparse:
-                    raise RuntimeError("AdEMAMix does not support sparse gradients.")
-
+                if grad is None:
+                    continue
+                
                 state = self.state[p]
-
+                
                 # State initialization
                 if len(state) == 0:
-                    state["step"] = 0
-                    # Exponential moving average of gradient values
-                    if beta1 != 0.0:  # save memory in case beta1 is 0.0
-                        state["exp_avg_fast"] = torch.zeros_like(
-                            p, memory_format=torch.preserve_format 
-                        )
-                    else:
-                        state["exp_avg_fast"] = None
-                    state["exp_avg_slow"] = torch.zeros_like(
-                        p, memory_format=torch.preserve_format
-                    )
-                    # Exponential moving average of squared gradient values
-                    state["exp_avg_sq"] = torch.zeros_like(
-                        p, memory_format=torch.preserve_format
-                    )
-
-                exp_avg_fast, exp_avg_slow, exp_avg_sq = (
-                    state["exp_avg_fast"],
-                    state["exp_avg_slow"],
-                    state["exp_avg_sq"],
-                )
-
-                state["step"] += 1
-                bias_correction1 = 1 - beta1 ** state["step"]
-                bias_correction2 = 1 - beta2 ** state["step"]
-
-                # Compute the effective alpha and beta3 in case warmup is used
-                if alpha_warmup is not None:
-                    alpha = linear_warmup_scheduler(
-                        state["step"],
-                        alpha_end=alpha_final,
-                        alpha_start=0,
-                        warmup=alpha_warmup,
-                    )
-                else:
-                    alpha = alpha_final
-
-                if beta3_warmup is not None:
-                    beta3 = linear_hl_warmup_scheduler(
-                        state["step"],
-                        beta_end=beta3_final,
-                        beta_start=beta1,
-                        warmup=beta3_warmup,
-                    )
-                else:
-                    beta3 = beta3_final
-
-                # Store current alpha and beta_3 values for logging
-                state["current_alpha"] = alpha
-                state["current_beta3"] = beta3
-                state["current_one_minus_beta3"] = 1 - beta3
-
-                # Decay the first and second moment running average coefficient
-                if beta1 != 0.0:
-                    exp_avg_fast.mul_(beta1).add_(grad, alpha=1 - beta1)
-                else:
-                    exp_avg_fast = grad
-                exp_avg_slow.mul_(beta3).add_(grad, alpha=1 - beta3)
-                beta_2 = 
-                exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-
-                denom = (exp_avg_sq.sqrt() / math.sqrt(bias_correction2)).add_(eps)
-
-                update = (
-                    exp_avg_fast.div(bias_correction1) + alpha * exp_avg_slow * gamma_3_factor
-                ) / denom
-
-                # decay weight decay
-                if wd_decaying:
-                    wd_factor = -wd / (1 + state["step"] / wd_ts) * lr
-                else:
-                    wd_factor = -wd * lr
-                p.mul_(1 + wd_factor)
-
-                p.add_(-lr * update)
+                    state['step'] = 0
+                    state['m'] = torch.zeros_like(p)  # First moment
+                    state['v'] = torch.zeros_like(p)  # Second moment
+                    #state['tau'] = torch.zeros_like(p)  # Tau estimates
                 
+                m, v = state['m'], state['v']
+                state['step'] += 1
+                
+                # Stable EMA coefficient in (0,1): alpha = delta / (delta + t)
+                if self.weight_time: # potentially take one during warmup
+                    step = group['weighted_step_count']
+                    alpha = delta / (delta + step) * time_factor
+                else:
+                    step = state['step']
+                    alpha = delta / (delta + step)
+                
+                # Update first moment
+                m.mul_(1 - alpha).add_(grad, alpha=alpha)
+                # Update second moment
+                v.mul_(1 - alpha).addcmul_(grad, grad, value=alpha)
+                
+                # Update tau using the specified tau updater
+                #tau_update = self._tau_updater(grad, v, epsilon)
+                #tau.mul_(1 - alpha).add_(tau_update, alpha=alpha)
+                # Compute effective time
+                #effective_time = self._effective_time(tau, step)
+                
+                # Store current alpha and kappa-based factor for logging
+                state["current_alpha"] = alpha
+                state["current_kappa_factor"] = (1 + step)**(1-kappa)
+                # Compute momentum terms
+                #norm_term = self._norm_term(v, tau, step, epsilon)
+                #clip_g2_term = torch.clamp(clipsnr * torch.sqrt(v) / (self._root_tau_reg(tau, step) * torch.abs(grad) + epsilon), max=1.0)
+                
+                # Compute parameter updates using effective time for g2 and g3 scheduling
+                g2_term = g2 * grad / (torch.sqrt(v) + epsilon)
+                g3_term = g3 * (1 + step)**(1-kappa) * m / (torch.sqrt(v) + epsilon)
+                
+                # Apply the main update
+                update = -(g2_term + g3_term)
+
+                # Decoupled weight decay (AdamW-style)
+                if wd != 0:
+                    if self.wd_decaying:
+                        p.add_(p, alpha= - wd / (1 + step / self.wd_ts) * lr)
+                    else:
+                        p.add_(p, alpha= - wd * lr)
+                
+                # Apply update to parameters with scheduled LR
+                p.add_(update)
+        
         return loss
-
-
