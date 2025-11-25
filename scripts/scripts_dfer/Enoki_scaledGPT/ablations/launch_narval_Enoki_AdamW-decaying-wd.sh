@@ -3,13 +3,13 @@
 # Enoki AdamW-Decaying-WD ScaledGPT Initialization Single-GPU Sweep for Narval
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.28e+01 × (1.62e + 04 + P)^-0.515 where P = NON_EMB
+# Learning rate formula: lr = 5.28e+03 × (5.88e + 06 + P)^-0.843 where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 16 18)
+HEADS_ARRAY=( 6 8 10 12 14 16 18)
 #HEADS_ARRAY=( 6 )
-LR_MULTIPLIERS=( 1.0 0.3 0.1 3.0 10.0)
+LR_MULTIPLIERS=( 1.0 1.25 1.5 0.75 0.5)
 #LR_MULTIPLIERS=( 1.0 )
 
 BATCH_SIZE=32
@@ -95,8 +95,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Calculate base learning rate using formula: lr = 1.28e+01 × (1.62e + 04 + P)^-0.515
-        BASE_LR=$(python3 -c "print(1.28e+01 * (1.62e+04 + $NON_EMB) ** -0.515)")
+        # Calculate base learning rate using formula: lr = 5.28e+03 × (5.88e + 06 + P)^-0.843
+        BASE_LR=$(python3 -c "print(5.28e+03 * (5.88e+06 + $NON_EMB) ** -0.843)")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
@@ -122,8 +122,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                 BATCH_SIZE=32
                 ACC_STEPS=1
             elif [ $HEADS -le 18 ]; then
-                BATCH_SIZE=4
-                ACC_STEPS=8
+                BATCH_SIZE=16
+                ACC_STEPS=2
             else
                 BATCH_SIZE=1
                 ACC_STEPS=32

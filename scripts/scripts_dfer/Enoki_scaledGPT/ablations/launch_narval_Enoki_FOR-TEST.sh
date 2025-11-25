@@ -140,7 +140,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer ademamix \
+                   --optimizer dana-star-no-tau \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
 
