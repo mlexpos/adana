@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=rorqual_get_fineweb100
-#SBATCH --time=18:00:00
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=64
 #SBATCH --ntasks-per-node=1
