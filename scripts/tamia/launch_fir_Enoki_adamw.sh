@@ -9,7 +9,7 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 39 )
+HEADS_ARRAY=( 41 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 BATCH_SIZE=2 #32 #2
@@ -20,12 +20,12 @@ GPUS_PER_NODE=4
 CPUS_PER_GPU=8
 TOTAL_CPUS=32            # 4 GPUs × 8 CPUs/GPU
 MEM=0                   # 0 = allocate as needed
-TIME_HOURS=5
+TIME_HOURS=24
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=100000
+ITERATIONS_TO_RUN=837015
 
 echo "Starting Enoki AdamW ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
