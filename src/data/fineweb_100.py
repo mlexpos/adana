@@ -32,7 +32,7 @@ def get_fineweb_100_data(
 
     # Check if all train files already exist (expecting 150 files)
     #expected_train_files = 150
-    sufficient_train_files = 90
+    sufficient_train_files = 3
     train_pattern = os.path.join(fweb_data_path, "train_*.bin")
     existing_train_files = sorted(glob.glob(train_pattern))
     
