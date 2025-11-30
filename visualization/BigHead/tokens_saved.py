@@ -14,6 +14,8 @@ This measures how much earlier an optimizer reaches AdamW's final performance.
 Usage:
     python tokens_saved.py --scaling-rules Enoki_Scaled --optimizers mk4 d-muon
     python tokens_saved.py --scaling-rules Enoki_Scaled --optimizers mk4 ademamix --fit-metric non_emb
+    python tokens_saved.py --scaling-rules Enoki_Scaled --optimizers mk4 d-muon --high-compute-fit
+    python tokens_saved.py --scaling-rules Enoki_Scaled --optimizers mk4 d-muon --high-compute-fit 2.0 50.0
 """
 
 import wandb
@@ -110,7 +112,27 @@ parser.add_argument('--fit-metric', type=str, default='compute',
                     help='Metric to use for fitting: compute (PFH) or non_emb (parameters) (default: compute)')
 parser.add_argument('--equal-weight', action='store_true',
                     help='Use equal weights for all data points instead of weighting by compute (default: False)')
+parser.add_argument('--high-compute-fit', nargs='*', type=float, default=None,
+                    help='Use OLS line fit through datapoints in specified compute range (PFH). '
+                         'Provide 0, 1, or 2 values: no args uses [1.0, 30.0], '
+                         'one arg uses [arg, 30.0], two args uses [arg1, arg2] (default: None for power law fit)')
 args = parser.parse_args()
+
+# Process high-compute-fit argument
+if args.high_compute_fit is not None:
+    if len(args.high_compute_fit) == 0:
+        # No values provided: use defaults [1.0, 30.0]
+        high_compute_range = (1.0, 30.0)
+    elif len(args.high_compute_fit) == 1:
+        # One value provided: use [value, 30.0]
+        high_compute_range = (args.high_compute_fit[0], 30.0)
+    elif len(args.high_compute_fit) == 2:
+        # Two values provided: use [value1, value2]
+        high_compute_range = (args.high_compute_fit[0], args.high_compute_fit[1])
+    else:
+        raise ValueError(f"--high-compute-fit accepts at most 2 values, got {len(args.high_compute_fit)}")
+else:
+    high_compute_range = None
 
 # Map optimizer names
 optimizer_map = {
@@ -555,6 +577,75 @@ def fit_power_laws_joint(datasets, n_steps=50000, lr=0.1):
     return results
 
 # =============================================================================
+# OLS LINE FITTING (for high-compute datapoints)
+# =============================================================================
+
+def fit_lines_ols(datasets, compute_range=(1.0, 30.0)):
+    """
+    Fit straight lines in log-log space using OLS for datapoints in compute range.
+
+    Model: log(tokens_saved) = log(b) + c * log(X)
+    Which is equivalent to: tokens_saved = b * X^c
+
+    Args:
+        datasets: List of dicts with 'x', 'y', 'weights', 'name'
+        compute_range: Tuple (min_compute, max_compute) in PFH to include in fit (default: (1.0, 30.0))
+
+    Returns:
+        Dict with 'curves' mapping name -> {b, c, r_squared}
+    """
+    results = {'curves': {}}
+    min_compute, max_compute = compute_range
+
+    for dataset in datasets:
+        name = dataset['name']
+        x_vals = np.array(dataset['x'])
+        y_vals = np.array(dataset['y'])
+
+        # Filter for compute range
+        mask = (x_vals >= min_compute) & (x_vals <= max_compute)
+        x_filtered = x_vals[mask]
+        y_filtered = y_vals[mask]
+
+        if len(x_filtered) < 2:
+            print(f"  Warning: {name} has only {len(x_filtered)} points with {min_compute} <= compute <= {max_compute} PFH. Skipping.")
+            continue
+
+        # OLS in log-log space
+        # log(y) = log(b) + c * log(x)
+        log_x = np.log(x_filtered)
+        log_y = np.log(y_filtered + 1)  # +1 to avoid log(0)
+
+        # Fit: log_y = intercept + slope * log_x
+        # Using numpy's polyfit for degree 1 (line)
+        coeffs = np.polyfit(log_x, log_y, deg=1)
+        c = coeffs[0]  # slope
+        log_b = coeffs[1]  # intercept
+        b = np.exp(log_b)
+
+        # Compute R-squared on filtered data
+        predictions = b * np.power(x_filtered, c)
+        residuals = y_filtered - predictions
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((y_filtered - np.mean(y_filtered))**2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+        results['curves'][name] = {
+            'b': b,
+            'c': c,
+            'r_squared': r_squared,
+            'n_points': len(x_filtered),
+            'compute_range': compute_range
+        }
+
+        print(f"\n{name} (OLS fit on {len(x_filtered)} points with {min_compute} <= compute <= {max_compute} PFH):")
+        print(f"  b = {b:.6e}")
+        print(f"  c = {c:.6f}")
+        print(f"  R² = {r_squared:.6f}")
+
+    return results
+
+# =============================================================================
 # PLOTTING
 # =============================================================================
 
@@ -772,20 +863,33 @@ if __name__ == '__main__':
         print("\nNo data found. Exiting.")
         exit(1)
 
-    # Fit power laws
-    print(f"\n{'='*70}")
-    print(f"Fitting {len(fit_data)} Power Law Curves")
-    print(f"{'='*70}")
+    # Fit power laws or OLS lines
+    if high_compute_range is not None:
+        print(f"\n{'='*70}")
+        print(f"Fitting {len(fit_data)} OLS Lines (datapoints with {high_compute_range[0]} <= compute <= {high_compute_range[1]} PFH)")
+        print(f"{'='*70}")
 
-    fit_results = fit_power_laws_joint(
-        fit_data,
-        n_steps=args.n_steps,
-        lr=args.learning_rate
-    )
+        fit_results = fit_lines_ols(
+            fit_data,
+            compute_range=high_compute_range
+        )
+    else:
+        print(f"\n{'='*70}")
+        print(f"Fitting {len(fit_data)} Power Law Curves")
+        print(f"{'='*70}")
+
+        fit_results = fit_power_laws_joint(
+            fit_data,
+            n_steps=args.n_steps,
+            lr=args.learning_rate
+        )
 
     # Print results
     print(f"\n{'='*70}")
-    print("Fit Results: tokens_saved = b × X^c")
+    if high_compute_range is not None:
+        print("Fit Results (OLS): tokens_saved = b × X^c")
+    else:
+        print("Fit Results: tokens_saved = b × X^c")
     print(f"{'='*70}")
 
     for curve_name, curve_params in fit_results['curves'].items():
@@ -793,6 +897,9 @@ if __name__ == '__main__':
         print(f"  b = {curve_params['b']:.6e}")
         print(f"  c = {curve_params['c']:.6f}")
         print(f"  R² = {curve_params['r_squared']:.6f}")
+        if high_compute_range is not None and 'n_points' in curve_params:
+            compute_range = curve_params['compute_range']
+            print(f"  n_points = {curve_params['n_points']} ({compute_range[0]} <= compute <= {compute_range[1]} PFH)")
 
     # Create plot
     fig = plot_tokens_saved(
