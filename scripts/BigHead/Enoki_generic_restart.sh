@@ -99,7 +99,7 @@ if [ -z "$HEADS" ]; then
     echo "  --batch_size <value>      Batch size (default: 32)"
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
     echo "  --nproc_per_node <value>  Processes per node (default: 1)"
-    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard (default: dana-star-mk4)"
+    echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard, adamw-decaying-wd, ademamix-decaying-wd, dana-star-no-tau, dana-star, dana-mk4 (default: dana-star-mk4)"
     echo "  --init-scheme <type>      Initialization scheme: KarpathyGPT2, Standard, ScaledGPT (default: KarpathyGPT2)"
     echo "  --depth-scalar-exponent <value>  Exponent for depth-based residual scaling: scalar = n_layer^exp (default: 0.0)"
     echo "  --iterations_to_run <value>  Iterations to run (default: none)"
@@ -189,9 +189,44 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum True --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
         ;;
+    adamw-decaying-wd)
+        # For adamw-decaying-wd: Same as dana-star-mk4
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt adamw-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
+        ;;
+    ademamix-decaying-wd)
+        # For ademamix-decaying-wd: Same as dana-star-mk4
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt ademamix-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+        ;;
+    dana-star-no-tau)
+        # For dana-star-no-tau: Same as dana-star-mk4
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star-no-tau --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
+    dana-star)
+        # For dana-star: Same as dana-star-mk4
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
+    dana-mk4)
+        # For dana-mk4: Same as dana-star-mk4
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
-        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard"
+        echo "Available optimizers: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard, adamw-decaying-wd, ademamix-decaying-wd, dana-star-no-tau, dana-star, dana-mk4"
         exit 1
         ;;
 esac
