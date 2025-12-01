@@ -250,6 +250,7 @@ def parse_args(base_parser, args, namespace):
             "llama",
             "test",
             "diloco",
+            "qwen3",
         ],
     )
     parser.add_argument("--parallel_block", action="store_true")
@@ -281,6 +282,18 @@ def parse_args(base_parser, args, namespace):
         type=int,
     )
     parser.add_argument("--rmsnorm_eps", default=1e-5, type=float)
+    parser.add_argument(
+        "--norm_type",
+        default="rmsnorm",
+        type=str,
+        choices=["layernorm", "rmsnorm"],
+        help="Type of normalization to use (for qwen3 model)",
+    )
+    parser.add_argument(
+        "--elementwise_attn_output_gate",
+        action="store_true",
+        help="Enable elementwise attention output gating (for qwen3 model)",
+    )
     parser.add_argument(
         "--dtype",
         default="bfloat16",
