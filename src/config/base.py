@@ -7,6 +7,18 @@ def none_or_str(value):
     return value
 
 
+def str2bool(v):
+    """Convert string to boolean for argparse"""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise ValueError(f'Boolean value expected, got: {v}')
+
+
 def parse_args(base_parser, args, namespace):
     parser = base_parser
 
@@ -300,8 +312,8 @@ def parse_args(base_parser, args, namespace):
         type=str,
         choices=["float32", "float16", "bfloat16"],
     )
-    parser.add_argument("--bias", default=False, type=bool)
-    parser.add_argument("--weight_tying", default=True, type=bool)
+    parser.add_argument("--bias", default=False, type=str2bool)
+    parser.add_argument("--weight_tying", default=True, type=str2bool)
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--mlp_dim_exp_factor", default=1.0, type=float)
     parser.add_argument("--moe", action="store_true")
