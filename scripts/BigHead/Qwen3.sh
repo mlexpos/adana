@@ -313,7 +313,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --iterations $ITERATIONS \
     --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
     --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
-    --z_loss_coeff 1e-4 \
+    --z_loss_coeff 0 \
     --norm_type rmsnorm \
     --weight_tying False \
     $GATING_FLAG \
