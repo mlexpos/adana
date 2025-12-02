@@ -4,13 +4,14 @@ from .base import GPTBase, LayerNorm
 from .llama import Llama, RMSNorm
 from .test import RMSNorm2, Test
 from .diloco import DiLoCo
-from .qwen3 import Qwen3
+from .qwen3 import Qwen3, RMSNorm as Qwen3RMSNorm
 
 BLACKLIST_WEIGHT_MODULES = (
     torch.nn.LayerNorm,
     LayerNorm,
     RMSNorm,
     RMSNorm2,
+    Qwen3RMSNorm,
     torch.nn.Embedding,
 )
 
