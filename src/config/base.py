@@ -295,11 +295,11 @@ def parse_args(base_parser, args, namespace):
     )
     parser.add_argument("--rmsnorm_eps", default=1e-5, type=float)
     parser.add_argument(
-        "--norm_type",
+        "--normalization_layer_type",
         default="rmsnorm",
         type=str,
         choices=["layernorm", "rmsnorm"],
-        help="Type of normalization to use (for qwen3 model)",
+        help="Type of normalization layer to use (layernorm or rmsnorm)",
     )
     parser.add_argument(
         "--elementwise_attn_output_gate",

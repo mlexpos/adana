@@ -153,7 +153,7 @@ class Qwen3Attention(nn.Module):
             )
 
         # QK normalization - configurable between LayerNorm and RMSNorm
-        norm_type = getattr(config, 'norm_type', 'rmsnorm')
+        norm_type = getattr(config, 'normalization_layer_type', 'rmsnorm')
         if norm_type == 'rmsnorm':
             self.q_norm = RMSNorm(self.qkv_dim, eps=config.rmsnorm_eps)
             self.k_norm = RMSNorm(self.qkv_dim, eps=config.rmsnorm_eps)
@@ -238,7 +238,7 @@ class Qwen3Block(nn.Module):
         self.config = config
 
         # Normalization layers - configurable between LayerNorm and RMSNorm
-        norm_type = getattr(config, 'norm_type', 'rmsnorm')
+        norm_type = getattr(config, 'normalization_layer_type', 'rmsnorm')
         if norm_type == 'rmsnorm':
             self.ln_1 = RMSNorm(config.n_embd, eps=config.rmsnorm_eps)
             self.ln_2 = RMSNorm(config.n_embd, eps=config.rmsnorm_eps)
@@ -275,7 +275,7 @@ class Qwen3(GPTBase):
         del self.transformer.wpe
 
         # Replace final layer norm with configurable norm
-        norm_type = getattr(config, 'norm_type', 'rmsnorm')
+        norm_type = getattr(config, 'normalization_layer_type', 'rmsnorm')
         if norm_type == 'rmsnorm':
             self.transformer.ln_f = RMSNorm(config.n_embd, eps=config.rmsnorm_eps)
         else:  # layernorm
