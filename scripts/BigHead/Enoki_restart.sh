@@ -186,7 +186,7 @@ esac
 
 # Conditionally add iterations_to_run and auto-resume flags if provided
 if [ "$ITERATIONS_TO_RUN" != "none" ]; then
-    EXTRA_RUN_FLAGS="--iterations_to_run $ITERATIONS_TO_RUN --latest_ckpt_interval 1000 --auto_resume"
+    EXTRA_RUN_FLAGS="--iterations_to_run $ITERATIONS_TO_RUN --latest_ckpt_interval 10000 --auto_resume"
 else
     EXTRA_RUN_FLAGS=""
 fi
