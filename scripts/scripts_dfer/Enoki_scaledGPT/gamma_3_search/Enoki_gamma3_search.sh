@@ -11,11 +11,10 @@ HEADS=""
 OPTIMIZER="dana-star-mk4"
 INIT_SCHEME="KarpathyGPT2"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=none
-RESTART_COUNT=${RESTART_COUNT:-0}
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+ITERATION_FACTOR=1
+KAPPA=0.75
+GAMMA_3_FACTOR=1.0
 # Parse command line arguments
-ORIG_ARGS=( "$@" )
 while [[ $# -gt 0 ]]; do
     case $1 in
         --heads)
@@ -54,12 +53,20 @@ while [[ $# -gt 0 ]]; do
             INIT_SCHEME="$2"
             shift 2
             ;;
+        --iteration-factor)
+            ITERATION_FACTOR="$2"
+            shift 2
+            ;;
         --depth-scalar-exponent)
             DEPTH_SCALAR_EXPONENT="$2"
             shift 2
             ;;
-        --iterations_to_run)
-            ITERATIONS_TO_RUN="$2"
+        --kappa)
+            KAPPA="$2"
+            shift 2
+            ;;
+        --gamma-3-factor)
+            GAMMA_3_FACTOR="$2"
             shift 2
             ;;
         *)
@@ -91,7 +98,6 @@ if [ -z "$HEADS" ]; then
     echo "  --optimizer <type>        Optimizer type: dana-star-mk4, adamw, dana, ademamix, d-muon, manau, manau-hard (default: dana-star-mk4)"
     echo "  --init-scheme <type>      Initialization scheme: KarpathyGPT2, Standard, ScaledGPT (default: KarpathyGPT2)"
     echo "  --depth-scalar-exponent <value>  Exponent for depth-based residual scaling: scalar = n_layer^exp (default: 0.0)"
-    echo "  --iterations_to_run <value>  Iterations to run (default: none)"
     exit 1
 fi
 
@@ -122,7 +128,7 @@ RESIDUAL_STREAM_SCALAR=$(python3 -c "print($N_LAYER ** $DEPTH_SCALAR_EXPONENT)")
 NON_EMB=$(python3 -c "print(int(12 * $N_EMBD * $N_EMBD * $N_LAYER))")
 TOTAL_PARAMS=$(python3 -c "print(int($NON_EMB + 2 * $N_EMBD * 50304))")
 ITERATIONS=$(python3 -c "print(int(20 * $TOTAL_PARAMS / 65536))")
-
+ITERATIONS=$(python3 -c "print(int($ITERATIONS * $ITERATION_FACTOR))")
 # Configure optimizer-specific parameters and compute weight decay from OMEGA
 case $OPTIMIZER in
     dana-star-mk4)
@@ -132,6 +138,27 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
+    dana-star-no-tau)
+        # For dana-star-no-tau: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star-no-tau --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
+    dana-star)
+        # For dana-star: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
+    dana-mk4)
+        # For dana-mk4 with no tau adaptation: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
     adamw)
         # For adamw: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
@@ -139,12 +166,20 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt adamw --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999"
         ;;
+    adamw-decaying-wd)
+        # For adamw-decaying-wd: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt adamw-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
+        ;;
+    
     dana)
         # For dana: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa 0.75 --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999"
+        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa $KAPPA --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999 --gamma_3_factor $GAMMA_3_FACTOR"
         ;;
     ademamix)
         # For ademamix: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
@@ -153,6 +188,20 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
+    ademamix-decaying-wd)
+        # For ademamix-decaying-wd: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt ademamix-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+        ;;
+    # ademamix-beta2-decaying-wd-decaying)
+    #     # For ademamix-beta2-decaying-wd-decaying: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+    #     WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+    #     WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+    #     WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+    #     OPT_PARAMS="--opt ademamix-beta2-decaying-wd-decaying --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+    #     ;;
     d-muon)
         # For d-muon: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
@@ -184,13 +233,6 @@ case $OPTIMIZER in
         ;;
 esac
 
-# Conditionally add iterations_to_run and auto-resume flags if provided
-if [ "$ITERATIONS_TO_RUN" != "none" ]; then
-    EXTRA_RUN_FLAGS="--iterations_to_run $ITERATIONS_TO_RUN --latest_ckpt_interval 10000 --auto_resume"
-else
-    EXTRA_RUN_FLAGS=""
-fi
-
 echo "=== Enoki Configuration: $HEADS heads ==="
 echo "n_layer: $N_LAYER (= 3 * $HEADS / 4)"
 echo "n_head: $N_HEAD"
@@ -199,7 +241,6 @@ echo "n_embd: $N_EMBD (= $HEADS * 64)"
 echo "mlp_hidden_dim: $MLP_HIDDEN (= 4 * $N_EMBD)"
 echo "Total parameters: $TOTAL_PARAMS"
 echo "Iterations: $ITERATIONS"
-echo "Iterations to run: $ITERATIONS_TO_RUN"
 echo "Learning rate: $LR"
 echo "Omega: $OMEGA"
 echo "Weight decay: $WEIGHT_DECAY"
@@ -216,61 +257,17 @@ echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
 
-# Run training
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_format base --model diloco \
-        --distributed_backend nccl --compile \
-        --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
-        --n_embd $N_EMBD --qkv_dim $HEAD_DIM --n_head $N_HEAD --n_layer $N_LAYER \
-        --mlp_hidden_dim $MLP_HIDDEN \
-        --batch_size $BATCH_SIZE --sequence_length 2048 --acc_steps $ACC_STEPS \
-        --iterations $ITERATIONS \
-        --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
-        --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
-        --z_loss_coeff 0.0 \
-        $OPT_PARAMS $EXTRA_RUN_FLAGS \
-        --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
-        --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
-        --eval_interval $EVAL_INTERVAL --log_interval 50
-
-# Restart logic (modeled after tamia_test_steps-to-run.sh)
-if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]]; then
-    MAX_RESTARTS=$(python3 -c "print(int($ITERATIONS // $ITERATIONS_TO_RUN))")
-    if [[ $RESTART_COUNT -lt $MAX_RESTARTS ]]; then
-        NEW_RESTART_COUNT=$((RESTART_COUNT + 1))
-        echo "Process completed successfully, requeuing for next chunk (restart $NEW_RESTART_COUNT / $MAX_RESTARTS)"
-        # Extract original SLURM args to preserve resources
-        scontext=$(scontrol show job $SLURM_JOB_ID 2>/dev/null || echo "")
-        account=$(echo "$scontext" | grep -o 'Account=[^ ]*' | cut -d= -f2); account=${account:-"aip-gidelgau"}
-        nodes=$(echo "$scontext" | grep -o 'NumNodes=[^ ]*' | cut -d= -f2); nodes=${nodes:-"1"}
-        timelimit=$(echo "$scontext" | grep -o 'TimeLimit=[^ ]*' | cut -d= -f2)
-        gres_raw=$(echo "$scontext" | grep -o 'Gres=[^ ]*' | cut -d= -f2)
-        if [ -z "$gres_raw" ]; then
-            if [ -n "$SLURM_GPUS_PER_NODE" ]; then
-                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]]; then
-                    gpus_per_node="$SLURM_GPUS_PER_NODE"
-                else
-                    gpus_per_node="h100:${SLURM_GPUS_PER_NODE}"
-                fi
-            else
-                gpus_per_node="h100:4"
-            fi
-        else
-            gpus_per_node=$(echo "$gres_raw" | sed 's/^gpu://')
-        fi
-        mem=$(echo "$scontext" | grep -o 'MinMemoryCPU=[^ ]*' | cut -d= -f2); mem=${mem:-"0"}
-        job_name=$(echo "$scontext" | grep -o 'JobName=[^ ]*' | cut -d= -f2); job_name=${job_name:-""}
-        SLURM_ARGS=(
-            --account="$account"
-            --time="$timelimit"
-            --nodes="$nodes"
-            --gpus-per-node="$gpus_per_node"
-            --cpus-per-gpu="${SLURM_CPUS_PER_GPU:-8}"
-            --mem="$mem"
-            --job-name="$job_name"
-        )
-        echo "Using original SLURM args for requeue: ${SLURM_ARGS[@]}"
-        sbatch --export=ALL,RESTART_COUNT=$NEW_RESTART_COUNT "${SLURM_ARGS[@]}" scripts/scripts_dfer/Enoki_scaledGPT_restart/tamia_Enoki_dfer.sh "${ORIG_ARGS[@]}"
-    else
-        echo "Max restarts ($MAX_RESTARTS) reached or not needed, not requeuing"
-    fi
-fi
+    --distributed_backend nccl --compile \
+    --datasets_dir "$DATASETS_DIR" --dataset fineweb_100 \
+    --n_embd $N_EMBD --qkv_dim $HEAD_DIM --n_head $N_HEAD --n_layer $N_LAYER \
+    --mlp_hidden_dim $MLP_HIDDEN \
+    --batch_size $BATCH_SIZE --sequence_length 2048 --acc_steps $ACC_STEPS \
+    --iterations $ITERATIONS \
+    --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
+    --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
+    --z_loss_coeff 0.0 \
+    $OPT_PARAMS \
+    --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
+    --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
+    --eval_interval $EVAL_INTERVAL --log_interval 50
