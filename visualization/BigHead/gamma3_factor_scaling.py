@@ -56,6 +56,8 @@ parser.add_argument('--output', type=str, default=None,
 parser.add_argument('--fit-function', type=str, default='power',
                     choices=['power', 'linear', 'exponential'],
                     help='Function to fit: power (a*x^b), linear (a*x+b), or exponential (a*exp(b*x)) (default: power)')
+parser.add_argument('--top-k', type=int, default=5,
+                    help='Number of best gamma_3_factor values to use for each iteration count (default: 5)')
 args = parser.parse_args()
 
 # =============================================================================
@@ -234,57 +236,115 @@ def exponential_func(x, a, b):
     """Exponential: y = a * exp(b * x)"""
     return a * np.exp(b * x)
 
-def fit_function(iterations, gamma_values, fit_type='power'):
+def fit_function(iterations, gamma_values, fit_type='power', weights=None):
     """
-    Fit a function to the data.
+    Fit a function to the data with optional weights.
+    
+    For power law: fits log(y) = log(a) + b * log(x) using weighted linear regression in log space.
+    
+    Args:
+        iterations: array of iteration values
+        gamma_values: array of gamma_3_factor values
+        fit_type: 'power', 'linear', or 'exponential'
+        weights: optional array of weights for weighted fitting
     
     Returns:
         params: fitted parameters
         func: the function used for fitting
     """
+    if weights is None:
+        weights = np.ones_like(iterations)
+    
     if fit_type == 'power':
+        # Weighted linear regression in log-log space: log(y) = log(a) + b * log(x)
+        # This is equivalent to y = a * x^b
+        log_iterations = np.log(iterations)
+        log_gamma = np.log(gamma_values)
+        
+        # Filter out any invalid values (NaN, inf, or non-positive)
+        valid_mask = np.isfinite(log_iterations) & np.isfinite(log_gamma) & (iterations > 0) & (gamma_values > 0) & (weights > 0)
+        if np.sum(valid_mask) < 2:
+            return None, power_law
+        
+        log_iterations_valid = log_iterations[valid_mask]
+        log_gamma_valid = log_gamma[valid_mask]
+        weights_valid = weights[valid_mask]
+        
+        # Weighted linear regression: y = a*x + b, where y=log_gamma, x=log_iterations
+        # Use np.polyfit with weights (weights are applied to squared residuals)
+        # For weighted polyfit, we need to use np.polyfit with w parameter
+        coeffs = np.polyfit(log_iterations_valid, log_gamma_valid, 1, w=weights_valid)
+        slope = coeffs[0]
+        intercept = coeffs[1]
+        
+        log_a = intercept
+        b = slope
+        a = np.exp(log_a)
+        
+        params = [a, b]
         func = power_law
-        # Initial guess for power law
-        p0 = [gamma_values[0], -0.5]
+        return params, func
     elif fit_type == 'linear':
         func = linear_func
-        # Initial guess for linear
-        p0 = [0, gamma_values[0]]
+        # Weighted linear regression
+        valid_mask = np.isfinite(iterations) & np.isfinite(gamma_values) & (weights > 0)
+        if np.sum(valid_mask) < 2:
+            return None, linear_func
+        
+        iterations_valid = iterations[valid_mask]
+        gamma_valid = gamma_values[valid_mask]
+        weights_valid = weights[valid_mask]
+        
+        coeffs = np.polyfit(iterations_valid, gamma_valid, 1, w=weights_valid)
+        slope = coeffs[0]
+        intercept = coeffs[1]
+        params = [slope, intercept]
+        return params, func
     elif fit_type == 'exponential':
         func = exponential_func
-        # Initial guess for exponential
-        p0 = [gamma_values[0], -1e-6]
+        # Weighted fit in log space: log(y) = log(a) + b * x
+        valid_mask = (gamma_values > 0) & np.isfinite(gamma_values) & np.isfinite(iterations) & (weights > 0)
+        if np.sum(valid_mask) < 2:
+            return None, exponential_func
+        
+        log_gamma_valid = np.log(gamma_values[valid_mask])
+        iterations_valid = iterations[valid_mask]
+        weights_valid = weights[valid_mask]
+        
+        coeffs = np.polyfit(iterations_valid, log_gamma_valid, 1, w=weights_valid)
+        slope = coeffs[0]
+        intercept = coeffs[1]
+        b = slope
+        log_a = intercept
+        a = np.exp(log_a)
+        params = [a, b]
+        return params, func
     else:
         raise ValueError(f"Unknown fit type: {fit_type}")
-    
-    try:
-        params, _ = curve_fit(func, iterations, gamma_values, p0=p0, maxfev=10000)
-        return params, func
-    except Exception as e:
-        print(f"  Warning: Fitting failed with error: {e}")
-        return None, func
 
 # =============================================================================
 # PLOTTING
 # =============================================================================
 
-def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled'):
+def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled', top_k=5):
     """
     Plot optimal gamma_3_factor vs iterations for each model size.
-    Shows all data points (gray) and highlights optimal ones (colored).
+    Shows all data points (gray) and highlights top-K ones (colored) with decreasing weights.
+    Uses weighted fitting based on top-K procedure similar to bighead_lr_scaling.py.
     """
-    fig, ax = plt.subplots(figsize=(14, 8))
+    fig, ax = plt.subplots(figsize=(12, 7))
     
     # Get unique sizes
     sizes = sorted(df['size'].unique())
     
-    # Color map for sizes
-    colors = plt.cm.viridis(np.linspace(0, 1, len(sizes)))
+    # Color map for sizes (using cm.viridis like bighead_lr_scaling.py)
+    from matplotlib import cm
+    colors = cm.viridis(np.linspace(0, 1, len(sizes)))
     
     # Track if we've added the "all points" legend entry
     all_points_legend_added = False
     
-    # For each size, plot all points and find the best gamma_3_factor at each iteration count
+    # For each size, plot all points and find top-K gamma_3_factor at each iteration count
     for idx, size in enumerate(sizes):
         size_df = df[df['size'] == size].copy()
         
@@ -295,8 +355,10 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled')
         # Group by iterations to rank within each iteration count
         unique_iters = sorted(size_df['iterations'].unique())
         
-        best_gamma = []
-        best_iterations = []
+        # Collect top-K points with weights for fitting
+        weighted_gamma = []
+        weighted_iterations = []
+        weighted_weights = []
         
         for iters in unique_iters:
             iter_df = size_df[size_df['iterations'] == iters].copy()
@@ -305,46 +367,51 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled')
             iter_df = iter_df.sort_values('val_loss')
             n_runs = len(iter_df)
             
-            # Plot each point with size based on rank
+            # Take top K
+            top_k_df = iter_df.head(top_k).copy()
+            
+            # Plot each point with size based on rank (matching bighead_lr_scaling.py style)
             for rank, (_, row) in enumerate(iter_df.iterrows()):
                 weight = n_runs - rank  # Best gets n_runs, worst gets 1
-                point_size = weight * 15  # Scale factor for visibility
+                point_size = weight * 150  # Scale factor (3x larger than before)
                 
-                if rank == 0:
-                    # Best point: colored, larger, black edge
-                    if not all_points_legend_added:
+                if rank < top_k:
+                    # Top-K points: colored, larger, black edge
+                    if not all_points_legend_added and rank == 0:
                         ax.scatter([row['iterations']], [row['gamma_3_factor']], 
-                                  s=point_size, c=[colors[idx]], alpha=0.8, 
-                                  edgecolors='black', linewidths=1.5, zorder=10,
-                                  label=f'Size {size} (best at each iteration)')
+                                  s=point_size, c=[colors[idx]], alpha=0.6, 
+                                  edgecolors='black', linewidths=0.5, zorder=10,
+                                  label=f'Size {size} (top-{top_k} at each iteration)')
                         all_points_legend_added = True
                     else:
                         ax.scatter([row['iterations']], [row['gamma_3_factor']], 
-                                  s=point_size, c=[colors[idx]], alpha=0.8, 
-                                  edgecolors='black', linewidths=1.5, zorder=10)
+                                  s=point_size, c=[colors[idx]], alpha=0.6, 
+                                  edgecolors='black', linewidths=0.5, zorder=10)
                     
-                    # Track best for fitting
-                    best_gamma.append(row['gamma_3_factor'])
-                    best_iterations.append(row['iterations'])
+                    # Track top-K for weighted fitting
+                    weighted_gamma.append(row['gamma_3_factor'])
+                    weighted_iterations.append(row['iterations'])
+                    weighted_weights.append(weight)
                 else:
                     # Other points: gray, smaller
                     ax.scatter([row['iterations']], [row['gamma_3_factor']], 
                               s=point_size, c='gray', alpha=0.3, 
                               edgecolors='none', zorder=5)
         
-        if len(best_iterations) < 2:
-            print(f"  Warning: Size {size} has only {len(best_iterations)} data points, skipping fit")
+        if len(weighted_iterations) < 2:
+            print(f"  Warning: Size {size} has only {len(weighted_iterations)} data points, skipping fit")
             continue
         
-        # Fit function
-        best_iterations_arr = np.array(best_iterations)
-        best_gamma_arr = np.array(best_gamma)
+        # Fit function with weights
+        weighted_iterations_arr = np.array(weighted_iterations)
+        weighted_gamma_arr = np.array(weighted_gamma)
+        weighted_weights_arr = np.array(weighted_weights)
         
-        params, func = fit_function(best_iterations_arr, best_gamma_arr, fit_type)
+        params, func = fit_function(weighted_iterations_arr, weighted_gamma_arr, fit_type, weights=weighted_weights_arr)
         
         if params is not None:
             # Plot fitted curve
-            iter_range = np.linspace(min(best_iterations_arr), max(best_iterations_arr) * 1.2, 200)
+            iter_range = np.linspace(min(weighted_iterations_arr), max(weighted_iterations_arr) * 1.2, 200)
             gamma_fit = func(iter_range, *params)
             
             # Create label based on fit type
@@ -355,19 +422,22 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled')
             elif fit_type == 'exponential':
                 label = f'Size {size} fit: {params[0]:.2e} × exp({params[1]:.2e} × T)'
             
-            ax.plot(iter_range, gamma_fit, '--', color=colors[idx], linewidth=2.5, 
+            ax.plot(iter_range, gamma_fit, '--', color=colors[idx], linewidth=3, 
                    label=label, zorder=9)
             
             print(f"\nSize {size}:")
-            print(f"  Data points: {len(best_iterations)}")
-            print(f"  Iterations range: {min(best_iterations)} to {max(best_iterations)}")
-            print(f"  Gamma_3_factor range: {min(best_gamma):.4f} to {max(best_gamma):.4f}")
+            print(f"  Data points: {len(weighted_iterations)} (top-{top_k} at each iteration)")
+            print(f"  Iterations range: {min(weighted_iterations)} to {max(weighted_iterations)}")
+            print(f"  Gamma_3_factor range: {min(weighted_gamma):.4f} to {max(weighted_gamma):.4f}")
             if fit_type == 'power':
                 print(f"  Fit: gamma_3_factor = {params[0]:.6e} × iterations^{params[1]:.4f}")
             elif fit_type == 'linear':
                 print(f"  Fit: gamma_3_factor = {params[0]:.6e} × iterations + {params[1]:.4f}")
             elif fit_type == 'exponential':
                 print(f"  Fit: gamma_3_factor = {params[0]:.6e} × exp({params[1]:.6e} × iterations)")
+    
+    # Set y-axis limits
+    ax.set_ylim(1e-7, 1e-1)
     
     # Formatting
     ax.set_xlabel('Training Iterations', fontsize=20)
@@ -376,12 +446,12 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled')
     ax.set_yscale('log')
     ax.set_title(f'Optimal Gamma 3 Factor vs Training Iterations\n(Dana, renorm_weight_decay = {args.target_omega}, {scaling_rule})',
                 fontsize=20, fontweight='bold')
-    ax.legend(fontsize=13, loc='best', framealpha=0.9)
+    ax.legend(fontsize=15, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
     
-    # Add annotation about point sizes
-    ax.text(0.02, 0.02, 'Point size ∝ rank\n(best at each iteration is largest)',
-            transform=ax.transAxes, fontsize=14, verticalalignment='bottom',
+    # Add annotation about point sizes (matching bighead_lr_scaling.py style)
+    ax.text(0.02, 0.02, f'Point size ∝ weight\n(top-{top_k} at each iteration, weighted fit)',
+            transform=ax.transAxes, fontsize=15, verticalalignment='bottom',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     plt.tight_layout()
@@ -430,7 +500,7 @@ if __name__ == '__main__':
     print("Creating plot...")
     print(f"{'='*70}")
     
-    fig = plot_gamma3_vs_iterations(df, fit_type=args.fit_function, scaling_rule=args.scaling_rule)
+    fig = plot_gamma3_vs_iterations(df, fit_type=args.fit_function, scaling_rule=args.scaling_rule, top_k=args.top_k)
     
     # Save plot
     if args.output:
