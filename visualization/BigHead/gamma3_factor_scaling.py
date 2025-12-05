@@ -8,7 +8,7 @@ weight decay (omega) = 4, then plots and fits the relationship.
 
 Usage:
     python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled
-    python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power
+    python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power --group gamma3_scaling_search_new --top-k 3
 """
 
 import wandb
@@ -92,6 +92,7 @@ def load_gamma3_data(project, group, entity, target_omega, omega_tolerance, scal
     skipped_missing_data = 0
     omega_values = []  # Track all omega values for debugging
     all_sizes_found = []  # Track all sizes regardless of omega filter
+    skipped_omega_by_size = {}  # Track skipped sizes due to omega mismatch
     
     for run in runs:
         total_runs += 1
@@ -153,7 +154,24 @@ def load_gamma3_data(project, group, entity, target_omega, omega_tolerance, scal
         iterations = config.get('iterations')
         renorm_weight_decay = config.get('renorm_weight_decay')
         
+        # Check for None values
         if None in [gamma_3_factor, val_loss, iterations, renorm_weight_decay]:
+            skipped_missing_data += 1
+            continue
+        
+        # Convert val_loss to numeric (handle string values)
+        try:
+            val_loss = float(val_loss)
+        except (ValueError, TypeError):
+            skipped_missing_data += 1
+            continue
+        
+        # Ensure all numeric fields are actually numeric
+        try:
+            gamma_3_factor = float(gamma_3_factor)
+            iterations = int(iterations)
+            renorm_weight_decay = float(renorm_weight_decay)
+        except (ValueError, TypeError):
             skipped_missing_data += 1
             continue
         
@@ -177,6 +195,9 @@ def load_gamma3_data(project, group, entity, target_omega, omega_tolerance, scal
         # Filter by omega (only if use_omega_filter is True)
         if use_omega_filter and abs(omega - target_omega) > omega_tolerance:
             skipped_omega += 1
+            if size not in skipped_omega_by_size:
+                skipped_omega_by_size[size] = []
+            skipped_omega_by_size[size].append(omega)
             continue
         
         data.append({
@@ -203,6 +224,11 @@ def load_gamma3_data(project, group, entity, target_omega, omega_tolerance, scal
         if len(omega_values) > 0:
             print(f"  renorm_weight_decay values found: min={min(omega_values):.4f}, max={max(omega_values):.4f}, mean={np.mean(omega_values):.4f}")
             print(f"  Target: {target_omega} ± {omega_tolerance}")
+        if skipped_omega_by_size:
+            print(f"  Sizes skipped due to omega mismatch:")
+            for size in sorted(skipped_omega_by_size.keys()):
+                omegas = skipped_omega_by_size[size]
+                print(f"    Size {size}: {len(omegas)} runs, omega range: {min(omegas):.4f} to {max(omegas):.4f}")
     if skipped_incomplete > 0:
         print(f"  Skipped {skipped_incomplete} incomplete runs")
     if skipped_missing_data > 0:
@@ -373,7 +399,7 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
             # Plot each point with size based on rank (matching bighead_lr_scaling.py style)
             for rank, (_, row) in enumerate(iter_df.iterrows()):
                 weight = n_runs - rank  # Best gets n_runs, worst gets 1
-                point_size = weight * 150  # Scale factor (3x larger than before)
+                point_size = weight * 50  # Scale factor matching bighead_lr_scaling.py
                 
                 if rank < top_k:
                     # Top-K points: colored, larger, black edge
@@ -491,6 +517,19 @@ if __name__ == '__main__':
     print(f"{'='*70}")
     print(f"Total runs loaded: {len(df)}")
     print(f"Unique sizes: {sorted(df['size'].unique())}")
+    
+    # Ensure numeric columns are numeric before computing min/max
+    df['iterations'] = pd.to_numeric(df['iterations'], errors='coerce')
+    df['gamma_3_factor'] = pd.to_numeric(df['gamma_3_factor'], errors='coerce')
+    df['val_loss'] = pd.to_numeric(df['val_loss'], errors='coerce')
+    
+    # Drop any rows with NaN values after conversion
+    df = df.dropna(subset=['iterations', 'gamma_3_factor', 'val_loss'])
+    
+    if len(df) == 0:
+        print("\nNo valid numeric data found after conversion. Exiting.")
+        exit(1)
+    
     print(f"Iterations range: {df['iterations'].min()} to {df['iterations'].max()}")
     print(f"Gamma_3_factor range: {df['gamma_3_factor'].min():.4f} to {df['gamma_3_factor'].max():.4f}")
     print(f"Val loss range: {df['val_loss'].min():.4f} to {df['val_loss'].max():.4f}")
