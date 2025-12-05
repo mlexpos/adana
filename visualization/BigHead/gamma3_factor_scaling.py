@@ -9,7 +9,7 @@ weight decay (omega) = 4, then plots and fits the relationship.
 Usage:
     python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled
     python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power --group gamma3_scaling_search_new --top-k 3
-"""
+""" 
 
 import wandb
 import numpy as np
