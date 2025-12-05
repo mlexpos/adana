@@ -3,24 +3,23 @@
 # Qwen3 AdamW ScaledGPT Initialization Sweep for Fir
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.28e+01 × (1.67e+04 + P)^-0.515 where P = NON_EMB
+# Learning rate formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848 where P = NON_EMB
 # Qwen3 scaling: head_dim=128 (fixed), n_layer=2*heads, n_embd=128*heads, mlp=3*n_embd
-# iterations to run formula = 24*3600 / (5.83 × 10^-4 * (TOTAL_PARAMS/1e6)^0.91) / 2
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 4 )
+HEADS_ARRAY=( 14 16 18 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 BATCH_SIZE=32
 ACC_STEPS=1
 
 # SLURM configuration for Fir (1 GPU)
-GPUS_PER_NODE=1
+GPUS_PER_NODE=4
 CPUS_PER_GPU=8
-TOTAL_CPUS=8             # 1 GPU × 8 CPUs/GPU
-MEM=0                    # 0 = allocate as needed
-TIME_HOURS=3
+TOTAL_CPUS=32             # 4 GPU × 8 CPUs/GPU
+MEM=0                     # 0 = allocate as needed
+TIME_HOURS=24
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
@@ -116,8 +115,9 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Calculate base learning rate using formula: lr = 1.28e+01 × (1.67e+04 + P)^-0.515
-        BASE_LR=$(python3 -c "print(1.28e+01 * ((1.67e04 + $NON_EMB) ** -0.515))")
+        # Updated formula: 1.27e4 \times (9.23e4 + P)^{-0.848}
+        # Calculate base learning rate using formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848
+        BASE_LR=$(python3 -c "print(1.27e+04 * ((9.23e04 + $NON_EMB) ** -0.848))")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(2 * $HEADS))")
