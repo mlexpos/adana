@@ -42,4 +42,5 @@ echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 #export RESTART_WRAPPER_SCRIPT="scripts/fir/fir_Enoki_adamw.sh"
 
 # Call the generic Enoki restart script with all arguments and force ScaledGPT init scheme
-bash scripts/BigHead/Enoki_restart.sh --init-scheme ScaledGPT "$@"
+bash scripts/BigHead/Enoki_generic_restart.sh --init-scheme ScaledGPT --results_base_folder "$RESULTS_BASE_FOLDER" "$@"
+
