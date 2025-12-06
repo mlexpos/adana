@@ -16,11 +16,11 @@ BATCH_SIZE=1 #32
 ACC_STEPS=32 #1
 
 # SLURM configuration for Fir (1 GPU)
-GPUS_PER_NODE=1
+GPUS_PER_NODE=4
 CPUS_PER_GPU=8
-TOTAL_CPUS=8             # 1 GPU × 8 CPUs/GPU
-MEM=0                    # 0 = allocate as needed
-TIME_HOURS=3
+TOTAL_CPUS=32             # 4 GPU × 8 CPUs/GPU
+MEM=0                     # 0 = allocate as needed
+TIME_HOURS=24
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
