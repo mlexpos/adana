@@ -263,6 +263,7 @@ def parse_args(base_parser, args, namespace):
             "test",
             "diloco",
             "qwen3",
+            "qwen3next",
         ],
     )
     parser.add_argument("--parallel_block", action="store_true")
