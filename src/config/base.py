@@ -338,6 +338,12 @@ def parse_args(base_parser, args, namespace):
         choices=["entropy", "load_balancing_only", "load_balancing_z_loss"],
     )
     parser.add_argument("--moe_num_experts_per_tok", default=2, type=int)
+    parser.add_argument(
+        "--moe_expert_capacity_factor",
+        default=1.5,
+        type=float,
+        help="Buffer capacity factor for expert parallelism (1.5 = 50%% extra buffer for load imbalance)",
+    )
     parser.add_argument("--moe_entropy_loss_factor", default=0.01, type=float)
     parser.add_argument("--moe_aux_loss_factor", default=0.1, type=float)
     parser.add_argument("--moe_z_loss_factor", default=0.01, type=float)

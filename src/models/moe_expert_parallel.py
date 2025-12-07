@@ -56,6 +56,7 @@ class ExpertParallelMoE(nn.Module):
         self.num_experts = config.moe_num_experts
         self.num_experts_per_tok = config.moe_num_experts_per_tok
         self.softmax_order = config.moe_softmax_order
+        self.capacity_factor = config.moe_expert_capacity_factor
 
         # Each GPU owns a shard of experts
         assert self.num_experts % self.world_size == 0, \
@@ -72,6 +73,10 @@ class ExpertParallelMoE(nn.Module):
 
         # Router is replicated on all GPUs
         self.router = nn.Linear(config.n_embd, self.num_experts, bias=False)
+
+        # Capacity calculation for 3D tensor buffers
+        # Will be dynamically set based on batch size in forward pass
+        self.max_capacity = None
 
     def _compute_routing(self, inputs):
         """
@@ -102,29 +107,36 @@ class ExpertParallelMoE(nn.Module):
 
         return weights, selected_experts, router_logits
 
-    def _group_tokens_by_rank(self, tokens, selected_experts, weights):
+    def _group_tokens_by_rank(self, tokens, selected_experts, weights, max_capacity):
         """
         Group tokens by which rank (GPU) owns their selected experts.
+        Returns 3D padded tensors for torch.compile compatibility.
 
         Args:
             tokens: [num_tokens, hidden_dim]
             selected_experts: [num_tokens, top_k]
             weights: [num_tokens, top_k]
+            max_capacity: Maximum tokens per rank (buffer size)
 
         Returns:
-            tokens_per_rank: List of [num_tokens_for_rank, hidden_dim] tensors
-            expert_ids_per_rank: List of expert IDs for each rank
-            token_indices_per_rank: List of original token indices
-            weights_per_rank: List of weights for each rank
+            tokens_3d: [world_size, max_capacity, hidden_dim]
+            expert_ids_3d: [world_size, max_capacity]
+            token_indices_3d: [world_size, max_capacity]
+            weights_3d: [world_size, max_capacity]
+            valid_mask: [world_size, max_capacity] (bool, True for real tokens)
+            overflow_count: Number of tokens dropped due to capacity overflow
         """
-        num_tokens = tokens.shape[0]
+        num_tokens, hidden_dim = tokens.shape
         device = tokens.device
 
-        # Storage for each rank
-        tokens_per_rank = []
-        expert_ids_per_rank = []
-        token_indices_per_rank = []
-        weights_per_rank = []
+        # Pre-allocate 3D tensors
+        tokens_3d = torch.zeros(self.world_size, max_capacity, hidden_dim, device=device, dtype=tokens.dtype)
+        expert_ids_3d = torch.zeros(self.world_size, max_capacity, device=device, dtype=torch.long)
+        token_indices_3d = torch.zeros(self.world_size, max_capacity, device=device, dtype=torch.long)
+        weights_3d = torch.zeros(self.world_size, max_capacity, device=device, dtype=torch.float32)
+        valid_mask = torch.zeros(self.world_size, max_capacity, device=device, dtype=torch.bool)
+
+        overflow_count = 0
 
         # For each rank, find which tokens need its experts
         for target_rank in range(self.world_size):
@@ -139,135 +151,105 @@ class ExpertParallelMoE(nn.Module):
             # Get token-expert pairs for this rank
             token_idx, expert_slot = torch.where(expert_in_rank)
 
-            if len(token_idx) > 0:
-                # Gather tokens, expert IDs, and weights
-                rank_tokens = tokens[token_idx]
-                rank_expert_ids = selected_experts[token_idx, expert_slot]
-                rank_weights = weights[token_idx, expert_slot]
+            num_tokens_for_rank = len(token_idx)
 
-                tokens_per_rank.append(rank_tokens)
-                expert_ids_per_rank.append(rank_expert_ids)
-                token_indices_per_rank.append(token_idx)
-                weights_per_rank.append(rank_weights)
-            else:
-                # No tokens for this rank - send empty tensors
-                tokens_per_rank.append(torch.empty(0, tokens.shape[1], device=device))
-                expert_ids_per_rank.append(torch.empty(0, dtype=torch.long, device=device))
-                token_indices_per_rank.append(torch.empty(0, dtype=torch.long, device=device))
-                weights_per_rank.append(torch.empty(0, dtype=torch.float32, device=device))
+            if num_tokens_for_rank > 0:
+                # Handle capacity overflow
+                if num_tokens_for_rank > max_capacity:
+                    overflow_count += num_tokens_for_rank - max_capacity
+                    # Truncate to capacity
+                    token_idx = token_idx[:max_capacity]
+                    expert_slot = expert_slot[:max_capacity]
+                    num_tokens_for_rank = max_capacity
 
-        return tokens_per_rank, expert_ids_per_rank, token_indices_per_rank, weights_per_rank
+                # Fill 3D tensors
+                tokens_3d[target_rank, :num_tokens_for_rank] = tokens[token_idx]
+                expert_ids_3d[target_rank, :num_tokens_for_rank] = selected_experts[token_idx, expert_slot]
+                token_indices_3d[target_rank, :num_tokens_for_rank] = token_idx
+                weights_3d[target_rank, :num_tokens_for_rank] = weights[token_idx, expert_slot]
+                valid_mask[target_rank, :num_tokens_for_rank] = True
 
-    def _all_to_all_tokens(self, tokens_per_rank):
+        return tokens_3d, expert_ids_3d, token_indices_3d, weights_3d, valid_mask, overflow_count
+
+    def _all_to_all_tokens_3d(self, send_3d, send_mask):
         """
-        All-to-all communication to redistribute tokens.
+        All-to-all communication to redistribute tokens using 3D tensors.
+        Torch.compile compatible - no dynamic sizes or .tolist() calls.
 
         Args:
-            tokens_per_rank: List of [num_tokens_for_rank, hidden_dim] tensors
+            send_3d: [world_size, max_capacity, hidden_dim] - tokens to send to each rank
+            send_mask: [world_size, max_capacity] - validity mask for send_3d
 
         Returns:
-            received_tokens_list: List of tensors received from each rank
-            received_sizes: Number of tokens received from each rank
+            recv_3d: [world_size, max_capacity, hidden_dim] - tokens received from each rank
+            recv_mask: [world_size, max_capacity] - validity mask for recv_3d
         """
         if self.world_size == 1:
             # Single GPU - no communication needed
-            return tokens_per_rank, [t.shape[0] for t in tokens_per_rank]
+            return send_3d, send_mask
 
-        device = tokens_per_rank[0].device
-        hidden_dim = tokens_per_rank[0].shape[1]
+        device = send_3d.device
+        world_size, max_capacity, hidden_dim = send_3d.shape
 
-        # Get sizes to send to each rank
-        send_sizes = [t.shape[0] for t in tokens_per_rank]
+        # Prepare output tensors
+        recv_3d = torch.zeros_like(send_3d)
+        recv_mask = torch.zeros_like(send_mask)
 
-        # Exchange sizes (so each rank knows how much to receive)
-        send_sizes_tensor = torch.tensor(send_sizes, dtype=torch.long, device=device)
-        recv_sizes_tensor = torch.zeros(self.world_size, dtype=torch.long, device=device)
-
-        # All-gather sizes
-        dist.all_to_all_single(
-            recv_sizes_tensor,
-            send_sizes_tensor
+        # Perform all-to-all on flattened tensors
+        # Reshape [world_size, max_capacity, hidden_dim] -> [world_size * max_capacity, hidden_dim]
+        all_to_all_single(
+            recv_3d.view(-1, hidden_dim),
+            send_3d.view(-1, hidden_dim)
         )
-        recv_sizes = recv_sizes_tensor.tolist()
 
-        # Prepare send tensor (concatenate all tokens)
-        total_send = sum(send_sizes)
-        send_tensor = torch.cat(tokens_per_rank, dim=0) if total_send > 0 else \
-                     torch.empty(0, hidden_dim, device=device)
+        # Also exchange masks to know which tokens are valid
+        # Reshape [world_size, max_capacity] -> [world_size * max_capacity]
+        # Convert bool to float for communication, then back to bool
+        all_to_all_single(
+            recv_mask.view(-1, 1).float(),
+            send_mask.view(-1, 1).float()
+        )
+        recv_mask = recv_mask.view(world_size, max_capacity).bool()
 
-        # Prepare receive tensor
-        total_recv = sum(recv_sizes)
-        recv_tensor = torch.empty(total_recv, hidden_dim, device=device)
+        return recv_3d, recv_mask
 
-        # All-to-all communication
-        # Split send_tensor and recv_tensor according to sizes
-        send_splits = list(send_tensor.split(send_sizes, dim=0))
-        recv_splits = list(recv_tensor.split(recv_sizes, dim=0))
-
-        # Pad to same size for all-to-all
-        max_size = max(max(send_sizes), max(recv_sizes)) if send_sizes and recv_sizes else 0
-
-        if max_size > 0:
-            # Pad and stack
-            send_padded = torch.zeros(self.world_size, max_size, hidden_dim, device=device)
-            recv_padded = torch.zeros(self.world_size, max_size, hidden_dim, device=device)
-
-            for i, tensor in enumerate(send_splits):
-                if tensor.shape[0] > 0:
-                    send_padded[i, :tensor.shape[0]] = tensor
-
-            # Perform all-to-all
-            all_to_all_single(
-                recv_padded.view(-1, hidden_dim),
-                send_padded.view(-1, hidden_dim)
-            )
-
-            # Extract received tensors
-            received_tokens_list = []
-            for i, size in enumerate(recv_sizes):
-                if size > 0:
-                    received_tokens_list.append(recv_padded[i, :size])
-                else:
-                    received_tokens_list.append(torch.empty(0, hidden_dim, device=device))
-        else:
-            received_tokens_list = [torch.empty(0, hidden_dim, device=device)
-                                   for _ in range(self.world_size)]
-
-        return received_tokens_list, recv_sizes
-
-    def _process_local_experts(self, received_tokens_list, received_expert_ids_list,
-                               received_weights_list, received_token_indices_list):
+    def _process_local_experts_3d(self, received_tokens_3d, received_expert_ids_3d,
+                                  received_weights_3d, received_mask):
         """
-        Process tokens through local experts.
+        Process tokens through local experts using 3D tensors.
+
+        Args:
+            received_tokens_3d: [world_size, max_capacity, hidden_dim]
+            received_expert_ids_3d: [world_size, max_capacity]
+            received_weights_3d: [world_size, max_capacity]
+            received_mask: [world_size, max_capacity] - validity mask
 
         Returns:
-            results_per_source_rank: List of result tensors to send back to each rank
+            results_3d: [world_size, max_capacity, hidden_dim] - processed results
         """
-        device = self.local_experts[0].gate_proj.weight.device
-        hidden_dim = self.config.n_embd
+        device = received_tokens_3d.device
+        world_size, max_capacity, hidden_dim = received_tokens_3d.shape
 
-        results_per_source_rank = []
+        # Pre-allocate results tensor
+        results_3d = torch.zeros_like(received_tokens_3d)
 
         # Process tokens from each source rank
-        for source_rank in range(self.world_size):
-            tokens_from_source = received_tokens_list[source_rank]
-            expert_ids_from_source = received_expert_ids_list[source_rank]
-            weights_from_source = received_weights_list[source_rank]
+        for source_rank in range(world_size):
+            tokens_from_source = received_tokens_3d[source_rank]  # [max_capacity, hidden_dim]
+            expert_ids_from_source = received_expert_ids_3d[source_rank]  # [max_capacity]
+            weights_from_source = received_weights_3d[source_rank]  # [max_capacity]
+            valid_from_source = received_mask[source_rank]  # [max_capacity]
 
-            if tokens_from_source.shape[0] == 0:
-                # No tokens from this rank
-                results_per_source_rank.append(torch.empty(0, hidden_dim, device=device))
+            # Skip if no valid tokens
+            if not valid_from_source.any():
                 continue
-
-            # Results for tokens from this source rank
-            results = torch.zeros_like(tokens_from_source)
 
             # Process each local expert
             for local_expert_idx, expert in enumerate(self.local_experts):
                 global_expert_id = self.expert_start_idx + local_expert_idx
 
-                # Find tokens for this expert
-                expert_mask = (expert_ids_from_source == global_expert_id)
+                # Find tokens for this expert (only among valid tokens)
+                expert_mask = (expert_ids_from_source == global_expert_id) & valid_from_source
 
                 if expert_mask.any():
                     expert_tokens = tokens_from_source[expert_mask]
@@ -277,79 +259,86 @@ class ExpertParallelMoE(nn.Module):
                     expert_output, _ = expert(expert_tokens)
 
                     # Apply weights and accumulate
-                    results[expert_mask] = expert_weights.unsqueeze(-1) * expert_output
+                    # Use masked scatter to put results back
+                    results_3d[source_rank][expert_mask] = expert_weights.unsqueeze(-1) * expert_output
 
-            results_per_source_rank.append(results)
-
-        return results_per_source_rank
+        return results_3d
 
     def forward(self, inputs):
         """
-        Forward pass with expert parallelism.
+        Forward pass with expert parallelism using 3D tensors.
 
         Args:
             inputs: [batch_size, seq_len, hidden_dim]
 
         Returns:
             outputs: [batch_size, seq_len, hidden_dim]
-            aux_dict: Dictionary with router_logits and selected_experts
+            aux_dict: Dictionary with router_logits, selected_experts, and overflow_count
         """
         batch_size, seq_len, hidden_dim = inputs.shape
         inputs_flat = inputs.view(-1, hidden_dim)  # [num_tokens, hidden_dim]
         num_tokens = inputs_flat.shape[0]
 
+        # Calculate max capacity for 3D buffers
+        # capacity_factor × avg_tokens_per_rank with some headroom
+        avg_tokens_per_rank = num_tokens * self.num_experts_per_tok / self.world_size
+        max_capacity = int(self.capacity_factor * avg_tokens_per_rank) + 1
+
         # Step 1: Compute routing (local to each GPU)
         weights, selected_experts, router_logits = self._compute_routing(inputs_flat)
 
-        # Step 2: Group tokens by target rank
-        (tokens_per_rank, expert_ids_per_rank,
-         token_indices_per_rank, weights_per_rank) = self._group_tokens_by_rank(
-            inputs_flat, selected_experts, weights
+        # Step 2: Group tokens by target rank (returns 3D tensors)
+        (send_tokens_3d, send_expert_ids_3d, send_token_indices_3d,
+         send_weights_3d, send_mask, overflow_count) = self._group_tokens_by_rank(
+            inputs_flat, selected_experts, weights, max_capacity
         )
 
         # Step 3: All-to-all to send tokens to expert owners
-        received_tokens_list, recv_sizes = self._all_to_all_tokens(tokens_per_rank)
+        recv_tokens_3d, recv_mask = self._all_to_all_tokens_3d(send_tokens_3d, send_mask)
 
         # Also send expert IDs and weights
-        received_expert_ids_list, _ = self._all_to_all_tokens(
-            [ids.unsqueeze(-1).float() for ids in expert_ids_per_rank]
+        recv_expert_ids_3d, _ = self._all_to_all_tokens_3d(
+            send_expert_ids_3d.unsqueeze(-1).float(),
+            send_mask
         )
-        received_expert_ids_list = [ids.squeeze(-1).long() for ids in received_expert_ids_list]
+        recv_expert_ids_3d = recv_expert_ids_3d.squeeze(-1).long()
 
-        received_weights_list, _ = self._all_to_all_tokens(
-            [w.unsqueeze(-1) for w in weights_per_rank]
+        recv_weights_3d, _ = self._all_to_all_tokens_3d(
+            send_weights_3d.unsqueeze(-1),
+            send_mask
         )
-        received_weights_list = [w.squeeze(-1) for w in received_weights_list]
+        recv_weights_3d = recv_weights_3d.squeeze(-1)
 
-        received_token_indices_list, _ = self._all_to_all_tokens(
-            [idx.unsqueeze(-1).float() for idx in token_indices_per_rank]
-        )
-        received_token_indices_list = [idx.squeeze(-1).long() for idx in received_token_indices_list]
-
-        # Step 4: Process local experts
-        results_per_source_rank = self._process_local_experts(
-            received_tokens_list,
-            received_expert_ids_list,
-            received_weights_list,
-            received_token_indices_list
+        # Step 4: Process local experts (3D version)
+        results_3d = self._process_local_experts_3d(
+            recv_tokens_3d,
+            recv_expert_ids_3d,
+            recv_weights_3d,
+            recv_mask
         )
 
         # Step 5: All-to-all to send results back
-        final_results_list, _ = self._all_to_all_tokens(results_per_source_rank)
+        final_results_3d, final_mask = self._all_to_all_tokens_3d(results_3d, recv_mask)
 
         # Step 6: Reconstruct output in original order
         outputs_flat = torch.zeros_like(inputs_flat)
 
         for source_rank in range(self.world_size):
-            results_from_rank = final_results_list[source_rank]
-            token_indices = token_indices_per_rank[source_rank]
+            results_from_rank = final_results_3d[source_rank]
+            token_indices = send_token_indices_3d[source_rank]
+            valid = send_mask[source_rank]
 
-            if results_from_rank.shape[0] > 0:
-                outputs_flat.index_add_(0, token_indices, results_from_rank)
+            # Only accumulate valid results
+            if valid.any():
+                # Use masked indexing
+                valid_indices = token_indices[valid]
+                valid_results = results_from_rank[valid]
+                outputs_flat.index_add_(0, valid_indices, valid_results)
 
         outputs = outputs_flat.view(batch_size, seq_len, hidden_dim)
 
         return outputs, {
             "router_logits": router_logits,
-            "selected_experts": selected_experts
+            "selected_experts": selected_experts,
+            "overflow_count": overflow_count,
         }
