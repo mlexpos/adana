@@ -5,6 +5,7 @@ from .llama import Llama, RMSNorm
 from .test import RMSNorm2, Test
 from .diloco import DiLoCo
 from .qwen3 import Qwen3, RMSNorm as Qwen3RMSNorm
+from .qwen3next import Qwen3Next
 
 BLACKLIST_WEIGHT_MODULES = (
     torch.nn.LayerNorm,
@@ -46,6 +47,13 @@ def get_model(args):
         return model
     elif args.model == "qwen3":
         model = Qwen3(args)
+        if args.use_pretrained != "none":
+            raise NotImplementedError(
+                f"Loading of pretrained models not yet implemented for model '{args.model}'."
+            )
+        return model
+    elif args.model == "qwen3next":
+        model = Qwen3Next(args)
         if args.use_pretrained != "none":
             raise NotImplementedError(
                 f"Loading of pretrained models not yet implemented for model '{args.model}'."

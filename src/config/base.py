@@ -349,4 +349,41 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--plot_router_logits", action="store_true")
     parser.add_argument("--z_loss_coeff", default=1e-4, type=float)
 
+    # Qwen3Next specific parameters
+    parser.add_argument(
+        "--use_gated_shared_expert",
+        action="store_true",
+        help="Use gated shared expert with learned sigmoid scaling (Qwen3Next style)",
+    )
+    parser.add_argument(
+        "--shared_expert_intermediate_size",
+        default=None,
+        type=int,
+        help="Intermediate size for shared expert (default: same as routed experts)",
+    )
+    parser.add_argument(
+        "--decoder_sparse_step",
+        default=1,
+        type=int,
+        help="Apply MoE every N layers (1=all layers, 2=every other layer, etc.)",
+    )
+    parser.add_argument(
+        "--mlp_only_layers",
+        default=None,
+        type=str,
+        help="Comma-separated layer indices to force dense MLP (e.g., '0,5,11')",
+    )
+    parser.add_argument(
+        "--expert_parallel",
+        action="store_true",
+        default=True,
+        help="Use expert parallelism for MoE layers in multi-GPU setups (default: True)",
+    )
+    parser.add_argument(
+        "--no_expert_parallel",
+        dest="expert_parallel",
+        action="store_false",
+        help="Disable expert parallelism and use standard DDP for all layers",
+    )
+
     return parser.parse_args(args, namespace)
