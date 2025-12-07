@@ -75,41 +75,50 @@ base_non_emb = n_layer * per_layer + n_embd
 print(int(base_non_emb))
 ")
 
-    # Calculate MoE expansion (64 experts, 63 routed + 1 gated shared)
-    local MOE_NON_EMB=$(python3 -c "
+    # Calculate ACTIVE parameters for MoE (accounting for sparsity)
+    # With 64 experts, 4 active per token:
+    #   - Only 3 active routed experts (4 total - 1 shared = 3 routed)
+    #   - Plus 1 gated shared expert (always active)
+    #   - Plus router (always active)
+    local ACTIVE_MOE_PARAMS=$(python3 -c "
 n_layer = $N_LAYER
 n_embd = $N_EMBD
 mlp_hidden = $MLP_HIDDEN
-num_routed_experts = 63
+num_active_routed = 3  # 4 active - 1 shared = 3 routed experts active
 shared_expert_size = 4096
 
-# Per MoE layer
-router = n_embd * 64
-routed_experts_mlp = num_routed_experts * 3 * n_embd * mlp_hidden
-shared_expert_mlp = 3 * n_embd * shared_expert_size
-shared_expert_gate = n_embd
+# Per MoE layer (ACTIVE parameters only)
+router = n_embd * 64  # Router always active
+active_routed_experts_mlp = num_active_routed * 3 * n_embd * mlp_hidden  # Only 3 active
+shared_expert_mlp = 3 * n_embd * shared_expert_size  # Shared expert always active
+shared_expert_gate = n_embd  # Gate always active
 
-per_moe_layer = router + routed_experts_mlp + shared_expert_mlp + shared_expert_gate
+per_moe_layer = router + active_routed_experts_mlp + shared_expert_mlp + shared_expert_gate
 
 # Total
-moe_expansion = n_layer * per_moe_layer
+active_moe_params = n_layer * per_moe_layer
 
-print(int(moe_expansion))
+print(int(active_moe_params))
 ")
 
-    local NON_EMB=$(python3 -c "print(int($BASE_NON_EMB + $MOE_NON_EMB))")
-    local TOTAL_PARAMS=$(python3 -c "print(int($NON_EMB + 2 * $N_EMBD * 50304))")
+    # Calculate total ACTIVE non-embedding parameters
+    local ACTIVE_NON_EMB=$(python3 -c "print(int($BASE_NON_EMB + $ACTIVE_MOE_PARAMS))")
+
+    # Calculate total parameters (for reference, but use ACTIVE for compute)
+    local TOTAL_PARAMS=$(python3 -c "print(int($ACTIVE_NON_EMB + 2 * $N_EMBD * 50304))")
+
+    # Use ACTIVE parameters for iteration count (compute scales with active params)
     local ITERATIONS=$(python3 -c "print(int(20 * $TOTAL_PARAMS / 65536))")
 
-    echo "$NON_EMB $ITERATIONS $TOTAL_PARAMS"
+    echo "$ACTIVE_NON_EMB $ITERATIONS $TOTAL_PARAMS"
 }
 
 # Calculate reference for heads=4
-read NON_EMB_4 ITERATIONS_4 TOTAL_PARAMS_4 <<< $(calculate_params 4)
-C_4=$(python3 -c "print($NON_EMB_4 * $ITERATIONS_4)")
+read ACTIVE_NON_EMB_4 ITERATIONS_4 TOTAL_PARAMS_4 <<< $(calculate_params 4)
+C_4=$(python3 -c "print($ACTIVE_NON_EMB_4 * $ITERATIONS_4)")
 
 echo "Reference (heads=4):"
-echo "  NON_EMB = $NON_EMB_4"
+echo "  ACTIVE_NON_EMB = $ACTIVE_NON_EMB_4 (accounting for 4/64 expert sparsity)"
 echo "  ITERATIONS = $ITERATIONS_4"
 echo "  TOTAL_PARAMS = $TOTAL_PARAMS_4"
 echo "  C(4) = $C_4"
@@ -131,20 +140,20 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         echo "  Processing heads=$HEADS (omega=$OMEGA)"
 
         # Calculate parameters for this head count
-        read NON_EMB ITERATIONS TOTAL_PARAMS <<< $(calculate_params $HEADS)
+        read ACTIVE_NON_EMB ITERATIONS TOTAL_PARAMS <<< $(calculate_params $HEADS)
 
-        # Calculate computational cost C = NON_EMB * ITERATIONS
-        C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
+        # Calculate computational cost C = ACTIVE_NON_EMB * ITERATIONS
+        C=$(python3 -c "print($ACTIVE_NON_EMB * $ITERATIONS)")
 
-        # Calculate base learning rate using formula
-        BASE_LR=$(python3 -c "print(1.27e+04 * ((9.23e04 + $NON_EMB) ** -0.848))")
+        # Calculate base learning rate using ACTIVE parameters
+        BASE_LR=$(python3 -c "print(1.27e+04 * ((9.23e04 + $ACTIVE_NON_EMB) ** -0.848))")
 
         # Calculate n_layer
         N_LAYER=$(python3 -c "print(int(2 * $HEADS))")
 
         echo "    HEADS = $HEADS"
         echo "    N_LAYER = $N_LAYER (= 2 * $HEADS)"
-        echo "    NON_EMB = $NON_EMB (includes 64 MoE experts)"
+        echo "    ACTIVE_NON_EMB = $ACTIVE_NON_EMB (3 routed + 1 shared expert active per token)"
         echo "    ITERATIONS = $ITERATIONS"
         echo "    C = $C"
         echo "    TOTAL_PARAMS = $TOTAL_PARAMS"
@@ -207,7 +216,8 @@ echo "  Model: Qwen3Next (64 experts, expert parallelism)"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
 echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "  LR formula: lr = 1.27e+04 × (9.23e+04 + NON_EMB)^-0.848"
+echo "  LR formula: lr = 1.27e+04 × (9.23e+04 + ACTIVE_NON_EMB)^-0.848"
+echo "  Note: ACTIVE_NON_EMB accounts for 3 active routed + 1 shared expert"
 echo "  Clip SNR: $CLIPSNR"
 echo ""
 echo "Resource allocation per job:"
