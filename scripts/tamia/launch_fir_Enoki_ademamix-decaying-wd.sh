@@ -128,9 +128,6 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             # Calculate actual learning rate
             LR=$(python3 -c "print($MULT * $BASE_LR)")
 
-            # Calculate iterations to run
-            ITERATIONS_TO_RUN=$(python3 -c "print(int(24 * 3600 / (6.68e-04 * ($TOTAL_PARAMS/1e6) ** 0.91) / 2))")
-
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
