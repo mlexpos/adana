@@ -97,8 +97,8 @@ def parse_args():
     # Training parameters
     parser.add_argument("--steps", type=int, default=125000, help="Number of training steps")
     parser.add_argument("--batch_size", type=int, default=100, help="Training batch size")
-    parser.add_argument("--g2_scale", type=float, default=0.2, help="Base learning rate scale")
-    parser.add_argument("--g3_over_g2", type=float, default=0.01, help="G3 to G2 ratio for momentum")
+    parser.add_argument("--g2_scale", type=float, default=0.5, help="Base learning rate scale")
+    parser.add_argument("--g3_over_g2", type=float, default=1.0, help="G3 to G2 ratio for momentum")
     parser.add_argument("--tanea_lr_scalar", type=float, default=1.0, help="Learning rate scalar")
 
     # Optimizer selection
@@ -253,10 +253,11 @@ def train_multi_optimizer(model, optimizers, key, num_steps, batch_size, eval_fr
     @jax.jit
     def combined_loss(params_dict, X, y, expert_indices):
         """Compute total loss summed across all optimizer parameter sets."""
-        total_loss = 0.0
-        for name in params_dict.keys():
-            total_loss += batch_loss_moe(params_dict[name], X, y, expert_indices)
-        return total_loss
+        return jax.tree.reduce(
+            lambda acc, p: acc + batch_loss_moe(p, X, y, expert_indices),
+            params_dict,
+            initializer=0.0
+        )
 
     # Gradient computation for the entire parameter tree
     @jax.jit

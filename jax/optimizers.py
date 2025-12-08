@@ -412,9 +412,7 @@ def dana_mk4_optimizer(
     def update_fn(updates, state, params):
         new_wd = wd(state.count)
         newDelta = Delta(state.count)
-
-        # Compute alpha = Delta / (Delta + t)
-        alpha = newDelta / (newDelta + state.count)
+        alpha = newDelta
 
         # Update second moment: v = v*(1-alpha) + alpha*u^2
         new_v = jax.tree.map(
@@ -601,9 +599,7 @@ def dana_star_mk4_optimizer(
     def update_fn(updates, state, params):
         new_wd = wd(state.count)
         newDelta = Delta(state.count)
-
-        # Compute alpha = Delta / (Delta + t)
-        alpha = newDelta / (newDelta + state.count)
+        alpha = newDelta
 
         # Update second moment: v = v*(1-alpha) + alpha*u^2
         new_v = jax.tree.map(
