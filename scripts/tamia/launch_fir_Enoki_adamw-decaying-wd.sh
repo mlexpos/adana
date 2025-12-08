@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Enoki Ademamix-decaying-wd ScaledGPT Initialization Single-GPU Sweep for Fir
+# Enoki Adamw-decaying-wd ScaledGPT Initialization Single-GPU Sweep for Fir
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: 7.46e+00 × (4.52e + 03 + P)^-0.526 where P = NON_EMB
+# Learning rate formula: 6.42e1 \times (7.89e3 + P)^{-0.607} where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
 # iterations to run formula = 24*3600 / (6.68 × 10^-4 * (TOTAL_PARAMS/1e6)^0.91) / 2
 
@@ -12,6 +12,8 @@ OMEGA_ARRAY=( 4.0 )
 HEADS_ARRAY=( 34)
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
+BATCH_SIZE=32 #32   #2   #32
+ACC_STEPS=1 #1    #16   #1
 # for adamw: batch/accum depend on HEADS (set per-job later)
 
 # SLURM configuration for Fir (4 GPUs per node)
@@ -26,7 +28,7 @@ INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=140000
 
-echo "Starting Enoki Ademamix-decaying-wd ScaledGPT Initialization sweep (Fir)"
+echo "Starting Enoki Adamw-decaying-wd ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -95,8 +97,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Calculate base learning rate using formula: lr = 7.46e+00 × (4.52e + 03 + P)^-0.526
-        BASE_LR=$(python3 -c "print(7.46e00 * ((4.52e03 + $NON_EMB) ** -0.526))")
+        # Calculate base learning rate using formula: lr = 6.42e1 \times (7.89e3 + P)^{-0.607}
+        BASE_LR=$(python3 -c "print(6.42e01 * ((7.89e03 + $NON_EMB) ** -0.607))")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
@@ -111,18 +113,6 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         echo "    Base LR (formula): $BASE_LR"
         echo ""
 
-        
-        if [ $HEADS -le 32 ]; then
-            BATCH_SIZE=8
-            ACC_STEPS=4
-        elif [ $HEADS -le 39 ]; then
-            BATCH_SIZE=2
-            ACC_STEPS=16
-        elif [ $HEADS -le 41 ]; then
-            BATCH_SIZE=1
-            ACC_STEPS=32
-        fi
-
         # Loop over learning rate multipliers
         for MULT in "${LR_MULTIPLIERS[@]}"; do
             # Calculate actual learning rate
@@ -136,14 +126,14 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --gpus-per-node=h100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=EN_AdemaMix-decaying-wd_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/tamia/fir_Enoki_ademamix-decaying-wd.sh \
+                   --job-name=EN_Adamw-decaying-wd_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
+                   scripts/tamia/fir_Enoki_adamw-decaying-wd.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer ademamix-decaying-wd \
+                   --optimizer adamw-decaying-wd \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
                    --iterations_to_run $ITERATIONS_TO_RUN
