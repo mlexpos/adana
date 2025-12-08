@@ -9,7 +9,7 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 34 )
+HEADS_ARRAY=( 34)
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 # for adamw: batch/accum depend on HEADS (set per-job later)
