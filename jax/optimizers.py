@@ -355,22 +355,379 @@ def get_dana_star(
     )
     return optimizer
 
+class DanaMK4OptimizerState(NamedTuple):
+    """State for the Dana MK4 algorithm (no tau tracking)."""
+    count: chex.Array  # shape=(), dtype=jnp.int32.
+    m: base.Updates
+    v: base.Updates
+
+
+def dana_mk4_optimizer(
+    g2: base.ScalarOrSchedule,
+    g3: base.ScalarOrSchedule,
+    Delta: base.ScalarOrSchedule,
+    epsilon: float = 1e-8,
+    kappa: float = 1.0,
+    clipsnr: float = 2.0,
+    wd: Optional[base.ScalarOrSchedule] = None,
+    *,
+    y_dtype: Optional[chex.ArrayDType] = None,
+) -> base.GradientTransformation:
+    """Dana MK4 optimizer (tau fixed to 1.0).
+
+    This is a simplified version of dana-star-mk4 where tau is always 1.0.
+    This removes all tau tracking and regularization, simplifying the update rule.
+
+    Key features:
+    - No tau tracking (tau = 1 everywhere)
+    - Kappa-based effective time scaling: t^(1-kappa)
+    - Alpha factor with SNR clipping
+    - Uses |m|/(v+epsilon) for the g3 momentum term
+
+    Args:
+        g2: A scalar or schedule determining the gradient coefficient.
+        g3: A scalar or schedule determining the momentum coefficient.
+        Delta: A scalar or schedule determining the EMA decay (alpha = Delta/(Delta+t)).
+        epsilon: Small constant for numerical stability.
+        kappa: Exponent for effective time scaling (default: 1.0).
+        clipsnr: Clipping factor for alpha_factor (default: 2.0).
+        wd: Optional scalar or schedule for weight decay.
+        y_dtype: Optional `dtype` to be used for the momentum accumulator.
+
+    Returns:
+        A :class:`optax.GradientTransformation` object.
+    """
+    y_dtype = utils.canonicalize_dtype(y_dtype)
+
+    if wd is None:
+        wd = lambda _: 0.0
+    elif not callable(wd):
+        wd = lambda _: wd
+
+    def init_fn(params):
+        m = otu.tree_zeros_like(params, dtype=y_dtype)  # First moment
+        v = otu.tree_zeros_like(params, dtype=y_dtype)  # Second moment
+        return DanaMK4OptimizerState(count=jnp.zeros([], jnp.int32), m=m, v=v)
+
+    def update_fn(updates, state, params):
+        new_wd = wd(state.count)
+        newDelta = Delta(state.count)
+
+        # Compute alpha = Delta / (Delta + t)
+        alpha = newDelta / (newDelta + state.count)
+
+        # Update second moment: v = v*(1-alpha) + alpha*u^2
+        new_v = jax.tree.map(
+            lambda v, u: None if v is None else v * (1 - alpha) + alpha * (u ** 2),
+            state.v,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Update first moment: m = m*(1-alpha) + alpha*u
+        new_m = jax.tree.map(
+            lambda m, u: None if m is None else m * (1 - alpha) + alpha * u,
+            state.m,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Compute updates using MK4 formula (tau = 1)
+        updates = jax.tree.map(
+            lambda m, u, v: -1.0 * g2(state.count) * u
+            if m is None
+            else mk4_update_tau1(m, u, v, state.count),
+            new_m,
+            updates,
+            new_v,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Apply weight decay
+        if params is not None:
+            updates = jax.tree.map(
+                lambda u, p: u + (-1.0 * new_wd) * p,
+                updates,
+                params,
+                is_leaf=lambda x: x is None,
+            )
+
+        new_m = otu.tree_cast(new_m, y_dtype)
+        new_v = otu.tree_cast(new_v, y_dtype)
+        count_inc = numerics.safe_increment(state.count)
+
+        return updates, DanaMK4OptimizerState(count=count_inc, m=new_m, v=new_v)
+
+    def mk4_update_tau1(m, u, v, t):
+        """MK4 update rule with tau fixed to 1.0.
+
+        When tau = 1:
+        - tau_reg = 1
+        - sqrt_tau_reg = 1
+        - effective_time = max(1 * t, 1) = max(t, 1) = t (for t >= 1)
+        """
+        # With tau_reg = 1, norm_term = 1 / (sqrt(v) + epsilon)
+        sqrt_v_eps = jnp.sqrt(v) + epsilon
+        norm_term = 1.0 / sqrt_v_eps
+
+        # m_norm_term = |m| / (sqrt(v) + epsilon)
+        m_norm_term = jnp.abs(m) * norm_term
+
+        # Momentum factor: mfac = m_norm_term / tau_reg = m_norm_term / 1 = m_norm_term
+        mfac = m_norm_term
+
+        # Effective time (for t >= 1): eff_time = t
+        eff_time = jnp.maximum(t, 1.0)
+
+        # Alpha factor with kappa scaling and clipping
+        # alpha_factor = clamp((eff_time^(1-kappa)) * mfac, max=clipsnr)
+        alpha_factor = jnp.minimum(
+            jnp.power(eff_time, 1.0 - kappa) * mfac,
+            clipsnr
+        )
+
+        # g3 term: -g3 * (sign(m) * (tau_reg * alpha_factor + m_norm_term))
+        # With tau_reg = 1: -g3 * sign(m) * (alpha_factor + m_norm_term)
+        g3_term = (-g3(eff_time)) * (jnp.sign(m) * (alpha_factor + m_norm_term))
+
+        # g2 term: -g2 * u * norm_term
+        g2_term = (-g2(eff_time)) * u * norm_term
+
+        # Combined update
+        return g2_term + g3_term
+
+    return base.GradientTransformation(init_fn, update_fn)
+
+
+def get_dana_mk4(
+    g2_constant: float,
+    g3_constant: float,
+    learning_rate: base.ScalarOrSchedule,
+    epsilon: float = 1e-8,
+    kappa: float = 1.0,
+    clipsnr: float = 2.0,
+    delta: float = 8.0,
+    y_dtype: Optional[chex.ArrayDType] = None
+):
+    """Get Dana MK4 optimizer with standard hyperparameters (tau fixed to 1).
+
+    Args:
+        g2_constant: Constant value for g2 (gradient coefficient).
+        g3_constant: Constant value for g3 (momentum coefficient).
+        learning_rate: Outer learning rate schedule.
+        epsilon: Small constant for numerical stability (default: 1e-8).
+        kappa: Exponent for effective time scaling (default: 1.0).
+        clipsnr: Clipping factor for alpha_factor (default: 2.0).
+        delta: Delta parameter for EMA coefficient (default: 8.0).
+        y_dtype: Optional dtype for momentum accumulators.
+
+    Returns:
+        Configured optimizer chain.
+    """
+    g2 = powerlaw_schedule(g2_constant, 0.0, 0.0, 1.0)
+    g3 = powerlaw_schedule(g3_constant, 0.0, 0.0, 1.0)
+    Delta = powerlaw_schedule(1.0, 0.0, -1.0, delta)
+
+    optimizer = optax.chain(
+        dana_mk4_optimizer(g2, g3, Delta, epsilon=epsilon, kappa=kappa, clipsnr=clipsnr, y_dtype=y_dtype),
+        optax.scale_by_learning_rate(learning_rate, flip_sign=False)
+    )
+    return optimizer
+
+
+def dana_star_mk4_optimizer(
+    g2: base.ScalarOrSchedule,
+    g3: base.ScalarOrSchedule,
+    Delta: base.ScalarOrSchedule,
+    epsilon: float = 1e-8,
+    kappa: float = 1.0,
+    clipsnr: float = 2.0,
+    wd: Optional[base.ScalarOrSchedule] = None,
+    *,
+    y_dtype: Optional[chex.ArrayDType] = None,
+) -> base.GradientTransformation:
+    """Dana-Star MK4 optimizer (PyTorch-equivalent implementation).
+
+    This implementation follows the PyTorch dana_star_mk4.py logic exactly.
+    Key differences from other optimizers:
+    - Uses |m|/(v+epsilon) for the g3 momentum term (mk4 formula)
+    - Includes kappa-based effective time scaling: (effective_time)^(1-kappa)
+    - Alpha factor with SNR clipping
+    - Simplified momentum update (no complex tau regularization in g3 term)
+
+    Args:
+        g2: A scalar or schedule determining the gradient coefficient.
+        g3: A scalar or schedule determining the momentum coefficient.
+        Delta: A scalar or schedule determining the EMA decay (alpha = Delta/(Delta+t)).
+        epsilon: Small constant for numerical stability.
+        kappa: Exponent for effective time scaling (default: 1.0).
+        clipsnr: Clipping factor for alpha_factor (default: 2.0).
+        wd: Optional scalar or schedule for weight decay.
+        y_dtype: Optional `dtype` to be used for the momentum accumulator.
+
+    Returns:
+        A :class:`optax.GradientTransformation` object.
+    """
+    y_dtype = utils.canonicalize_dtype(y_dtype)
+
+    if wd is None:
+        wd = lambda _: 0.0
+    elif not callable(wd):
+        wd = lambda _: wd
+
+    # Helper functions matching PyTorch implementation
+    clip_tohalf = lambda tau: jnp.minimum(tau, 0.5)
+
+    # Tau regularization: converts tau estimate to probability estimate
+    # tau_reg = max(tau/(1-tau), 1/(1+t))
+    tau_reg = lambda tau, t: jnp.maximum(
+        clip_tohalf(tau) / (1.0 - clip_tohalf(tau)),
+        jnp.power(1.0 + t, -1.0)
+    )
+    root_tau_reg = lambda tau, t: jnp.sqrt(tau_reg(tau, t))
+
+    # Effective time: max(tau * t, 1.0)
+    effective_time = lambda tau, t: jnp.maximum(tau * t, 1.0)
+
+    # Tau updater: tau_update = |u| / (|u| + sqrt(v) + epsilon)
+    tau_updater = lambda tau, u, v, t: jnp.abs(u) / (jnp.abs(u) + jnp.sqrt(v) + epsilon)
+
+    def init_fn(params):
+        m = otu.tree_zeros_like(params, dtype=y_dtype)  # First moment
+        v = otu.tree_zeros_like(params, dtype=y_dtype)  # Second moment
+        tau = otu.tree_zeros_like(params, dtype=y_dtype)  # Tau estimate
+        return TaneaOptimizerState(count=jnp.zeros([], jnp.int32), m=m, v=v, tau=tau)
+
+    def update_fn(updates, state, params):
+        new_wd = wd(state.count)
+        newDelta = Delta(state.count)
+
+        # Compute alpha = Delta / (Delta + t)
+        alpha = newDelta / (newDelta + state.count)
+
+        # Update second moment: v = v*(1-alpha) + alpha*u^2
+        new_v = jax.tree.map(
+            lambda v, u: None if v is None else v * (1 - alpha) + alpha * (u ** 2),
+            state.v,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Update tau estimate
+        new_tau = jax.tree.map(
+            lambda tau, u, v: None if tau is None else tau * (1 - alpha) + alpha * tau_updater(tau, u, v, state.count),
+            state.tau,
+            updates,
+            new_v,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Update first moment: m = m*(1-alpha) + alpha*u
+        new_m = jax.tree.map(
+            lambda m, u: None if m is None else m * (1 - alpha) + alpha * u,
+            state.m,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Compute updates using MK4 formula
+        updates = jax.tree.map(
+            lambda m, u, v, tau: -1.0 * g2(effective_time(tau, state.count)) * u
+            if m is None
+            else mk4_update(m, u, v, tau, state.count),
+            new_m,
+            updates,
+            new_v,
+            new_tau,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Apply weight decay
+        if params is not None:
+            updates = jax.tree.map(
+                lambda u, p: u + (-1.0 * new_wd) * p,
+                updates,
+                params,
+                is_leaf=lambda x: x is None,
+            )
+
+        new_m = otu.tree_cast(new_m, y_dtype)
+        new_v = otu.tree_cast(new_v, y_dtype)
+        new_tau = otu.tree_cast(new_tau, y_dtype)
+        count_inc = numerics.safe_increment(state.count)
+
+        return updates, TaneaOptimizerState(count=count_inc, m=new_m, v=new_v, tau=new_tau)
+
+    def mk4_update(m, u, v, tau, t):
+        """MK4 update rule matching PyTorch implementation exactly."""
+        # Compute tau regularization
+        tau_r = tau_reg(tau, t)
+        sqrt_tau_r = root_tau_reg(tau, t)
+        eff_time = effective_time(tau, t)
+
+        # Compute sqrt(v) + epsilon (reused)
+        sqrt_v_eps = jnp.sqrt(v) + epsilon
+
+        # Normalization term: sqrt(tau_reg) / (sqrt(v) + epsilon)
+        norm_term = sqrt_tau_r / sqrt_v_eps
+
+        # m_norm_term = |m| * norm_term
+        m_norm_term = jnp.abs(m) * norm_term
+
+        # Momentum factor: mfac = m_norm_term / tau_reg
+        mfac = m_norm_term / tau_r
+
+        # Alpha factor with kappa scaling and clipping
+        # alpha_factor = clamp((eff_time^(1-kappa)) * mfac, max=clipsnr)
+        alpha_factor = jnp.minimum(
+            jnp.power(eff_time, 1.0 - kappa) * mfac,
+            clipsnr
+        )
+
+        # g3 term: -g3 * (sign(m) * (tau_reg * alpha_factor + m_norm_term))
+        g3_term = (-g3(eff_time)) * (jnp.sign(m) * (tau_r * alpha_factor + m_norm_term))
+
+        # g2 term: -g2 * u * norm_term
+        g2_term = (-g2(eff_time)) * u * norm_term
+
+        # Combined update
+        return g2_term + g3_term
+
+    return base.GradientTransformation(init_fn, update_fn)
+
+
 def get_dana_star_mk4(
     g2_constant: float,
     g3_constant: float,
-    learning_rate: base.ScalarOrSchedule, #outer learning rate
+    learning_rate: base.ScalarOrSchedule,
     epsilon: float = 1e-8,
+    kappa: float = 1.0,
+    clipsnr: float = 2.0,
+    delta: float = 8.0,
     y_dtype: Optional[chex.ArrayDType] = None
 ):
+    """Get Dana-Star MK4 optimizer with standard hyperparameters.
+
+    Args:
+        g2_constant: Constant value for g2 (gradient coefficient).
+        g3_constant: Constant value for g3 (momentum coefficient).
+        learning_rate: Outer learning rate schedule.
+        epsilon: Small constant for numerical stability (default: 1e-8).
+        kappa: Exponent for effective time scaling (default: 1.0).
+        clipsnr: Clipping factor for alpha_factor (default: 2.0).
+        delta: Delta parameter for EMA coefficient (default: 8.0).
+        y_dtype: Optional dtype for momentum accumulators.
+
+    Returns:
+        Configured optimizer chain.
+    """
     g2 = powerlaw_schedule(g2_constant, 0.0, 0.0, 1.0)
     g3 = powerlaw_schedule(g3_constant, 0.0, 0.0, 1.0)
-    beta_m=powerlaw_schedule(1.0, 0.0, -1.0, 6.0)
-    g1 = beta_m
-    Delta = powerlaw_schedule(1.0, 0.0, -1.0, 6.0)  # Use same Delta as other optimizers
+    Delta = powerlaw_schedule(1.0, 0.0, -1.0, delta)
 
     optimizer = optax.chain(
-        tanea_optimizer(g2, g3, Delta, epsilon=epsilon, beta_m=beta_m, g1=g1, momentum_flavor="mk4", y_dtype=y_dtype),
-        optax.scale_by_learning_rate(learning_rate, flip_sign = False)
+        dana_star_mk4_optimizer(g2, g3, Delta, epsilon=epsilon, kappa=kappa, clipsnr=clipsnr, y_dtype=y_dtype),
+        optax.scale_by_learning_rate(learning_rate, flip_sign=False)
     )
     return optimizer
 
