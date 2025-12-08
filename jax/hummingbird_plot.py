@@ -201,6 +201,9 @@ def create_optimizers(args, traceK):
 def train_multi_optimizer(model, optimizers, key, num_steps, batch_size, eval_freq=None):
     """Train with multiple optimizers simultaneously using the same gradients.
 
+    Uses Optax multi_transform to apply different optimizers to different parameter slices,
+    computing gradients only once per step.
+
     Args:
         model: The MoE PLRF model
         optimizers: Dict of optimizer name -> optimizer object
@@ -212,12 +215,20 @@ def train_multi_optimizer(model, optimizers, key, num_steps, batch_size, eval_fr
     Returns:
         Dict mapping optimizer name to training results
     """
-    # Initialize parameters (shared across all optimizers)
-    init_params = jnp.zeros((model.d, model.m))
+    # Initialize parameters - create a dict tree where each optimizer has its own params
+    init_params_single = jnp.zeros((model.d, model.m))
 
-    # Initialize optimizer states
-    opt_states = {name: opt.init(init_params) for name, opt in optimizers.items()}
-    params_dict = {name: init_params.copy() for name in optimizers.keys()}
+    # Create a parameter tree: {opt_name: params}
+    params = {name: init_params_single.copy() for name in optimizers.keys()}
+
+    # Create multi-transform: apply each optimizer to its corresponding parameter slice
+    multi_opt = optax.multi_transform(
+        transforms=optimizers,
+        param_labels={name: name for name in optimizers.keys()}
+    )
+
+    # Initialize the combined optimizer state
+    opt_state = multi_opt.init(params)
 
     # Determine evaluation times
     if eval_freq is None:
@@ -229,35 +240,48 @@ def train_multi_optimizer(model, optimizers, key, num_steps, batch_size, eval_fr
     else:
         eval_times = jnp.arange(0, num_steps + 1, eval_freq)
 
-    # Batch loss function for MoE
+    # Batch loss function for a single optimizer's parameters
     @jax.jit
-    def batch_loss_moe(params, X, y, expert_indices):
-        """Compute mean squared error loss with expert routing."""
+    def batch_loss_moe(params_single, X, y, expert_indices):
+        """Compute mean squared error loss with expert routing for single optimizer."""
         R = model.create_routing_matrix(expert_indices, batch_size)
-        all_predictions = jnp.matmul(X, params)  # (batch_size, m)
+        all_predictions = jnp.matmul(X, params_single)  # (batch_size, m)
         predictions = jnp.sum(all_predictions * R.T, axis=1)  # (batch_size,)
         return jnp.mean(optax.l2_loss(predictions, y))
 
-    # Gradient computation
+    # Combined loss function that sums losses across all optimizers
     @jax.jit
-    def compute_gradients(params, X, y, expert_indices):
-        """Compute gradients for MoE model."""
-        def loss_fn(params):
-            return batch_loss_moe(params, X, y, expert_indices)
-        return jax.grad(loss_fn)(params)
+    def combined_loss(params_dict, X, y, expert_indices):
+        """Compute total loss summed across all optimizer parameter sets."""
+        total_loss = 0.0
+        for name in params_dict.keys():
+            total_loss += batch_loss_moe(params_dict[name], X, y, expert_indices)
+        return total_loss
 
-    # Training step for a single optimizer
-    def update_single_optimizer(params, opt_state, optimizer, grads):
-        """Update a single optimizer (not jitted - optimizer.update is already jitted internally)."""
-        updates, opt_state = optimizer.update(grads, opt_state, params)
+    # Gradient computation for the entire parameter tree
+    @jax.jit
+    def compute_gradients(params_dict, X, y, expert_indices):
+        """Compute gradients for all optimizers at once."""
+        return jax.grad(combined_loss)(params_dict, X, y, expert_indices)
+
+    # Training step using multi_transform
+    @jax.jit
+    def training_step(params, opt_state, X, y, expert_indices):
+        """Single training step for all optimizers."""
+        # Compute gradients once for all optimizers
+        grads = compute_gradients(params, X, y, expert_indices)
+
+        # Apply multi-transform update
+        updates, opt_state = multi_opt.update(grads, opt_state, params)
         params = optax.apply_updates(params, updates)
+
         return params, opt_state
 
     # Initialize results tracking
     results = {
         name: {
             'timestamps': [0],
-            'losses': [model.population_risk(init_params)]
+            'losses': [model.population_risk(init_params_single)]
         }
         for name in optimizers.keys()
     }
@@ -272,20 +296,13 @@ def train_multi_optimizer(model, optimizers, key, num_steps, batch_size, eval_fr
         X, y = model.generate_batch(key_data, batch_size)
         expert_indices = model.sample_expert_batch(key_expert, batch_size)
 
-        # Compute gradients and update each optimizer with its own gradients
-        for name, optimizer in optimizers.items():
-            # Compute gradients for this optimizer's parameters
-            grads = compute_gradients(params_dict[name], X, y, expert_indices)
-
-            # Update this optimizer
-            params_dict[name], opt_states[name] = update_single_optimizer(
-                params_dict[name], opt_states[name], optimizer, grads
-            )
+        # Single update step for all optimizers
+        params, opt_state = training_step(params, opt_state, X, y, expert_indices)
 
         # Evaluate if needed
         if step + 1 == next_eval:
             for name in optimizers.keys():
-                pop_risk = model.population_risk(params_dict[name])
+                pop_risk = model.population_risk(params[name])
                 results[name]['timestamps'].append(step + 1)
                 results[name]['losses'].append(pop_risk)
 
