@@ -4,6 +4,7 @@
 LR=15e-4
 OMEGA=4.0
 CLIPSNR=2.0
+KAPPA=0.75
 BATCH_SIZE=32
 ACC_STEPS=1
 NPROC_PER_NODE=1
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --clipsnr)
             CLIPSNR="$2"
+            shift 2
+            ;;
+        --kappa)
+            KAPPA="$2"
             shift 2
             ;;
         --batch_size)
@@ -78,6 +83,7 @@ if [ -z "$HEADS" ]; then
     echo "  --lr <value>              Learning rate (default: 15e-4)"
     echo "  --omega <value>           Weight decay strength parameter (default: 4.0)"
     echo "  --clipsnr <value>         Clip SNR for dana-star-mk4 (default: 2.0)"
+    echo "  --kappa <value>           Kappa parameter for dana algorithms (default: 0.75)"
     echo "  --batch_size <value>      Batch size (default: 32)"
     echo "  --acc_steps <value>       Accumulation steps (default: 1)"
     echo "  --nproc_per_node <value>  Processes per node (default: 1)"
@@ -122,28 +128,28 @@ case $OPTIMIZER in
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
     dana-star-no-tau)
         # For dana-star-no-tau: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana-star-no-tau --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt dana-star-no-tau --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
     dana-star)
         # For dana-star: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana-star --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt dana-star --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
     dana-mk4)
         # For dana-mk4 with no tau adaptation: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana-mk4 --lr $LR --delta 8 --kappa 0.75 --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt dana-mk4 --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
         ;;
     adamw)
         # For adamw: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
@@ -159,27 +165,27 @@ case $OPTIMIZER in
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
         OPT_PARAMS="--opt adamw-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
         ;;
-    
+
     dana)
         # For dana: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa 0.75 --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999"
+        OPT_PARAMS="--opt dana --lr $LR --delta 8 --kappa $KAPPA --weight_decay $WEIGHT_DECAY --beta1 0.9 --use_v_ema --v_ema_beta 0.999"
         ;;
     ademamix)
         # For ademamix: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS="N/A"
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
+        OPT_PARAMS="--opt ademamix --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa $KAPPA --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
     ademamix-decaying-wd)
         # For ademamix-decaying-wd: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
         WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt ademamix-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa 0.75 --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt ademamix-decaying-wd --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999 --delta 8 --kappa $KAPPA --gamma_3_factor 1.0 --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
         ;;
     # ademamix-beta2-decaying-wd-decaying)
     #     # For ademamix-beta2-decaying-wd-decaying: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
@@ -202,7 +208,7 @@ case $OPTIMIZER in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS=$(python3 -c "print(int($ITERATIONS / 1))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum False --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum False --delta 8 --kappa $KAPPA --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
         ;;
     manau-hard)
         # For manau-hard (DANA momentum): WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
@@ -210,7 +216,7 @@ case $OPTIMIZER in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         WD_TS=$(python3 -c "print(int($ITERATIONS / 1))")
         WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
-        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum True --delta 8 --kappa 0.75 --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+        OPT_PARAMS="--opt manau --lr $LR --weight_decay $WEIGHT_DECAY --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum True --delta 8 --kappa $KAPPA --mk4A 0.0 --mk4B 0.0 --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
         ;;
     *)
         echo "Error: Unknown optimizer $OPTIMIZER"
@@ -232,6 +238,7 @@ echo "Omega: $OMEGA"
 echo "Weight decay: $WEIGHT_DECAY"
 echo "Weight decay timestep: $WD_TS"
 echo "Clip SNR: $CLIPSNR"
+echo "Kappa: $KAPPA"
 echo "Batch size: $BATCH_SIZE"
 echo "Accumulation steps: $ACC_STEPS"
 echo "Processes per node: $NPROC_PER_NODE"
