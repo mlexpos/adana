@@ -1,18 +1,18 @@
 #!/bin/bash
 
-# Enoki Dana-MK4 ScaledGPT Initialization Sweep for Narval (kappa=0)
+# Enoki Dana-MK4 ScaledGPT Initialization Sweep for Narval (kappa sweep)
 # Uses ScaledGPT initialization scheme with 1 A100 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
 # Learning rate formula: lr = 4.40e+01 × (8.35e+03 + P)^-0.664 where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
-# Testing kappa=0 instead of default kappa=0.75
+# Sweeping kappa from 0.0 to 1.0 with 0.1 step
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 6 8 10 )
+HEADS_ARRAY=( 8 )
 LR_MULTIPLIERS=( 1.0 )
+KAPPA_ARRAY=( 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 1.0 )
 CLIPSNR=2.0
-KAPPA=0.0
 BATCH_SIZE=32
 ACC_STEPS=1
 
@@ -27,12 +27,12 @@ TIME_HOURS=4
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 
-echo "Starting Enoki Dana-MK4 ScaledGPT Initialization sweep (Narval, kappa=0)"
+echo "Starting Enoki Dana-MK4 ScaledGPT Initialization sweep (Narval, kappa sweep)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
+echo "Kappa values: ${KAPPA_ARRAY[@]}"
 echo "Clip SNR: $CLIPSNR"
-echo "Kappa: $KAPPA"
 echo "GPUs per node: $GPUS_PER_NODE"
 echo "CPUs per GPU: $CPUS_PER_GPU"
 echo "Total CPUs: $TOTAL_CPUS"
@@ -77,84 +77,92 @@ echo ""
 
 # Counter for job tracking
 job_count=0
-total_jobs=$((${#OMEGA_ARRAY[@]} * ${#HEADS_ARRAY[@]} * ${#LR_MULTIPLIERS[@]}))
+total_jobs=$((${#OMEGA_ARRAY[@]} * ${#HEADS_ARRAY[@]} * ${#LR_MULTIPLIERS[@]} * ${#KAPPA_ARRAY[@]}))
 echo "Total jobs to run: $total_jobs"
 echo ""
 
-# Loop over omega values
-for OMEGA in "${OMEGA_ARRAY[@]}"; do
-    echo "Processing omega=$OMEGA"
+# Loop over kappa values
+for KAPPA in "${KAPPA_ARRAY[@]}"; do
+    echo "Processing kappa=$KAPPA"
     echo ""
 
-    # Loop over head counts
-    for HEADS in "${HEADS_ARRAY[@]}"; do
-        echo "  Processing heads=$HEADS (omega=$OMEGA)"
-
-        # Calculate parameters for this head count
-        read NON_EMB ITERATIONS TOTAL_PARAMS <<< $(calculate_params $HEADS)
-
-        # Calculate computational cost C = NON_EMB * ITERATIONS
-        C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
-
-        # Calculate base learning rate using formula: lr = 4.40e+01 × (8.35e+03 + P)^-0.664
-        BASE_LR=$(python3 -c "print(4.40e+01 * ((8.35e03 + $NON_EMB) ** -0.664))")
-
-        # Calculate n_layer for this head count
-        N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
-
-        echo "    HEADS = $HEADS"
-        echo "    N_LAYER = $N_LAYER (= 3 * $HEADS / 4)"
-        echo "    NON_EMB = $NON_EMB"
-        echo "    ITERATIONS = $ITERATIONS"
-        echo "    C = $C"
-        echo "    TOTAL_PARAMS = $TOTAL_PARAMS"
-        echo "    Time allocation: ${TIME_HOURS}h"
-        echo "    Base LR (formula): $BASE_LR"
+    # Loop over omega values
+    for OMEGA in "${OMEGA_ARRAY[@]}"; do
+        echo "  Processing omega=$OMEGA (kappa=$KAPPA)"
         echo ""
 
-        echo "    BATCH_SIZE = $BATCH_SIZE"
-        echo "    ACC_STEPS = $ACC_STEPS"
-        echo "    Effective batch size = $((BATCH_SIZE * ACC_STEPS))"
-        echo ""
+        # Loop over head counts
+        for HEADS in "${HEADS_ARRAY[@]}"; do
+            echo "    Processing heads=$HEADS (omega=$OMEGA, kappa=$KAPPA)"
 
-        # Loop over learning rate multipliers
-        for MULT in "${LR_MULTIPLIERS[@]}"; do
-            # Calculate actual learning rate
-            LR=$(python3 -c "print($MULT * $BASE_LR)")
+            # Calculate parameters for this head count
+            read NON_EMB ITERATIONS TOTAL_PARAMS <<< $(calculate_params $HEADS)
 
-            job_count=$((job_count + 1))
-            echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base), kappa=$KAPPA"
+            # Calculate computational cost C = NON_EMB * ITERATIONS
+            C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-            # Submit the job with ScaledGPT initialization and kappa=0
-            sbatch --time=${TIME_HOURS}:00:00 \
-                   --nodes=1 \
-                   --gpus-per-node=a100:${GPUS_PER_NODE} \
-                   --cpus-per-gpu=${CPUS_PER_GPU} \
-                   --mem=${MEM}GB \
-                   --job-name=EN_MK4_SGPT_k0_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/narval/Enoki_epaq_scaledGPT.sh \
-                   --heads $HEADS \
-                   --lr $LR \
-                   --omega $OMEGA \
-                   --kappa $KAPPA \
-                   --batch_size $BATCH_SIZE \
-                   --acc_steps $ACC_STEPS \
-                   --optimizer dana-mk4 \
-                   --clipsnr $CLIPSNR \
-                   --nproc_per_node ${GPUS_PER_NODE} \
-                   --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
+            # Calculate base learning rate using formula: lr = 4.40e+01 × (8.35e+03 + P)^-0.664
+            BASE_LR=$(python3 -c "print(4.40e+01 * ((8.35e03 + $NON_EMB) ** -0.664))")
 
-            # Check if the job was successful
-            if [ $? -eq 0 ]; then
-                echo "      ✓ Job submitted successfully"
-            else
-                echo "      ✗ Job failed with exit code $?"
-            fi
+            # Calculate n_layer for this head count
+            N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
 
+            echo "      HEADS = $HEADS"
+            echo "      N_LAYER = $N_LAYER (= 3 * $HEADS / 4)"
+            echo "      NON_EMB = $NON_EMB"
+            echo "      ITERATIONS = $ITERATIONS"
+            echo "      C = $C"
+            echo "      TOTAL_PARAMS = $TOTAL_PARAMS"
+            echo "      Time allocation: ${TIME_HOURS}h"
+            echo "      Base LR (formula): $BASE_LR"
             echo ""
+
+            echo "      BATCH_SIZE = $BATCH_SIZE"
+            echo "      ACC_STEPS = $ACC_STEPS"
+            echo "      Effective batch size = $((BATCH_SIZE * ACC_STEPS))"
+            echo ""
+
+            # Loop over learning rate multipliers
+            for MULT in "${LR_MULTIPLIERS[@]}"; do
+                # Calculate actual learning rate
+                LR=$(python3 -c "print($MULT * $BASE_LR)")
+
+                job_count=$((job_count + 1))
+                echo "      Job $job_count/$total_jobs: kappa=$KAPPA, omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
+
+                # Submit the job with ScaledGPT initialization and current kappa value
+                sbatch --time=${TIME_HOURS}:00:00 \
+                       --nodes=1 \
+                       --gpus-per-node=a100:${GPUS_PER_NODE} \
+                       --cpus-per-gpu=${CPUS_PER_GPU} \
+                       --mem=${MEM}GB \
+                       --job-name=EN_MK4_SGPT_k${KAPPA}_om${OMEGA}_h${HEADS}_lr${MULT} \
+                       scripts/narval/Enoki_epaq_scaledGPT.sh \
+                       --heads $HEADS \
+                       --lr $LR \
+                       --omega $OMEGA \
+                       --kappa $KAPPA \
+                       --batch_size $BATCH_SIZE \
+                       --acc_steps $ACC_STEPS \
+                       --optimizer dana-mk4 \
+                       --clipsnr $CLIPSNR \
+                       --nproc_per_node ${GPUS_PER_NODE} \
+                       --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
+
+                # Check if the job was successful
+                if [ $? -eq 0 ]; then
+                    echo "        ✓ Job submitted successfully"
+                else
+                    echo "        ✗ Job failed with exit code $?"
+                fi
+
+                echo ""
+            done
+
+            echo "    ----------------------------------------"
         done
 
-        echo "  ----------------------------------------"
+        echo "  ========================================"
     done
 
     echo "========================================"
@@ -164,7 +172,7 @@ echo "Sweep completed. Total jobs submitted: $job_count"
 echo ""
 echo "Sweep configuration:"
 echo "  Optimizer: Dana-MK4"
-echo "  Kappa: $KAPPA"
+echo "  Kappa values: ${KAPPA_ARRAY[@]}"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
 echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
