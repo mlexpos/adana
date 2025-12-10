@@ -39,7 +39,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
-export RESTART_WRAPPER_SCRIPT="scripts/rorqual/rorqual_Qwen3_mk4.sh"
+export RESTART_WRAPPER_SCRIPT="scripts/rorqual/rorqual_Qwen3_dana-star-mk4.sh"
 
 # Call the generic Qwen3 restart script with all arguments and force ScaledGPT init scheme
 bash scripts/BigHead/Qwen3_generic_restart.sh --init-scheme ScaledGPT --results_base_folder "$RESULTS_BASE_FOLDER" "$@"

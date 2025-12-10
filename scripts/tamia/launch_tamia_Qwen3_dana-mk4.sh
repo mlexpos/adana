@@ -1,18 +1,19 @@
 #!/bin/bash
 
-# Qwen3 AdamW ScaledGPT Initialization Sweep for Fir
+# Qwen3 Dana-MK4 ScaledGPT Initialization Sweep for Fir
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848 where P = NON_EMB
+# Learning rate formula: lr = 1.55e-1 × (7.76e+04 + P)^-0.415 where P = NON_EMB
 # Qwen3 scaling: head_dim=128 (fixed), n_layer=2*heads, n_embd=128*heads, mlp=3*n_embd
+# iterations to run formula = 24*3600 / (5.83 × 10^-4 * (TOTAL_PARAMS/1e6)^0.91) / 2
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 14 )
+HEADS_ARRAY=( 17 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-BATCH_SIZE=32 #32
-ACC_STEPS=1 #1
+BATCH_SIZE=1 #32
+ACC_STEPS=32 #1
 
 # SLURM configuration for Fir (1 GPU)
 GPUS_PER_NODE=4
@@ -24,9 +25,9 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=439300
+ITERATIONS_TO_RUN=100000
 
-echo "Starting Qwen3 AdamW ScaledGPT Initialization sweep (Fir)"
+echo "Starting Qwen3 Dana-MK4 ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -115,9 +116,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Updated formula: 1.27e4 \times (9.23e4 + P)^{-0.848}
-        # Calculate base learning rate using formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848
-        BASE_LR=$(python3 -c "print(1.27e4 * ((9.23e4 + $NON_EMB) ** -0.848))")
+        # Calculate base learning rate using formula: lr = 1.55e-1 × (7.76e+04 + P)^-0.415
+        BASE_LR=$(python3 -c "print(1.55e-1 * ((7.76e4 + $NON_EMB) ** -0.415))")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(2 * $HEADS))")
@@ -154,14 +154,15 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --gpus-per-node=h100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=Q3_AdamW_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/tamia/fir_Qwen3_adamw.sh \
+                   --job-name=Q3_DanaMK4_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
+                   scripts/tamia/tamia_Qwen3_dana-mk4.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer adamw \
+                   --optimizer dana-mk4 \
+                   --clipsnr $CLIPSNR \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
                    --iterations_to_run $ITERATIONS_TO_RUN
@@ -185,12 +186,12 @@ done
 echo "Sweep completed. Total jobs submitted: $job_count"
 echo ""
 echo "Sweep configuration:"
-echo "  Optimizer: AdamW"
+echo "  Optimizer: Dana-MK4"
 echo "  Model: Qwen3"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
 echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "  LR formula: lr = 1.27e+04 × (9.23e+04 + NON_EMB)^-0.848"
+echo "  LR formula: lr = 4.40e+01 × (8.35e+03 + NON_EMB)^-0.415"
 echo "  Clip SNR: $CLIPSNR"
 echo ""
 echo "Resource allocation per job:"

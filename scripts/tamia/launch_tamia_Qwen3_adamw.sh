@@ -155,7 +155,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
                    --job-name=Q3_AdamW_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/tamia/fir_Qwen3_adamw.sh \
+                   scripts/tamia/tamia_Qwen3_adamw.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \

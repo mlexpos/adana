@@ -2,7 +2,7 @@
 #SBATCH --time=24:00:00
 #SBATCH --account=rrg-bengioy-ad
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=h100:4
+#SBATCH --gpus-per-node=h100:1
 #SBATCH --cpus-per-gpu=8
 #SBATCH --output=logs/%x-%j.out
 #SBATCH --error=logs/%x-%j.err
@@ -26,8 +26,8 @@ source $HOME/danastarenv/bin/activate
 echo "Activated virtual environment"
 
 # Set up directories
-export DATASETS_DIR="$HOME/links/projects/def-epaq/datasets"
-export RESULTS_BASE_FOLDER="$HOME/links/projects/def-epaq/checkpoints"
+export DATASETS_DIR="$HOME/links/scratch/datasets"
+export RESULTS_BASE_FOLDER="$HOME/links/scratch/checkpoints"
 
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
@@ -39,7 +39,7 @@ echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 wandb offline
 
 # Set the restart wrapper script path for the generic restart logic
-export RESTART_WRAPPER_SCRIPT="scripts/rorqual/rorqual_Qwen3_mk4.sh"
+export RESTART_WRAPPER_SCRIPT="scripts/fir/fir_Qwen3_dana-star-mk4.sh"
 
 # Call the generic Qwen3 restart script with all arguments and force ScaledGPT init scheme
 bash scripts/BigHead/Qwen3_generic_restart.sh --init-scheme ScaledGPT --results_base_folder "$RESULTS_BASE_FOLDER" "$@"

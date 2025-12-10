@@ -117,7 +117,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
 
         # Updated formula: 1.27e4 \times (9.23e4 + P)^{-0.848}
         # Calculate base learning rate using formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848
-        BASE_LR=$(python3 -c "print(1.27e+04 * ((9.23e04 + $NON_EMB) ** -0.848))")
+        BASE_LR=$(python3 -c "print(1.27e4 * ((9.23e4 + $NON_EMB) ** -0.848))")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(2 * $HEADS))")
@@ -191,7 +191,7 @@ echo "  Model: Qwen3"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
 echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "  LR formula: lr = 1.28e+01 × (1.67e+04 + NON_EMB)^-0.515"
+echo "  LR formula: lr = 1.27e+04 × (9.23e+04 + NON_EMB)^-0.848"
 echo "  Clip SNR: $CLIPSNR"
 echo ""
 echo "Resource allocation per job:"

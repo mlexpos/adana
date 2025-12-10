@@ -3,7 +3,7 @@
 # Qwen3 Dana-MK4 ScaledGPT Initialization Sweep for Fir
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 4.40e+01 × (8.35e+03 + P)^-0.664 where P = NON_EMB
+# Learning rate formula: lr = 1.55e-1 × (7.76e+04 + P)^-0.415 where P = NON_EMB
 # Qwen3 scaling: head_dim=128 (fixed), n_layer=2*heads, n_embd=128*heads, mlp=3*n_embd
 # iterations to run formula = 24*3600 / (5.83 × 10^-4 * (TOTAL_PARAMS/1e6)^0.91) / 2
 
@@ -116,8 +116,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Calculate base learning rate using formula: lr = 4.40e+01 × (8.35e+03 + P)^-0.664
-        BASE_LR=$(python3 -c "print(4.40e+01 * ((8.35e03 + $NON_EMB) ** -0.664))")
+        # Calculate base learning rate using formula: lr = 1.55e-1 × (7.76e+04 + P)^-0.415
+        BASE_LR=$(python3 -c "print(1.55e-1 * ((7.76e4 + $NON_EMB) ** -0.415))")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(2 * $HEADS))")
@@ -192,7 +192,7 @@ echo "  Model: Qwen3"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
 echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "  LR formula: lr = 4.40e+01 × (8.35e+03 + NON_EMB)^-0.664"
+echo "  LR formula: lr = 1.55e-1 × (7.76e+04 + NON_EMB)^-0.415"
 echo "  Clip SNR: $CLIPSNR"
 echo ""
 echo "Resource allocation per job:"

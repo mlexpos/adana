@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Qwen3 AdamW ScaledGPT Initialization Sweep for Fir
+# Qwen3 AdamW ScaledGPT Initialization Sweep for Rorqual
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
 # Learning rate formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848 where P = NON_EMB
@@ -8,25 +8,25 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 14 )
+HEADS_ARRAY=( 14 16 18 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-BATCH_SIZE=32 #32
-ACC_STEPS=1 #1
+BATCH_SIZE=32
+ACC_STEPS=1
 
-# SLURM configuration for Fir (1 GPU)
-GPUS_PER_NODE=4
+# SLURM configuration for Rorqual (1 GPU)
+GPUS_PER_NODE=1
 CPUS_PER_GPU=8
-TOTAL_CPUS=32             # 4 GPU × 8 CPUs/GPU
-MEM=0                     # 0 = allocate as needed
-TIME_HOURS=24
+TOTAL_CPUS=8             # 4 GPU × 8 CPUs/GPU
+MEM=80GB                     # 0 = allocate as needed
+TIME_HOURS=3
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=439300
+ITERATIONS_TO_RUN=100000
 
-echo "Starting Qwen3 AdamW ScaledGPT Initialization sweep (Fir)"
+echo "Starting Qwen3 AdamW ScaledGPT Initialization sweep (Rorqual)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -149,13 +149,14 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
             # Submit the job with ScaledGPT initialization
-            sbatch --time=${TIME_HOURS}:00:00 \
+            sbatch --account=rrg-bengioy-ad \
+                   --time=${TIME_HOURS}:00:00 \
                    --nodes=1 \
                    --gpus-per-node=h100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
                    --job-name=Q3_AdamW_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/tamia/fir_Qwen3_adamw.sh \
+                   scripts/rorqual/rorqual_Qwen3_adamw.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \

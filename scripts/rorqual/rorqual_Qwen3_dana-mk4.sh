@@ -27,7 +27,8 @@ echo "Activated virtual environment"
 
 # Set up directories - Rorqual specific paths
 export DATASETS_DIR="$HOME/links/projects/def-epaq/datasets"
-export RESULTS_BASE_FOLDER="$HOME/links/projects/rrg-bengioy-ad/epaq/checkpoints"
+#export RESULTS_BASE_FOLDER="$HOME/links/projects/rrg-bengioy-ad/epaq/checkpoints"
+export RESULTS_BASE_FOLDER="$HOME/links/projects/def-epaq/checkpoints"
 
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
 echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"

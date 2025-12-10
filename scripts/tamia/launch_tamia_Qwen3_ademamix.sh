@@ -1,32 +1,33 @@
 #!/bin/bash
 
-# Qwen3 AdamW ScaledGPT Initialization Sweep for Fir
+# Qwen3 AdeMaMix ScaledGPT Initialization Sweep for Fir
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848 where P = NON_EMB
+# Learning rate formula: lr = 2.81 × (4.96e+04 + P)^-0.475 where P = NON_EMB
 # Qwen3 scaling: head_dim=128 (fixed), n_layer=2*heads, n_embd=128*heads, mlp=3*n_embd
+# iterations to run formula = 24*3600 / (5.83 × 10^-4 * (TOTAL_PARAMS/1e6)^0.91) / 2
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 14 )
+HEADS_ARRAY=( 4 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-BATCH_SIZE=32 #32
-ACC_STEPS=1 #1
+BATCH_SIZE=32
+ACC_STEPS=1
 
 # SLURM configuration for Fir (1 GPU)
-GPUS_PER_NODE=4
+GPUS_PER_NODE=1
 CPUS_PER_GPU=8
-TOTAL_CPUS=32             # 4 GPU × 8 CPUs/GPU
-MEM=0                     # 0 = allocate as needed
-TIME_HOURS=24
+TOTAL_CPUS=8             # 1 GPU × 8 CPUs/GPU
+MEM=0                    # 0 = allocate as needed
+TIME_HOURS=3
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=439300
+ITERATIONS_TO_RUN=100000
 
-echo "Starting Qwen3 AdamW ScaledGPT Initialization sweep (Fir)"
+echo "Starting Qwen3 AdeMaMix ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
@@ -115,9 +116,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Updated formula: 1.27e4 \times (9.23e4 + P)^{-0.848}
-        # Calculate base learning rate using formula: lr = 1.27e+04 × (9.23e+04 + P)^-0.848
-        BASE_LR=$(python3 -c "print(1.27e4 * ((9.23e4 + $NON_EMB) ** -0.848))")
+        # Calculate base learning rate using formula: lr = 2.81 × (4.96e+04 + P)^-0.475
+        BASE_LR=$(python3 -c "print(2.81 * ((4.96e4 + $NON_EMB) ** -0.475))")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(2 * $HEADS))")
@@ -131,6 +131,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         echo "    Time allocation: ${TIME_HOURS}h"
         echo "    Base LR (formula): $BASE_LR"
         echo ""
+
 
         echo "    BATCH_SIZE = $BATCH_SIZE"
         echo "    ACC_STEPS = $ACC_STEPS"
@@ -149,19 +150,20 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
             # Submit the job with ScaledGPT initialization
-            sbatch --time=${TIME_HOURS}:00:00 \
+            sbatch --account=rrg-bengioy-ad \
+                   --time=${TIME_HOURS}:00:00 \
                    --nodes=1 \
                    --gpus-per-node=h100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=Q3_AdamW_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/tamia/fir_Qwen3_adamw.sh \
+                   --job-name=Q3_AdeMaMix_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
+                   scripts/tamia/tamia_Qwen3_ademamix.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer adamw \
+                   --optimizer ademamix \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
                    --iterations_to_run $ITERATIONS_TO_RUN
@@ -185,12 +187,12 @@ done
 echo "Sweep completed. Total jobs submitted: $job_count"
 echo ""
 echo "Sweep configuration:"
-echo "  Optimizer: AdamW"
+echo "  Optimizer: AdeMaMix"
 echo "  Model: Qwen3"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
 echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "  LR formula: lr = 1.27e+04 × (9.23e+04 + NON_EMB)^-0.848"
+echo "  LR formula: lr = 2.81 × (4.96e+04 + NON_EMB)^-0.475"
 echo "  Clip SNR: $CLIPSNR"
 echo ""
 echo "Resource allocation per job:"
