@@ -149,8 +149,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
             # Submit the job with ScaledGPT initialization
-            sbatch --account=rrg-bengioy-ad \
-                   --time=${TIME_HOURS}:00:00 \
+            sbatch --time=${TIME_HOURS}:00:00 \
                    --nodes=1 \
                    --gpus-per-node=h100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
