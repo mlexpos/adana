@@ -1262,3 +1262,207 @@ def subtract_decayed_weight_sparsifier(
     return updates, state
 
   return base.GradientTransformation(init_fn, update_fn)
+
+
+class AdEMAMixOptimizerState(NamedTuple):
+    """State for the AdEMAMix algorithm."""
+    count: chex.Array  # shape=(), dtype=jnp.int32.
+    exp_avg_fast: base.Updates  # Fast EMA (beta1)
+    exp_avg_slow: base.Updates  # Slow EMA (beta3)
+    exp_avg_sq: base.Updates    # Second moment (beta2)
+
+
+def ademamix_optimizer(
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    beta3: float = 0.9999,
+    alpha: float = 2.0,
+    gamma_3_factor: float = 1.0,
+    epsilon: float = 1e-8,
+    wd: Optional[base.ScalarOrSchedule] = None,
+    *,
+    y_dtype: Optional[chex.ArrayDType] = None,
+) -> base.GradientTransformation:
+    """AdEMAMix optimizer (JAX implementation).
+
+    Based on the PyTorch implementation from Apple ML:
+    https://github.com/apple/ml-ademamix
+
+    AdEMAMix maintains two exponential moving averages of gradients:
+    - Fast EMA with decay rate beta1
+    - Slow EMA with decay rate beta3
+    The update combines both EMAs with the slow EMA scaled by alpha and gamma_3_factor.
+
+    Args:
+        beta1: Decay rate for fast EMA (default: 0.9)
+        beta2: Decay rate for second moment estimate (default: 0.999)
+        beta3: Decay rate for slow EMA (default: 0.9999)
+        alpha: Weight for slow EMA in the update (default: 2.0)
+        gamma_3_factor: Additional scaling factor for slow EMA (default: 1.0)
+        epsilon: Small constant for numerical stability (default: 1e-8)
+        wd: Optional weight decay schedule or constant
+        y_dtype: Optional dtype for momentum accumulators
+
+    Returns:
+        A :class:`optax.GradientTransformation` object.
+    """
+    y_dtype = utils.canonicalize_dtype(y_dtype)
+
+    if wd is None:
+        wd = lambda _: 0.0
+    elif not callable(wd):
+        wd_val = wd
+        wd = lambda _: wd_val
+
+    def init_fn(params):
+        # Initialize fast and slow EMAs, and second moment
+        exp_avg_fast = otu.tree_zeros_like(params, dtype=y_dtype) if beta1 != 0.0 else None
+        exp_avg_slow = otu.tree_zeros_like(params, dtype=y_dtype)
+        exp_avg_sq = otu.tree_zeros_like(params, dtype=y_dtype)
+        return AdEMAMixOptimizerState(
+            count=jnp.zeros([], jnp.int32),
+            exp_avg_fast=exp_avg_fast,
+            exp_avg_slow=exp_avg_slow,
+            exp_avg_sq=exp_avg_sq
+        )
+
+    def update_fn(updates, state, params):
+        new_wd = wd(state.count)
+        count = state.count + 1
+
+        # Compute bias corrections
+        bias_correction1 = 1.0 - beta1 ** count
+        bias_correction2 = 1.0 - beta2 ** count
+
+        # Update fast EMA (if beta1 != 0)
+        if beta1 != 0.0:
+            new_exp_avg_fast = jax.tree.map(
+                lambda m, u: None if m is None else m * beta1 + u * (1.0 - beta1),
+                state.exp_avg_fast,
+                updates,
+                is_leaf=lambda x: x is None,
+            )
+        else:
+            # If beta1 = 0, fast EMA is just the gradient
+            new_exp_avg_fast = updates
+
+        # Update slow EMA
+        new_exp_avg_slow = jax.tree.map(
+            lambda m, u: None if m is None else m * beta3 + u * (1.0 - beta3),
+            state.exp_avg_slow,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Update second moment
+        new_exp_avg_sq = jax.tree.map(
+            lambda v, u: None if v is None else v * beta2 + (u ** 2) * (1.0 - beta2),
+            state.exp_avg_sq,
+            updates,
+            is_leaf=lambda x: x is None,
+        )
+
+        # Compute denominator (with bias correction for second moment)
+        # denom = (sqrt(v) / sqrt(bias_correction2)) + epsilon
+        sqrt_bias_correction2 = jnp.sqrt(bias_correction2)
+
+        # Compute update: (m_fast / bias_correction1 + alpha * m_slow * gamma_3_factor) / denom
+        if beta1 != 0.0:
+            updates = jax.tree.map(
+                lambda m_fast, m_slow, v, p: None if m_fast is None else compute_update(
+                    m_fast, m_slow, v, p, bias_correction1, sqrt_bias_correction2, new_wd
+                ),
+                new_exp_avg_fast,
+                new_exp_avg_slow,
+                new_exp_avg_sq,
+                params if params is not None else otu.tree_zeros_like(updates),
+                is_leaf=lambda x: x is None,
+            )
+        else:
+            # If beta1 = 0, fast EMA is just the gradient (no bias correction needed)
+            updates = jax.tree.map(
+                lambda m_fast, m_slow, v, p: None if m_fast is None else compute_update_beta1_zero(
+                    m_fast, m_slow, v, p, sqrt_bias_correction2, new_wd
+                ),
+                new_exp_avg_fast,
+                new_exp_avg_slow,
+                new_exp_avg_sq,
+                params if params is not None else otu.tree_zeros_like(updates),
+                is_leaf=lambda x: x is None,
+            )
+
+        new_exp_avg_fast = otu.tree_cast(new_exp_avg_fast, y_dtype)
+        new_exp_avg_slow = otu.tree_cast(new_exp_avg_slow, y_dtype)
+        new_exp_avg_sq = otu.tree_cast(new_exp_avg_sq, y_dtype)
+        count_inc = numerics.safe_increment(state.count)
+
+        return updates, AdEMAMixOptimizerState(
+            count=count_inc,
+            exp_avg_fast=new_exp_avg_fast,
+            exp_avg_slow=new_exp_avg_slow,
+            exp_avg_sq=new_exp_avg_sq
+        )
+
+    def compute_update(m_fast, m_slow, v, p, bias_correction1, sqrt_bias_correction2, wd_val):
+        """Compute update with bias correction for beta1."""
+        denom = (jnp.sqrt(v) / sqrt_bias_correction2) + epsilon
+        numerator = (m_fast / bias_correction1) + alpha * m_slow * gamma_3_factor
+        update = numerator / denom
+        # Add weight decay
+        update = update + wd_val * p
+        return -update  # Negative for gradient descent
+
+    def compute_update_beta1_zero(m_fast, m_slow, v, p, sqrt_bias_correction2, wd_val):
+        """Compute update when beta1 = 0 (no bias correction for fast EMA)."""
+        denom = (jnp.sqrt(v) / sqrt_bias_correction2) + epsilon
+        numerator = m_fast + alpha * m_slow * gamma_3_factor
+        update = numerator / denom
+        # Add weight decay
+        update = update + wd_val * p
+        return -update  # Negative for gradient descent
+
+    return base.GradientTransformation(init_fn, update_fn)
+
+
+def get_ademamix(
+    learning_rate: base.ScalarOrSchedule,
+    beta1: float = 0.9,
+    beta2: float = 0.999,
+    beta3: float = 0.9999,
+    alpha: float = 2.0,
+    gamma_3_factor: float = 1.0,
+    epsilon: float = 1e-8,
+    weight_decay: float = 0.0,
+    y_dtype: Optional[chex.ArrayDType] = None
+):
+    """Get AdEMAMix optimizer with standard hyperparameters.
+
+    Args:
+        learning_rate: Outer learning rate schedule or constant.
+        beta1: Decay rate for fast EMA (default: 0.9)
+        beta2: Decay rate for second moment estimate (default: 0.999)
+        beta3: Decay rate for slow EMA (default: 0.9999)
+        alpha: Weight for slow EMA in the update (default: 2.0)
+        gamma_3_factor: Additional scaling factor for slow EMA (default: 1.0).
+                       This can be used to implement kappa-based scaling.
+        epsilon: Small constant for numerical stability (default: 1e-8)
+        weight_decay: Weight decay coefficient (default: 0.0)
+        y_dtype: Optional dtype for momentum accumulators.
+
+    Returns:
+        Configured optimizer chain.
+    """
+    optimizer = optax.chain(
+        ademamix_optimizer(
+            beta1=beta1,
+            beta2=beta2,
+            beta3=beta3,
+            alpha=alpha,
+            gamma_3_factor=gamma_3_factor,
+            epsilon=epsilon,
+            wd=weight_decay,
+            y_dtype=y_dtype
+        ),
+        optax.scale_by_learning_rate(learning_rate, flip_sign=False)
+    )
+    return optimizer
