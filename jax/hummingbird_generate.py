@@ -144,8 +144,63 @@ def get_traceK(alpha, v):
     return population_trace
 
 
-def create_optimizers(args, traceK):
+def make_alpha_warmup_schedule(alpha_final, num_steps):
+    """Create linear warmup schedule for alpha (matching PyTorch AdEMAMix).
+
+    Linearly warms up from 0 to alpha_final over num_steps.
+
+    Args:
+        alpha_final: Final value of alpha after warmup
+        num_steps: Number of steps for warmup
+
+    Returns:
+        Callable schedule function that takes step and returns alpha value
+    """
+    def schedule(step):
+        progress = jnp.minimum(step / num_steps, 1.0)
+        return progress * alpha_final
+    return schedule
+
+
+def make_beta3_warmup_schedule(beta1, beta3_final, num_steps):
+    """Create half-life warmup schedule for beta3 (matching PyTorch AdEMAMix).
+
+    Warms up from beta1 to beta3_final using a half-life based interpolation.
+    This matches the PyTorch implementation's linear_hl_warmup_scheduler.
+
+    Args:
+        beta1: Starting beta value (typically 0.9)
+        beta3_final: Final beta3 value after warmup (typically 0.9999)
+        num_steps: Number of steps for warmup
+
+    Returns:
+        Callable schedule function that takes step and returns beta3 value
+    """
+    def beta_to_half_life(beta, eps=1e-8):
+        """Convert beta to half-life: hl = log(0.5) / log(beta) - 1"""
+        return jnp.log(0.5) / jnp.log(beta + eps) - 1.0
+
+    def half_life_to_beta(hl):
+        """Convert half-life to beta: beta = 0.5^(1/(hl+1))"""
+        return jnp.power(0.5, 1.0 / (hl + 1.0))
+
+    def schedule(step):
+        progress = jnp.minimum(step / num_steps, 1.0)
+        hl_start = beta_to_half_life(beta1)
+        hl_end = beta_to_half_life(beta3_final)
+        hl = (1.0 - progress) * hl_start + progress * hl_end
+        return half_life_to_beta(hl)
+
+    return schedule
+
+
+def create_optimizers(args, traceK, num_steps):
     """Create all optimizers for the hummingbird plot.
+
+    Args:
+        args: Command line arguments
+        traceK: Trace of the kernel matrix
+        num_steps: Total number of training steps (for schedules)
 
     Returns:
         Dict mapping optimizer names to optimizer objects, and array of kappa values
@@ -203,14 +258,23 @@ def create_optimizers(args, traceK):
 
         for kappa in kappa_values:
             opt_name = f"ademamix_kappa{kappa:.1f}"
-            # gamma_3_factor = kappa (time-independent scaling of slow EMA)
+
+            # Calculate alpha and beta3 based on kappa and delta (matching PyTorch implementation)
+            # In PyTorch: alpha = iterations^(1 - kappa), beta3 = 1 - delta / iterations
+            alpha_final = float(num_steps ** (1.0 - kappa))
+            beta3_final = 1.0 - args.delta / num_steps
+
+            # Create warmup schedules (matching PyTorch AdEMAMix warmup behavior)
+            alpha_schedule = make_alpha_warmup_schedule(alpha_final, num_steps)
+            beta3_schedule = make_beta3_warmup_schedule(args.ademamix_beta1, beta3_final, num_steps)
+
             optimizers[opt_name] = get_ademamix(
                 learning_rate=float(ademamix_lr),
                 beta1=args.ademamix_beta1,
                 beta2=args.ademamix_beta2,
-                beta3=args.ademamix_beta3,
-                alpha=args.ademamix_alpha,
-                gamma_3_factor=float(kappa),  # Use kappa as gamma_3_factor
+                beta3=beta3_schedule,  # Warmup from beta1 to beta3_final
+                alpha=alpha_schedule,  # Warmup from 0 to alpha_final
+                gamma_3_factor=1.0,  # Fixed at 1.0 as in PyTorch config
                 epsilon=1e-8
             )
 
@@ -459,7 +523,7 @@ def main():
     print(f"  traceK: {traceK:.6f}")
 
     # Create optimizers
-    optimizers, kappa_values = create_optimizers(args, traceK)
+    optimizers, kappa_values = create_optimizers(args, traceK, args.steps)
     print(f"\nCreated {len(optimizers)} optimizers:")
     for name in optimizers.keys():
         print(f"  - {name}")

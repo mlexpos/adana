@@ -93,6 +93,7 @@ def plot_hummingbird(results, metadata, args):
 
     ax.set_xlabel('Training Iteration', fontsize=14)
     ax.set_ylabel('Population Risk', fontsize=14)
+    ax.set_ylim(top=10)
 
     # Build title from metadata
     mp = metadata['model_params']
