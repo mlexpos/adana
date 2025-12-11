@@ -7,7 +7,6 @@ for different model sizes. It fetches runs from wandb with dana optimizer and re
 weight decay (omega) = 4, then plots and fits the relationship.
 
 Usage:
-    python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled
     python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power --group gamma3_scaling_search_new --top-k 3
 """ 
 
@@ -58,7 +57,76 @@ parser.add_argument('--fit-function', type=str, default='power',
                     help='Function to fit: power (a*x^b), linear (a*x+b), or exponential (a*exp(b*x)) (default: power)')
 parser.add_argument('--top-k', type=int, default=5,
                     help='Number of best gamma_3_factor values to use for each iteration count (default: 5)')
+def parse_float_or_inf(value):
+    """Parse a float value or 'inf' string."""
+    if isinstance(value, str) and value.lower() in ['inf', 'infinity', '+inf', '+infinity']:
+        return float('inf')
+    return float(value)
+
+parser.add_argument('--fac-min', type=float, default=0.0,
+                    help='Minimum factor of Chinchilla iterations to include (default: 0.0, i.e., no lower bound)')
+parser.add_argument('--fac-max', type=str, default='inf',
+                    help='Maximum factor of Chinchilla iterations to include (default: inf, i.e., no upper bound; can also use numeric value)')
+parser.add_argument('--show-kappa', action='store_true',
+                    help='Display kappa value next to each point, where gamma_3_factor = iteration^(-kappa)')
 args = parser.parse_args()
+
+# Convert fac_max to float, handling 'inf' string
+if isinstance(args.fac_max, str):
+    args.fac_max = parse_float_or_inf(args.fac_max)
+else:
+    args.fac_max = float(args.fac_max)
+
+# =============================================================================
+# CHINCHILLA ITERATIONS CALCULATION
+# =============================================================================
+
+def calculate_chinchilla_iterations(size, scaling_rule):
+    """
+    Calculate Chinchilla iterations for a given model size.
+    
+    For Enoki scaling:
+    - head_dim = 64 (fixed)
+    - n_layer = 3 * heads / 4
+    - n_embd = 64 * heads
+    - mlp = 4 * n_embd
+    - NON_EMB = 12 * n_embd^2 * n_layer
+    - TOTAL_PARAMS = NON_EMB + 2 * n_embd * 50304
+    - Chinchilla iterations = 20 * TOTAL_PARAMS / 65536
+    
+    Args:
+        size: Model size (n_head for Enoki, n_layer for BigHead)
+        scaling_rule: Scaling rule name
+    
+    Returns:
+        Chinchilla iterations for this model size
+    """
+    if scaling_rule == 'BigHead':
+        # For BigHead, size is n_layer
+        n_layer = size
+        # Need to infer other parameters - this might need adjustment based on actual BigHead scaling
+        # For now, using a placeholder that matches the pattern
+        n_embd = 64 * 16  # Assuming default head count
+        n_head = 16
+    else:
+        # For Enoki, Enoki_Scaled, etc., size is n_head
+        n_head = size
+        n_layer = int(3 * n_head // 4)
+        n_embd = 64 * n_head
+    
+    # Calculate non-embedding parameters
+    # Non-emb = 12 * n_embd^2 * n_layer
+    non_emb = 12 * n_embd * n_embd * n_layer
+    
+    # Calculate total parameters (including embeddings)
+    # TOTAL_PARAMS = NON_EMB + 2 * n_embd * vocab_size
+    vocab_size = 50304
+    total_params = non_emb + 2 * n_embd * vocab_size
+    
+    # Chinchilla iterations formula: 20 * TOTAL_PARAMS / 65536
+    chinchilla_iterations = int(20 * total_params / 65536)
+    
+    return chinchilla_iterations
 
 # =============================================================================
 # DATA LOADING
@@ -246,6 +314,66 @@ def load_gamma3_data(project, group, entity, target_omega, omega_tolerance, scal
     
     return df
 
+def filter_by_chinchilla_iterations(df, scaling_rule, fac_min, fac_max):
+    """
+    Filter dataframe to only include iterations within fac_min to fac_max times
+    the Chinchilla iterations for each model size.
+    
+    Args:
+        df: DataFrame with columns including 'size' and 'iterations'
+        scaling_rule: Scaling rule name
+        fac_min: Minimum factor (default 0.0 means no lower bound)
+        fac_max: Maximum factor (default inf means no upper bound)
+    
+    Returns:
+        Filtered DataFrame
+    """
+    if len(df) == 0:
+        return df
+    
+    original_count = len(df)
+    
+    # Calculate Chinchilla iterations for each unique size
+    size_to_chinchilla = {}
+    for size in df['size'].unique():
+        chinchilla_iters = calculate_chinchilla_iterations(size, scaling_rule)
+        size_to_chinchilla[size] = chinchilla_iters
+    
+    # Filter based on factor range
+    mask = pd.Series([False] * len(df), index=df.index)
+    
+    for size, chinchilla_iters in size_to_chinchilla.items():
+        size_mask = df['size'] == size
+        size_df = df[size_mask]
+        
+        # Calculate factor for each row
+        factors = size_df['iterations'] / chinchilla_iters
+        
+        # Apply factor filter
+        size_factor_mask = (factors >= fac_min) & (factors <= fac_max)
+        mask[size_mask] = size_factor_mask
+    
+    df_filtered = df[mask].copy()
+    
+    filtered_count = len(df_filtered)
+    removed_count = original_count - filtered_count
+    
+    if removed_count > 0:
+        print(f"\n  Filtered by Chinchilla iterations (fac_min={fac_min}, fac_max={fac_max}):")
+        print(f"    Removed {removed_count} runs ({original_count} -> {filtered_count})")
+        print(f"    Chinchilla iterations by size:")
+        for size in sorted(size_to_chinchilla.keys()):
+            chinchilla_iters = size_to_chinchilla[size]
+            size_df = df_filtered[df_filtered['size'] == size]
+            if len(size_df) > 0:
+                iter_range = (size_df['iterations'].min(), size_df['iterations'].max())
+                factor_range = (iter_range[0] / chinchilla_iters, iter_range[1] / chinchilla_iters)
+                print(f"      Size {size}: Chinchilla={chinchilla_iters}, "
+                      f"iterations range={iter_range[0]:.0f}-{iter_range[1]:.0f} "
+                      f"(factor={factor_range[0]:.3f}-{factor_range[1]:.3f})")
+    
+    return df_filtered
+
 # =============================================================================
 # FITTING FUNCTIONS
 # =============================================================================
@@ -352,11 +480,18 @@ def fit_function(iterations, gamma_values, fit_type='power', weights=None):
 # PLOTTING
 # =============================================================================
 
-def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled', top_k=5):
+def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled', top_k=5, show_kappa=False):
     """
     Plot optimal gamma_3_factor vs iterations for each model size.
     Shows all data points (gray) and highlights top-K ones (colored) with decreasing weights.
     Uses weighted fitting based on top-K procedure similar to bighead_lr_scaling.py.
+    
+    Args:
+        df: DataFrame with columns including 'size', 'iterations', 'gamma_3_factor'
+        fit_type: Type of fit function ('power', 'linear', 'exponential')
+        scaling_rule: Scaling rule name
+        top_k: Number of top points to highlight at each iteration count
+        show_kappa: If True, annotate each point with kappa where gamma_3_factor = iteration^(-kappa)
     """
     fig, ax = plt.subplots(figsize=(12, 7))
     
@@ -369,6 +504,11 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
     
     # Track if we've added the "all points" legend entry
     all_points_legend_added = False
+    
+    # Global collections for all top-k points across all sizes
+    global_weighted_gamma = []
+    global_weighted_iterations = []
+    global_weighted_weights = []
     
     # For each size, plot all points and find top-K gamma_3_factor at each iteration count
     for idx, size in enumerate(sizes):
@@ -389,9 +529,13 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
         for iters in unique_iters:
             iter_df = size_df[size_df['iterations'] == iters].copy()
             
+            # Skip if less than 3 runs for this size and iteration count
+            n_runs = len(iter_df)
+            if n_runs < 3:
+                continue
+            
             # Sort by val_loss to get ranks
             iter_df = iter_df.sort_values('val_loss')
-            n_runs = len(iter_df)
             
             # Take top K
             top_k_df = iter_df.head(top_k).copy()
@@ -400,6 +544,13 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
             for rank, (_, row) in enumerate(iter_df.iterrows()):
                 weight = n_runs - rank  # Best gets n_runs, worst gets 1
                 point_size = weight * 50  # Scale factor matching bighead_lr_scaling.py
+                
+                # Calculate kappa if requested: gamma_3_factor = iteration^(-kappa)
+                # => kappa = -log(gamma_3_factor) / log(iterations)
+                kappa_value = None
+                if show_kappa:
+                    if row['iterations'] > 0 and row['gamma_3_factor'] > 0:
+                        kappa_value = -np.log(row['gamma_3_factor']) / np.log(row['iterations'])
                 
                 if rank < top_k:
                     # Top-K points: colored, larger, black edge
@@ -414,15 +565,36 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
                                   s=point_size, c=[colors[idx]], alpha=0.6, 
                                   edgecolors='black', linewidths=0.5, zorder=10)
                     
-                    # Track top-K for weighted fitting
+                    # Annotate with kappa if requested
+                    if show_kappa and kappa_value is not None:
+                        ax.annotate(f'{kappa_value:.3f}', 
+                                   xy=(row['iterations'], row['gamma_3_factor']),
+                                   xytext=(5, 5), textcoords='offset points',
+                                   fontsize=8, alpha=0.7, color=colors[idx],
+                                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.6, edgecolor='none'))
+                    
+                    # Track top-K for weighted fitting (per-size)
                     weighted_gamma.append(row['gamma_3_factor'])
                     weighted_iterations.append(row['iterations'])
                     weighted_weights.append(weight)
+                    
+                    # Also track for global fit (across all sizes)
+                    global_weighted_gamma.append(row['gamma_3_factor'])
+                    global_weighted_iterations.append(row['iterations'])
+                    global_weighted_weights.append(weight)
                 else:
                     # Other points: gray, smaller
                     ax.scatter([row['iterations']], [row['gamma_3_factor']], 
                               s=point_size, c='gray', alpha=0.3, 
                               edgecolors='none', zorder=5)
+                    
+                    # Annotate with kappa if requested (for non-top-K points too)
+                    if show_kappa and kappa_value is not None:
+                        ax.annotate(f'{kappa_value:.3f}', 
+                                   xy=(row['iterations'], row['gamma_3_factor']),
+                                   xytext=(5, 5), textcoords='offset points',
+                                   fontsize=7, alpha=0.5, color='gray',
+                                   bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.4, edgecolor='none'))
         
         if len(weighted_iterations) < 2:
             print(f"  Warning: Size {size} has only {len(weighted_iterations)} data points, skipping fit")
@@ -462,6 +634,58 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
             elif fit_type == 'exponential':
                 print(f"  Fit: gamma_3_factor = {params[0]:.6e} × exp({params[1]:.6e} × iterations)")
     
+    # Global fit across all sizes
+    if len(global_weighted_iterations) >= 2:
+        print(f"\n{'='*70}")
+        print("Global Fit (all sizes combined):")
+        print(f"{'='*70}")
+        
+        global_iterations_arr = np.array(global_weighted_iterations)
+        global_gamma_arr = np.array(global_weighted_gamma)
+        global_weights_arr = np.array(global_weighted_weights)
+        
+        global_params, global_func = fit_function(
+            global_iterations_arr, 
+            global_gamma_arr, 
+            fit_type, 
+            weights=global_weights_arr
+        )
+        
+        if global_params is not None:
+            # Plot global fitted curve with distinct style
+            iter_range_global = np.linspace(
+                min(global_iterations_arr), 
+                max(global_iterations_arr) * 1.2, 
+                200
+            )
+            gamma_fit_global = global_func(iter_range_global, *global_params)
+            
+            # Create label based on fit type
+            if fit_type == 'power':
+                global_label = f'Global fit (all sizes): {global_params[0]:.2e} × $T^{{{global_params[1]:.3f}}}$'
+            elif fit_type == 'linear':
+                global_label = f'Global fit (all sizes): {global_params[0]:.2e} × T + {global_params[1]:.3f}'
+            elif fit_type == 'exponential':
+                global_label = f'Global fit (all sizes): {global_params[0]:.2e} × exp({global_params[1]:.2e} × T)'
+            
+            # Plot with thicker, solid line in black or red to stand out
+            ax.plot(iter_range_global, gamma_fit_global, '-', color='red', linewidth=4, 
+                   label=global_label, zorder=11, alpha=0.8)
+            
+            print(f"  Total data points: {len(global_weighted_iterations)} (top-{top_k} at each iteration for all sizes)")
+            print(f"  Iterations range: {min(global_weighted_iterations)} to {max(global_weighted_iterations)}")
+            print(f"  Gamma_3_factor range: {min(global_weighted_gamma):.4f} to {max(global_weighted_gamma):.4f}")
+            if fit_type == 'power':
+                print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × iterations^{global_params[1]:.4f}")
+            elif fit_type == 'linear':
+                print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × iterations + {global_params[1]:.4f}")
+            elif fit_type == 'exponential':
+                print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × exp({global_params[1]:.6e} × iterations)")
+        else:
+            print("  Warning: Could not compute global fit")
+    else:
+        print(f"\nWarning: Not enough data points for global fit ({len(global_weighted_iterations)} points)")
+    
     # Set y-axis limits
     ax.set_ylim(1e-7, 1e-1)
     
@@ -495,6 +719,10 @@ if __name__ == '__main__':
     print(f"Target Omega: {args.target_omega}")
     print(f"Scaling Rule: {args.scaling_rule}")
     print(f"Fit Function: {args.fit_function}")
+    if args.fac_min > 0.0 or (args.fac_max != float('inf') and not np.isinf(args.fac_max)):
+        print(f"Chinchilla iteration filter: fac_min={args.fac_min}, fac_max={args.fac_max}")
+    else:
+        print(f"Chinchilla iteration filter: disabled (fac_min=0.0, fac_max=inf)")
     print("="*70)
     
     # Load data
@@ -511,6 +739,14 @@ if __name__ == '__main__':
     if len(df) == 0:
         print("\nNo data found matching criteria. Exiting.")
         exit(1)
+    
+    # Filter by Chinchilla iterations if requested
+    # Only filter if fac_min > 0 or fac_max < inf (i.e., if filtering is actually requested)
+    if args.fac_min > 0.0 or (args.fac_max != float('inf') and not np.isinf(args.fac_max)):
+        df = filter_by_chinchilla_iterations(df, args.scaling_rule, args.fac_min, args.fac_max)
+        if len(df) == 0:
+            print("\nNo data remaining after Chinchilla iterations filtering. Exiting.")
+            exit(1)
     
     print(f"\n{'='*70}")
     print("Data Summary")
@@ -539,7 +775,7 @@ if __name__ == '__main__':
     print("Creating plot...")
     print(f"{'='*70}")
     
-    fig = plot_gamma3_vs_iterations(df, fit_type=args.fit_function, scaling_rule=args.scaling_rule, top_k=args.top_k)
+    fig = plot_gamma3_vs_iterations(df, fit_type=args.fit_function, scaling_rule=args.scaling_rule, top_k=args.top_k, show_kappa=args.show_kappa)
     
     # Save plot
     if args.output:
