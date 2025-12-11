@@ -8,11 +8,11 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 14 16 18 )
+HEADS_ARRAY=( 17 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-BATCH_SIZE=32
-ACC_STEPS=1
+BATCH_SIZE=1
+ACC_STEPS=32
 
 # SLURM configuration for Fir (1 GPU)
 GPUS_PER_NODE=4
@@ -24,7 +24,7 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=100000
+ITERATIONS_TO_RUN=75000
 
 echo "Starting Qwen3 Dana-star-mk4 ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
@@ -149,8 +149,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
             # Submit the job with ScaledGPT initialization
-            sbatch --account=rrg-bengioy-ad \
-                   --time=${TIME_HOURS}:00:00 \
+            sbatch --time=${TIME_HOURS}:00:00 \
                    --nodes=1 \
                    --gpus-per-node=h100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \

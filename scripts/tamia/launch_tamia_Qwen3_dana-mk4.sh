@@ -12,8 +12,8 @@ OMEGA_ARRAY=( 4.0 )
 HEADS_ARRAY=( 17 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-BATCH_SIZE=1 #32
-ACC_STEPS=32 #1
+BATCH_SIZE=2 #32
+ACC_STEPS=16 #1
 
 # SLURM configuration for Fir (1 GPU)
 GPUS_PER_NODE=4
@@ -25,7 +25,7 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=100000
+ITERATIONS_TO_RUN=90000
 
 echo "Starting Qwen3 Dana-MK4 ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
