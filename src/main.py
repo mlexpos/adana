@@ -35,7 +35,7 @@ from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.auto_dana import AUTO_DANA
 from optim.sign_dana import sign_DANA
 from optim.snoo_dana import snoo_DANA, snoo
-from optim.ablation import AdamWDecayingWD, DANA_MK4, AdEMAMix_DecayingWD, DANA_STAR_NO_TAU, DANA_STAR_NO_TAU_KAPPA_0_8, DANA_STAR_NO_TAU_KAPPA_0_85  #AdEMAMix_DecayingBETA2_DecayingWD
+from optim.ablation import AdamWDecayingWD, DANA_MK4, AdEMAMix_DecayingWD, DANA_STAR_NO_TAU, DANA_STAR_NO_TAU_KAPPA_0_8, DANA_STAR_NO_TAU_KAPPA_0_85, DANA_STAR_NO_TAU_KAPPA_0_9  #AdEMAMix_DecayingBETA2_DecayingWD
 import pdb
 
 
@@ -430,6 +430,19 @@ def main(args, parser):
             lr=args.lr,
             delta=args.delta,
             kappa=0.85,
+            weight_decay=args.weight_decay,
+            clipsnr=args.clipsnr,
+            weight_time=args.weight_time,
+            wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
+        )
+    elif args.opt == "dana-star-no-tau-kappa-0-9":
+        # Map generic CLI args to DANA-STAR hyperparameters
+        opt = DANA_STAR_NO_TAU_KAPPA_0_9(
+            group_specs,
+            lr=args.lr,
+            delta=args.delta,
+            kappa=0.9,
             weight_decay=args.weight_decay,
             clipsnr=args.clipsnr,
             weight_time=args.weight_time,
