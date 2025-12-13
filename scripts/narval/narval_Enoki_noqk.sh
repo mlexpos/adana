@@ -1,4 +1,6 @@
 #!/bin/bash
+#SBATCH --output=logs/%x-%j.out
+#SBATCH --error=logs/%x-%j.err
 
 # Enoki Narval wrapper script with no QK normalization
 # This script sets environment variables (including WANDB_RUN_GROUP) and calls the generic restart script

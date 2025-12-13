@@ -5,8 +5,8 @@
 # Runs on Enoki and Qwen3 architectures with fixed hyperparameters
 
 # Architecture configurations (small sizes for debugging)
-ENOKI_HEADS=4
-QWEN3_HEADS=2
+ENOKI_HEADS=16
+QWEN3_HEADS=8
 
 # Fixed hyperparameters
 KAPPA=0.75
@@ -18,15 +18,18 @@ ACC_STEPS=1
 SEQUENCE_LENGTH=2048
 
 # SLURM configuration for Narval (1 A100 GPU for debugging)
-GPUS_PER_NODE=1
+GPUS_PER_NODE=4
 CPUS_PER_GPU=8
-TOTAL_CPUS=8
-MEM=80GB
-TIME_HOURS=24
+TOTAL_CPUS=32             # 4 GPU × 8 CPUs/GPU
+MEM=0
+TIME_HOURS=12
 
 # Initialization scheme
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
+
+# QK normalization flag (set to true to disable QK norm)
+NO_QKNORM=false
 
 echo "Starting Tau Statistics Collection Sweep (Narval)"
 echo "=================================================="
@@ -48,6 +51,8 @@ echo "  GPUs per node: $GPUS_PER_NODE"
 echo "  CPUs per GPU: $CPUS_PER_GPU"
 echo "  Memory: $MEM"
 echo "  Time allocation: ${TIME_HOURS}h"
+echo ""
+echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
 echo ""
 
 # Function to calculate Enoki parameters
@@ -147,6 +152,12 @@ echo ""
 job_count=$((job_count + 1))
 echo "Job $job_count: Enoki tau stats collection"
 
+# Build no-qknorm flag if requested
+NO_QKNORM_FLAG=""
+if [ "$NO_QKNORM" = true ]; then
+    NO_QKNORM_FLAG="--no-qknorm"
+fi
+
 sbatch --time=${TIME_HOURS}:00:00 \
        --nodes=1 \
        --gpus-per-node=a100:${GPUS_PER_NODE} \
@@ -162,7 +173,8 @@ sbatch --time=${TIME_HOURS}:00:00 \
        --acc_steps $ACC_STEPS \
        --clipsnr $CLIPSNR \
        --nproc_per_node ${GPUS_PER_NODE} \
-       --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
+       --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
+       $NO_QKNORM_FLAG
 
 if [ $? -eq 0 ]; then
     echo "  ✓ Job submitted successfully"
@@ -207,7 +219,8 @@ sbatch --time=${TIME_HOURS}:00:00 \
        --clipsnr $CLIPSNR \
        --nproc_per_node ${GPUS_PER_NODE} \
        --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-       --iterations_to_run $QWEN3_ITERATIONS
+       --iterations_to_run $QWEN3_ITERATIONS \
+       $NO_QKNORM_FLAG
 
 if [ $? -eq 0 ]; then
     echo "  ✓ Job submitted successfully"
@@ -230,6 +243,7 @@ echo "    omega = $OMEGA"
 echo "    clipsnr = $CLIPSNR"
 echo "    delta = $DELTA"
 echo "  Tau stats collection: ENABLED"
+echo "  QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
 echo "  WandB group: tau_stats"
 echo ""
 echo "Architectures:"
