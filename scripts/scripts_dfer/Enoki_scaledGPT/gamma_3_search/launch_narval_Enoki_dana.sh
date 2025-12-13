@@ -8,21 +8,21 @@
 # Sizes up to 14 and 1.0 iter factor can run on 1 GPU for 1 day.
 # For 18 heads, need to use acc_steps and 4 gpus per node.
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 6 8 10 12 14 )
-GAMMA_3_FACTOR_POWERS=( -0.775 -0.825 -0.85 -0.875 -0.925 )
+HEADS_ARRAY=( 20 22 24 )
+GAMMA_3_FACTOR_POWERS=( -0.70 -0.75 -0.80 -0.85 -0.90 -0.95 -1.0 -1.05 -1.1 )
 ITERATION_FACTOR_ARRAY=( 1.0 )
 # HEADS_ARRAY=(6)
 # GAMMA_3_FACTOR_POWERS=( -0.25 )
 # ITERATION_FACTOR_ARRAY=( 0.1 )
-BATCH_SIZE=32
-ACC_STEPS=1
+BATCH_SIZE=1
+ACC_STEPS=32
 
 # SLURM configuration for Narval (4 GPUs per node)
-GPUS_PER_NODE=1
+GPUS_PER_NODE=4
 CPUS_PER_GPU=8
-TOTAL_CPUS=8
-MEM=64GB          # 0 = allocate as needed
-TIME_HOURS=24
+TOTAL_CPUS=32
+MEM=128GB          # 0 = allocate as needed
+TIME_HOURS=48
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
