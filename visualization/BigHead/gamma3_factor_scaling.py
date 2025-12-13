@@ -607,7 +607,7 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.4, edgecolor='none'))
         
         if len(weighted_iterations) < 2:
-            print(f"  Warning: Size {size} has only {len(weighted_iterations)} data points, skipping fit")
+            print(f"  Warning: Head {size} has only {len(weighted_iterations)} data points, skipping fit")
             continue
         
         # Fit function with weights (or compute average kappa for exp_constant mode)
@@ -626,9 +626,9 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
                 # Plot horizontal line for average kappa
                 iter_range = np.linspace(min(weighted_iterations_arr), max(weighted_iterations_arr) * 1.2, 200)
                 ax.axhline(y=avg_kappa, color=colors[idx], linestyle='--', linewidth=3, 
-                          label=f'Size {size}: κ = {avg_kappa:.2f}', zorder=9)
+                          label=f'Head {size}: κ = {avg_kappa:.2f}', zorder=9)
                 
-                print(f"\nSize {size}:")
+                print(f"\nHead {size}:")
                 print(f"  Data points: {len(weighted_kappa)} (top-{top_k} at each iteration)")
                 print(f"  Iterations range: {min(weighted_iterations)} to {max(weighted_iterations)}")
                 print(f"  Kappa (weighted avg): {avg_kappa:.4f} ± {std_kappa:.4f}")
@@ -643,16 +643,16 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
                 
                 # Create label based on fit type
                 if fit_type == 'power':
-                    label = f'Size {size} fit: {params[0]:.2e} × $T^{{{params[1]:.3f}}}$'
+                    label = f'Head {size} fit: {params[0]:.2e} × $T^{{{params[1]:.3f}}}$'
                 elif fit_type == 'linear':
-                    label = f'Size {size} fit: {params[0]:.2e} × T + {params[1]:.3f}'
+                    label = f'Head {size} fit: {params[0]:.2e} × T + {params[1]:.3f}'
                 elif fit_type == 'exponential':
-                    label = f'Size {size} fit: {params[0]:.2e} × exp({params[1]:.2e} × T)'
+                    label = f'Head {size} fit: {params[0]:.2e} × exp({params[1]:.2e} × T)'
                 
                 ax.plot(iter_range, gamma_fit, '--', color=colors[idx], linewidth=3, 
                        label=label, zorder=9)
                 
-                print(f"\nSize {size}:")
+                print(f"\nHead {size}:")
                 print(f"  Data points: {len(weighted_iterations)} (top-{top_k} at each iteration)")
                 print(f"  Iterations range: {min(weighted_iterations)} to {max(weighted_iterations)}")
                 print(f"  Gamma_3_factor range: {min(weighted_gamma):.4f} to {max(weighted_gamma):.4f}")
@@ -748,8 +748,8 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
         ax.set_ylabel('Gamma 3 Factor', fontsize=20)
         ax.set_xscale('log')
         ax.set_yscale('log')
-        ax.set_title(f'Optimal Gamma 3 Factor vs Training Iterations\n(Dana, renorm_weight_decay = {args.target_omega}, {scaling_rule})',
-                    fontsize=20, fontweight='bold')
+        # ax.set_title(f'Optimal Gamma 3 Factor vs Training Iterations',
+        #             fontsize=20, fontweight='bold')
     
     ax.legend(fontsize=15, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
@@ -759,6 +759,22 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
         ax.text(0.02, 0.02, f'Point size ∝ weight\n(top-{top_k} at each iteration, weighted fit)',
                 transform=ax.transAxes, fontsize=15, verticalalignment='bottom',
                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    # Add secondary x-axis at the top showing ratio of iterations to Chinchilla iterations
+    # Only works well if there's a single size (otherwise ratios would differ per size)
+    if len(sizes) == 1:
+        size = sizes[0]
+        chinchilla_iters = calculate_chinchilla_iterations(size, scaling_rule)
+        
+        # Create secondary axis with a transform: x_top = x_bottom / chinchilla_iters
+        ax2 = ax.twiny()
+        ax2.set_xscale('log')
+        
+        # Get the primary axis limits and convert to ratio
+        xlim = ax.get_xlim()
+        ax2.set_xlim(xlim[0] / chinchilla_iters, xlim[1] / chinchilla_iters)
+        
+        ax2.set_xlabel(f'Iterations / Chinchilla (head {size}, Chinchilla={chinchilla_iters})', fontsize=16)
     
     plt.tight_layout()
     
