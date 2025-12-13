@@ -29,8 +29,10 @@ echo "Activated virtual environment"
 
 # Set up directories
 export DATASETS_DIR="$HOME/scratch/datasets"
+export RESULTS_BASE_FOLDER="$HOME/scratch/checkpoints"
 
 echo "Using FineWeb 100BT dataset from: $DATASETS_DIR"
+echo "Using checkpoint directory: $RESULTS_BASE_FOLDER"
 
 wandb offline
 
@@ -152,4 +154,5 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT --wandb_entity $WANDB_ENTITY \
     --eval_interval $EVAL_INTERVAL --log_interval 50 \
+    --results_base_folder "$RESULTS_BASE_FOLDER" \
     --collect-tau-stats
