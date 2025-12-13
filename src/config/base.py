@@ -223,6 +223,10 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--gamma_3_factor", default=1.0, type=float)
     parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])
 
+    # Tau statistics collection (for dana-star-mk4)
+    parser.add_argument("--collect-tau-stats", action="store_true",
+                       help="Collect tau statistics from dana-star-mk4 optimizer (expensive, stores to disk)")
+
     # Dataset params
     parser.add_argument("--datasets_dir", type=str, default="./src/data/datasets/")
     parser.add_argument(

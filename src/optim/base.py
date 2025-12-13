@@ -14,6 +14,7 @@ from logger.logger import DynamicsLogger
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
                     load_worker_state, log_prodigy_lr, log_optimizer_schedules,
                     save_checkpoint, save_worker_state, visualize_routing)
+from .tau_stats_collector import TauStatsCollector
 
 
 def train(
@@ -78,6 +79,22 @@ def train(
             model, opt, dlcfg, cfg.results_base_folder, wandb=cfg.wandb
         )
         dlogger.iteration = curr_iter
+
+    # Initialize tau statistics collector if requested
+    tau_stats_collector = None
+    if distributed_backend.is_master_process() and getattr(cfg, 'collect_tau_stats', False) and cfg.opt == "dana-star-mk4":
+        # Extract parameter names from optimizer groups
+        param_names = []
+        for group in opt.param_groups:
+            if 'param_names' in group:
+                param_names.extend(group['param_names'])
+
+        tau_stats_collector = TauStatsCollector(
+            exp_dir=exp_dir,
+            cfg=cfg,
+            param_names=param_names,
+        )
+
     stats = {"train_loss": [], "val_loss": [], "val_pp": [], "val_acc": []}
     grad_norms = []
     model.train()
@@ -120,11 +137,12 @@ def train(
         ws = distributed_backend.get_world_size()
         tokens = ws * substep * cfg.sequence_length * cfg.batch_size
         epoch = tokens / train_reader.num_tokens
-        if (
+        is_eval_step = (
             curr_iter % cfg.eval_interval == 0
             or curr_iter == cfg.iterations
             or (curr_iter in cfg.full_eval_at)
-        ):
+        )
+        if is_eval_step:
             eval_and_log(
                 tokens,
                 curr_iter,
@@ -137,7 +155,11 @@ def train(
                 opt,
                 full_eval=(curr_iter in cfg.full_eval_at),
             )
-        
+
+            # Collect tau statistics if enabled
+            if tau_stats_collector is not None and tau_stats_collector.should_collect(curr_iter, is_eval_step):
+                tau_stats_collector.collect(opt, curr_iter)
+
         # Check if we've reached iterations_to_run (if set) - check at start of iteration
         # iterations_to_run is independent of checkpoint, always counts from 0
         if cfg.iterations_to_run is not None and iterations_in_run >= cfg.iterations_to_run:
