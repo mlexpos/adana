@@ -132,7 +132,7 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
                    --job-name=EN_MK4_noQK_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/BigHead/Enoki_generic_restart.sh \
+                   scripts/narval/narval_Enoki_noqk.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
@@ -141,10 +141,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --optimizer dana-star-mk4 \
                    --clipsnr $CLIPSNR \
                    --nproc_per_node ${GPUS_PER_NODE} \
-                   --init-scheme $INIT_SCHEME \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-                   --iterations_to_run $ITERATIONS_TO_RUN \
-                   --no-qknorm
+                   --iterations_to_run $ITERATIONS_TO_RUN
 
             # Check if the job was successful
             if [ $? -eq 0 ]; then
