@@ -74,6 +74,12 @@ SCALING_RULE_CONFIG = {
         'color': 'tab:pink',
         'marker': '^',
         'linestyle': '-',
+    },
+    'Qwen3_Scaled': {
+        'group': 'Qwen3_ScaledGPT',
+        'color': 'tab:purple',
+        'marker': 's',
+        'linestyle': '-',
     }
 }
 
@@ -90,7 +96,7 @@ rcParams['figure.figsize'] = (14, 8)
 
 parser = argparse.ArgumentParser(description='Tokens Saved Analysis - Compare optimizers to AdamW baseline')
 parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
-                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'],
+                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
                     choices=['mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star'],
@@ -195,6 +201,22 @@ def compute_params(size, scaling_rule):
         n_embd = n_head * head_dim
         mlp_hidden = 4 * n_embd
         non_emb = float(12 * n_embd * n_embd * n_layer)
+        vocab_size = 50304
+        total_params = float(non_emb + 2 * n_embd * vocab_size)
+
+    elif scaling_rule == 'Qwen3_Scaled':
+        # Qwen3_Scaled: heads-based Qwen3 scaling with elementwise gating
+        heads = size
+        head_dim = 128
+        n_head = heads
+        n_layer = 2 * heads
+        n_embd = 128 * heads
+        total_qkv_dim = n_head * head_dim
+
+        # Qwen3 with gating: non_emb = n_layer * (5 * n_embd * total_qkv_dim + 2 * head_dim + 9 * n_embd^2 + 2 * n_embd) + n_embd
+        per_layer = 5 * n_embd * total_qkv_dim + 2 * head_dim + 9 * n_embd * n_embd + 2 * n_embd
+        non_emb = float(n_layer * per_layer + n_embd)  # +n_embd for final norm
+
         vocab_size = 50304
         total_params = float(non_emb + 2 * n_embd * vocab_size)
 

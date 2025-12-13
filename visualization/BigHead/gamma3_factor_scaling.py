@@ -7,6 +7,8 @@ for different model sizes. It fetches runs from wandb with dana optimizer and re
 weight decay (omega) = 4, then plots and fits the relationship.
 
 Usage:
+    python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power --group gamma3_scaling_search_new --top-k 3 --show-kappa --fac-min 0.5 --fac-max 1.5 --exp-constant
+    python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power --group gamma3_scaling_search_new --top-k 3 --show-kappa --exp-constant
     python gamma3_factor_scaling.py --target-omega 4.0 --scaling-rule Enoki_Scaled --fit-function power --group gamma3_scaling_search_new --top-k 3
 """ 
 
@@ -69,6 +71,10 @@ parser.add_argument('--fac-max', type=str, default='inf',
                     help='Maximum factor of Chinchilla iterations to include (default: inf, i.e., no upper bound; can also use numeric value)')
 parser.add_argument('--show-kappa', action='store_true',
                     help='Display kappa value next to each point, where gamma_3_factor = iteration^(-kappa)')
+parser.add_argument('--exp-constant', action='store_true',
+                    help='Plot kappa (where gamma_3_factor = iterations^kappa) on y-axis instead of gamma_3_factor, and show average as horizontal lines')
+parser.add_argument('--sizes', type=int, nargs='+', default=None,
+                    help='Filter to only show specific model sizes (e.g., --sizes 6 8)')
 args = parser.parse_args()
 
 # Convert fac_max to float, handling 'inf' string
@@ -480,7 +486,7 @@ def fit_function(iterations, gamma_values, fit_type='power', weights=None):
 # PLOTTING
 # =============================================================================
 
-def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled', top_k=5, show_kappa=False):
+def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled', top_k=5, show_kappa=False, exp_constant=False):
     """
     Plot optimal gamma_3_factor vs iterations for each model size.
     Shows all data points (gray) and highlights top-K ones (colored) with decreasing weights.
@@ -492,6 +498,7 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
         scaling_rule: Scaling rule name
         top_k: Number of top points to highlight at each iteration count
         show_kappa: If True, annotate each point with kappa where gamma_3_factor = iteration^(-kappa)
+        exp_constant: If True, plot kappa on y-axis and show average horizontal lines instead of fitting
     """
     fig, ax = plt.subplots(figsize=(12, 7))
     
@@ -502,13 +509,11 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
     from matplotlib import cm
     colors = cm.viridis(np.linspace(0, 1, len(sizes)))
     
-    # Track if we've added the "all points" legend entry
-    all_points_legend_added = False
-    
     # Global collections for all top-k points across all sizes
     global_weighted_gamma = []
     global_weighted_iterations = []
     global_weighted_weights = []
+    global_weighted_kappa = []
     
     # For each size, plot all points and find top-K gamma_3_factor at each iteration count
     for idx, size in enumerate(sizes):
@@ -525,6 +530,7 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
         weighted_gamma = []
         weighted_iterations = []
         weighted_weights = []
+        weighted_kappa = []
         
         for iters in unique_iters:
             iter_df = size_df[size_df['iterations'] == iters].copy()
@@ -545,30 +551,30 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
                 weight = n_runs - rank  # Best gets n_runs, worst gets 1
                 point_size = weight * 50  # Scale factor matching bighead_lr_scaling.py
                 
-                # Calculate kappa if requested: gamma_3_factor = iteration^(-kappa)
-                # => kappa = -log(gamma_3_factor) / log(iterations)
+                # Calculate kappa: gamma_3_factor = iteration^kappa
+                # => kappa = log(gamma_3_factor) / log(iterations)
                 kappa_value = None
-                if show_kappa:
-                    if row['iterations'] > 0 and row['gamma_3_factor'] > 0:
-                        kappa_value = -np.log(row['gamma_3_factor']) / np.log(row['iterations'])
+                if row['iterations'] > 0 and row['gamma_3_factor'] > 0:
+                    kappa_value = np.log(row['gamma_3_factor']) / np.log(row['iterations'])
+                
+                # Determine y_value based on exp_constant mode
+                if exp_constant:
+                    if kappa_value is None:
+                        continue  # Skip points without valid kappa
+                    y_value = kappa_value
+                else:
+                    y_value = row['gamma_3_factor']
                 
                 if rank < top_k:
                     # Top-K points: colored, larger, black edge
-                    if not all_points_legend_added and rank == 0:
-                        ax.scatter([row['iterations']], [row['gamma_3_factor']], 
-                                  s=point_size, c=[colors[idx]], alpha=0.6, 
-                                  edgecolors='black', linewidths=0.5, zorder=10,
-                                  label=f'Size {size} (top-{top_k} at each iteration)')
-                        all_points_legend_added = True
-                    else:
-                        ax.scatter([row['iterations']], [row['gamma_3_factor']], 
-                                  s=point_size, c=[colors[idx]], alpha=0.6, 
-                                  edgecolors='black', linewidths=0.5, zorder=10)
+                    ax.scatter([row['iterations']], [y_value], 
+                              s=point_size, c=[colors[idx]], alpha=0.6, 
+                              edgecolors='black', linewidths=0.5, zorder=10)
                     
-                    # Annotate with kappa if requested
-                    if show_kappa and kappa_value is not None:
+                    # Annotate with kappa if requested (only in non-exp_constant mode)
+                    if show_kappa and not exp_constant and kappa_value is not None:
                         ax.annotate(f'{kappa_value:.3f}', 
-                                   xy=(row['iterations'], row['gamma_3_factor']),
+                                   xy=(row['iterations'], y_value),
                                    xytext=(5, 5), textcoords='offset points',
                                    fontsize=8, alpha=0.7, color=colors[idx],
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.6, edgecolor='none'))
@@ -577,21 +583,25 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
                     weighted_gamma.append(row['gamma_3_factor'])
                     weighted_iterations.append(row['iterations'])
                     weighted_weights.append(weight)
+                    if kappa_value is not None:
+                        weighted_kappa.append(kappa_value)
                     
                     # Also track for global fit (across all sizes)
                     global_weighted_gamma.append(row['gamma_3_factor'])
                     global_weighted_iterations.append(row['iterations'])
                     global_weighted_weights.append(weight)
+                    if kappa_value is not None:
+                        global_weighted_kappa.append(kappa_value)
                 else:
                     # Other points: gray, smaller
-                    ax.scatter([row['iterations']], [row['gamma_3_factor']], 
+                    ax.scatter([row['iterations']], [y_value], 
                               s=point_size, c='gray', alpha=0.3, 
                               edgecolors='none', zorder=5)
                     
-                    # Annotate with kappa if requested (for non-top-K points too)
-                    if show_kappa and kappa_value is not None:
+                    # Annotate with kappa if requested (for non-top-K points too, only in non-exp_constant mode)
+                    if show_kappa and not exp_constant and kappa_value is not None:
                         ax.annotate(f'{kappa_value:.3f}', 
-                                   xy=(row['iterations'], row['gamma_3_factor']),
+                                   xy=(row['iterations'], y_value),
                                    xytext=(5, 5), textcoords='offset points',
                                    fontsize=7, alpha=0.5, color='gray',
                                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.4, edgecolor='none'))
@@ -600,109 +610,155 @@ def plot_gamma3_vs_iterations(df, fit_type='power', scaling_rule='Enoki_Scaled',
             print(f"  Warning: Size {size} has only {len(weighted_iterations)} data points, skipping fit")
             continue
         
-        # Fit function with weights
+        # Fit function with weights (or compute average kappa for exp_constant mode)
         weighted_iterations_arr = np.array(weighted_iterations)
         weighted_gamma_arr = np.array(weighted_gamma)
         weighted_weights_arr = np.array(weighted_weights)
         
-        params, func = fit_function(weighted_iterations_arr, weighted_gamma_arr, fit_type, weights=weighted_weights_arr)
-        
-        if params is not None:
-            # Plot fitted curve
-            iter_range = np.linspace(min(weighted_iterations_arr), max(weighted_iterations_arr) * 1.2, 200)
-            gamma_fit = func(iter_range, *params)
+        if exp_constant:
+            # Compute weighted average kappa
+            if len(weighted_kappa) > 0:
+                weighted_kappa_arr = np.array(weighted_kappa)
+                # Use weights for weighted average
+                avg_kappa = np.average(weighted_kappa_arr, weights=weighted_weights_arr[:len(weighted_kappa_arr)])
+                std_kappa = np.sqrt(np.average((weighted_kappa_arr - avg_kappa)**2, weights=weighted_weights_arr[:len(weighted_kappa_arr)]))
+                
+                # Plot horizontal line for average kappa
+                iter_range = np.linspace(min(weighted_iterations_arr), max(weighted_iterations_arr) * 1.2, 200)
+                ax.axhline(y=avg_kappa, color=colors[idx], linestyle='--', linewidth=3, 
+                          label=f'Size {size}: κ = {avg_kappa:.2f}', zorder=9)
+                
+                print(f"\nSize {size}:")
+                print(f"  Data points: {len(weighted_kappa)} (top-{top_k} at each iteration)")
+                print(f"  Iterations range: {min(weighted_iterations)} to {max(weighted_iterations)}")
+                print(f"  Kappa (weighted avg): {avg_kappa:.4f} ± {std_kappa:.4f}")
+                print(f"  Kappa range: {min(weighted_kappa):.4f} to {max(weighted_kappa):.4f}")
+        else:
+            params, func = fit_function(weighted_iterations_arr, weighted_gamma_arr, fit_type, weights=weighted_weights_arr)
             
-            # Create label based on fit type
-            if fit_type == 'power':
-                label = f'Size {size} fit: {params[0]:.2e} × $T^{{{params[1]:.3f}}}$'
-            elif fit_type == 'linear':
-                label = f'Size {size} fit: {params[0]:.2e} × T + {params[1]:.3f}'
-            elif fit_type == 'exponential':
-                label = f'Size {size} fit: {params[0]:.2e} × exp({params[1]:.2e} × T)'
-            
-            ax.plot(iter_range, gamma_fit, '--', color=colors[idx], linewidth=3, 
-                   label=label, zorder=9)
-            
-            print(f"\nSize {size}:")
-            print(f"  Data points: {len(weighted_iterations)} (top-{top_k} at each iteration)")
-            print(f"  Iterations range: {min(weighted_iterations)} to {max(weighted_iterations)}")
-            print(f"  Gamma_3_factor range: {min(weighted_gamma):.4f} to {max(weighted_gamma):.4f}")
-            if fit_type == 'power':
-                print(f"  Fit: gamma_3_factor = {params[0]:.6e} × iterations^{params[1]:.4f}")
-            elif fit_type == 'linear':
-                print(f"  Fit: gamma_3_factor = {params[0]:.6e} × iterations + {params[1]:.4f}")
-            elif fit_type == 'exponential':
-                print(f"  Fit: gamma_3_factor = {params[0]:.6e} × exp({params[1]:.6e} × iterations)")
+            if params is not None:
+                # Plot fitted curve
+                iter_range = np.linspace(min(weighted_iterations_arr), max(weighted_iterations_arr) * 1.2, 200)
+                gamma_fit = func(iter_range, *params)
+                
+                # Create label based on fit type
+                if fit_type == 'power':
+                    label = f'Size {size} fit: {params[0]:.2e} × $T^{{{params[1]:.3f}}}$'
+                elif fit_type == 'linear':
+                    label = f'Size {size} fit: {params[0]:.2e} × T + {params[1]:.3f}'
+                elif fit_type == 'exponential':
+                    label = f'Size {size} fit: {params[0]:.2e} × exp({params[1]:.2e} × T)'
+                
+                ax.plot(iter_range, gamma_fit, '--', color=colors[idx], linewidth=3, 
+                       label=label, zorder=9)
+                
+                print(f"\nSize {size}:")
+                print(f"  Data points: {len(weighted_iterations)} (top-{top_k} at each iteration)")
+                print(f"  Iterations range: {min(weighted_iterations)} to {max(weighted_iterations)}")
+                print(f"  Gamma_3_factor range: {min(weighted_gamma):.4f} to {max(weighted_gamma):.4f}")
+                if fit_type == 'power':
+                    print(f"  Fit: gamma_3_factor = {params[0]:.6e} × iterations^{params[1]:.4f}")
+                elif fit_type == 'linear':
+                    print(f"  Fit: gamma_3_factor = {params[0]:.6e} × iterations + {params[1]:.4f}")
+                elif fit_type == 'exponential':
+                    print(f"  Fit: gamma_3_factor = {params[0]:.6e} × exp({params[1]:.6e} × iterations)")
     
     # Global fit across all sizes
     if len(global_weighted_iterations) >= 2:
         print(f"\n{'='*70}")
-        print("Global Fit (all sizes combined):")
+        if exp_constant:
+            print("Global Average (all sizes combined):")
+        else:
+            print("Global Fit (all sizes combined):")
         print(f"{'='*70}")
         
         global_iterations_arr = np.array(global_weighted_iterations)
         global_gamma_arr = np.array(global_weighted_gamma)
         global_weights_arr = np.array(global_weighted_weights)
         
-        global_params, global_func = fit_function(
-            global_iterations_arr, 
-            global_gamma_arr, 
-            fit_type, 
-            weights=global_weights_arr
-        )
-        
-        if global_params is not None:
-            # Plot global fitted curve with distinct style
-            iter_range_global = np.linspace(
-                min(global_iterations_arr), 
-                max(global_iterations_arr) * 1.2, 
-                200
-            )
-            gamma_fit_global = global_func(iter_range_global, *global_params)
-            
-            # Create label based on fit type
-            if fit_type == 'power':
-                global_label = f'Global fit (all sizes): {global_params[0]:.2e} × $T^{{{global_params[1]:.3f}}}$'
-            elif fit_type == 'linear':
-                global_label = f'Global fit (all sizes): {global_params[0]:.2e} × T + {global_params[1]:.3f}'
-            elif fit_type == 'exponential':
-                global_label = f'Global fit (all sizes): {global_params[0]:.2e} × exp({global_params[1]:.2e} × T)'
-            
-            # Plot with thicker, solid line in black or red to stand out
-            ax.plot(iter_range_global, gamma_fit_global, '-', color='red', linewidth=4, 
-                   label=global_label, zorder=11, alpha=0.8)
-            
-            print(f"  Total data points: {len(global_weighted_iterations)} (top-{top_k} at each iteration for all sizes)")
-            print(f"  Iterations range: {min(global_weighted_iterations)} to {max(global_weighted_iterations)}")
-            print(f"  Gamma_3_factor range: {min(global_weighted_gamma):.4f} to {max(global_weighted_gamma):.4f}")
-            if fit_type == 'power':
-                print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × iterations^{global_params[1]:.4f}")
-            elif fit_type == 'linear':
-                print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × iterations + {global_params[1]:.4f}")
-            elif fit_type == 'exponential':
-                print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × exp({global_params[1]:.6e} × iterations)")
+        if exp_constant:
+            # Compute global weighted average kappa
+            if len(global_weighted_kappa) > 0:
+                global_kappa_arr = np.array(global_weighted_kappa)
+                global_avg_kappa = np.average(global_kappa_arr, weights=global_weights_arr[:len(global_kappa_arr)])
+                global_std_kappa = np.sqrt(np.average((global_kappa_arr - global_avg_kappa)**2, weights=global_weights_arr[:len(global_kappa_arr)]))
+                
+                # Plot global horizontal line
+                ax.axhline(y=global_avg_kappa, color='red', linestyle='-', linewidth=4, 
+                          label=f'Global: κ = {global_avg_kappa:.2f}', zorder=11, alpha=0.8)
+                
+                print(f"  Total data points: {len(global_weighted_kappa)} (top-{top_k} at each iteration for all sizes)")
+                print(f"  Iterations range: {min(global_weighted_iterations)} to {max(global_weighted_iterations)}")
+                print(f"  Global kappa (weighted avg): {global_avg_kappa:.4f} ± {global_std_kappa:.4f}")
+                print(f"  Global kappa range: {min(global_weighted_kappa):.4f} to {max(global_weighted_kappa):.4f}")
         else:
-            print("  Warning: Could not compute global fit")
+            global_params, global_func = fit_function(
+                global_iterations_arr, 
+                global_gamma_arr, 
+                fit_type, 
+                weights=global_weights_arr
+            )
+            
+            if global_params is not None:
+                # Plot global fitted curve with distinct style
+                iter_range_global = np.linspace(
+                    min(global_iterations_arr), 
+                    max(global_iterations_arr) * 1.2, 
+                    200
+                )
+                gamma_fit_global = global_func(iter_range_global, *global_params)
+                
+                # Create label based on fit type
+                if fit_type == 'power':
+                    global_label = f'Global fit (all sizes): {global_params[0]:.2e} × $T^{{{global_params[1]:.3f}}}$'
+                elif fit_type == 'linear':
+                    global_label = f'Global fit (all sizes): {global_params[0]:.2e} × T + {global_params[1]:.3f}'
+                elif fit_type == 'exponential':
+                    global_label = f'Global fit (all sizes): {global_params[0]:.2e} × exp({global_params[1]:.2e} × T)'
+                
+                # Plot with thicker, solid line in black or red to stand out
+                ax.plot(iter_range_global, gamma_fit_global, '-', color='red', linewidth=4, 
+                       label=global_label, zorder=11, alpha=0.8)
+                
+                print(f"  Total data points: {len(global_weighted_iterations)} (top-{top_k} at each iteration for all sizes)")
+                print(f"  Iterations range: {min(global_weighted_iterations)} to {max(global_weighted_iterations)}")
+                print(f"  Gamma_3_factor range: {min(global_weighted_gamma):.4f} to {max(global_weighted_gamma):.4f}")
+                if fit_type == 'power':
+                    print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × iterations^{global_params[1]:.4f}")
+                elif fit_type == 'linear':
+                    print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × iterations + {global_params[1]:.4f}")
+                elif fit_type == 'exponential':
+                    print(f"  Global fit: gamma_3_factor = {global_params[0]:.6e} × exp({global_params[1]:.6e} × iterations)")
+            else:
+                print("  Warning: Could not compute global fit")
     else:
         print(f"\nWarning: Not enough data points for global fit ({len(global_weighted_iterations)} points)")
     
-    # Set y-axis limits
-    ax.set_ylim(1e-7, 1e-1)
+    # Set y-axis limits and formatting based on mode
+    if exp_constant:
+        # For kappa mode, use linear scale and fixed limits
+        ax.set_xlabel('Training Iterations', fontsize=20)
+        ax.set_ylabel('κ (where gamma_3_factor = T^κ)', fontsize=20)
+        ax.set_xscale('log')
+        ax.set_ylim(-1.1, -0.6)  # Zoom in on typical kappa range
+        # Keep y-axis linear for kappa values, no title in exp_constant mode
+    else:
+        ax.set_ylim(1e-7, 1e-1)
+        ax.set_xlabel('Training Iterations', fontsize=20)
+        ax.set_ylabel('Gamma 3 Factor', fontsize=20)
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_title(f'Optimal Gamma 3 Factor vs Training Iterations\n(Dana, renorm_weight_decay = {args.target_omega}, {scaling_rule})',
+                    fontsize=20, fontweight='bold')
     
-    # Formatting
-    ax.set_xlabel('Training Iterations', fontsize=20)
-    ax.set_ylabel('Gamma 3 Factor', fontsize=20)
-    ax.set_xscale('log')
-    ax.set_yscale('log')
-    ax.set_title(f'Optimal Gamma 3 Factor vs Training Iterations\n(Dana, renorm_weight_decay = {args.target_omega}, {scaling_rule})',
-                fontsize=20, fontweight='bold')
     ax.legend(fontsize=15, loc='best')
     ax.grid(True, alpha=0.3, linestyle='--')
     
-    # Add annotation about point sizes (matching bighead_lr_scaling.py style)
-    ax.text(0.02, 0.02, f'Point size ∝ weight\n(top-{top_k} at each iteration, weighted fit)',
-            transform=ax.transAxes, fontsize=15, verticalalignment='bottom',
-            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    # Add annotation about point sizes (matching bighead_lr_scaling.py style) - only in non-exp_constant mode
+    if not exp_constant:
+        ax.text(0.02, 0.02, f'Point size ∝ weight\n(top-{top_k} at each iteration, weighted fit)',
+                transform=ax.transAxes, fontsize=15, verticalalignment='bottom',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
     
     plt.tight_layout()
     
@@ -719,6 +775,7 @@ if __name__ == '__main__':
     print(f"Target Omega: {args.target_omega}")
     print(f"Scaling Rule: {args.scaling_rule}")
     print(f"Fit Function: {args.fit_function}")
+    print(f"Exp Constant Mode: {args.exp_constant}")
     if args.fac_min > 0.0 or (args.fac_max != float('inf') and not np.isinf(args.fac_max)):
         print(f"Chinchilla iteration filter: fac_min={args.fac_min}, fac_max={args.fac_max}")
     else:
@@ -748,6 +805,14 @@ if __name__ == '__main__':
             print("\nNo data remaining after Chinchilla iterations filtering. Exiting.")
             exit(1)
     
+    # Filter by specific sizes if requested
+    if args.sizes is not None:
+        df = df[df['size'].isin(args.sizes)]
+        if len(df) == 0:
+            print(f"\nNo data remaining after filtering for sizes {args.sizes}. Exiting.")
+            exit(1)
+        print(f"\nFiltered to sizes: {args.sizes}")
+    
     print(f"\n{'='*70}")
     print("Data Summary")
     print(f"{'='*70}")
@@ -775,7 +840,7 @@ if __name__ == '__main__':
     print("Creating plot...")
     print(f"{'='*70}")
     
-    fig = plot_gamma3_vs_iterations(df, fit_type=args.fit_function, scaling_rule=args.scaling_rule, top_k=args.top_k, show_kappa=args.show_kappa)
+    fig = plot_gamma3_vs_iterations(df, fit_type=args.fit_function, scaling_rule=args.scaling_rule, top_k=args.top_k, show_kappa=args.show_kappa, exp_constant=args.exp_constant)
     
     # Save plot
     if args.output:

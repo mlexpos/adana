@@ -18,6 +18,7 @@ INIT_SCHEME="KarpathyGPT2"
 DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=none
 RESULTS_BASE_FOLDER="./exps"
+NO_QKNORM=false
 RESTART_COUNT=${RESTART_COUNT:-0}
 RESTART_WRAPPER_SCRIPT=${RESTART_WRAPPER_SCRIPT:-""}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
@@ -77,6 +78,10 @@ while [[ $# -gt 0 ]]; do
         --results_base_folder)
             RESULTS_BASE_FOLDER="$2"
             shift 2
+            ;;
+        --no-qknorm)
+            NO_QKNORM=true
+            shift
             ;;
         *)
             echo "Unknown option $1"
@@ -271,6 +276,12 @@ echo "=========================================="
 
 EVAL_INTERVAL=$(python3 -c "print(115)")
 
+# Build NO_QKNORM flag if requested
+NO_QKNORM_FLAG=""
+if [ "$NO_QKNORM" = true ]; then
+    NO_QKNORM_FLAG="--no-qknorm"
+fi
+
 # Run training
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_format base --model diloco \
         --distributed_backend nccl --compile \
@@ -282,7 +293,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
         --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
         --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
         --z_loss_coeff 0.0 \
-        $OPT_PARAMS $EXTRA_RUN_FLAGS \
+        $OPT_PARAMS $EXTRA_RUN_FLAGS $NO_QKNORM_FLAG \
         --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
         --wandb --wandb_project $WANDB_PROJECT  --wandb_entity $WANDB_ENTITY \
         --results_base_folder "$RESULTS_BASE_FOLDER" \

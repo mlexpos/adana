@@ -152,14 +152,16 @@ class Qwen3Attention(nn.Module):
                 ).view(1, 1, config.sequence_length, config.sequence_length),
             )
 
-        # QK normalization - configurable between LayerNorm and RMSNorm
-        norm_type = getattr(config, 'normalization_layer_type', 'rmsnorm')
-        if norm_type == 'rmsnorm':
-            self.q_norm = RMSNorm(self.qkv_dim, eps=config.rmsnorm_eps)
-            self.k_norm = RMSNorm(self.qkv_dim, eps=config.rmsnorm_eps)
-        else:  # layernorm
-            self.q_norm = LayerNorm(self.qkv_dim, bias=config.bias)
-            self.k_norm = LayerNorm(self.qkv_dim, bias=config.bias)
+        # QK normalization - configurable between LayerNorm and RMSNorm (optional)
+        self.use_qknorm = not getattr(config, 'no_qknorm', False)
+        if self.use_qknorm:
+            norm_type = getattr(config, 'normalization_layer_type', 'rmsnorm')
+            if norm_type == 'rmsnorm':
+                self.q_norm = RMSNorm(self.qkv_dim, eps=config.rmsnorm_eps)
+                self.k_norm = RMSNorm(self.qkv_dim, eps=config.rmsnorm_eps)
+            else:  # layernorm
+                self.q_norm = LayerNorm(self.qkv_dim, bias=config.bias)
+                self.k_norm = LayerNorm(self.qkv_dim, bias=config.bias)
 
     def forward(self, x, freqs_cis):
         # batch size, sequence length, embedding dimensionality (n_embd)
@@ -188,9 +190,10 @@ class Qwen3Attention(nn.Module):
         key_states = key_states.view(B, T, self.n_head, self.qkv_dim)
         value_states = value_states.view(B, T, self.n_head, self.qkv_dim)
 
-        # Apply QK normalization
-        query_states = self.q_norm(query_states)
-        key_states = self.k_norm(key_states)
+        # Apply QK normalization (if enabled)
+        if self.use_qknorm:
+            query_states = self.q_norm(query_states)
+            key_states = self.k_norm(key_states)
 
         # Apply RoPE after normalization
         query_states, key_states = apply_rotary_emb(query_states, key_states, freqs_cis)

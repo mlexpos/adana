@@ -48,6 +48,7 @@ NPROC_PER_NODE=1
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=""
+NO_QKNORM=false
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -90,6 +91,10 @@ while [[ $# -gt 0 ]]; do
         --iterations_to_run)
             ITERATIONS_TO_RUN="$2"
             shift 2
+            ;;
+        --no-qknorm)
+            NO_QKNORM=true
+            shift
             ;;
         *)
             echo "Unknown option $1"
@@ -166,12 +171,19 @@ echo "Weight decay: $WEIGHT_DECAY"
 echo "Weight decay timestep: $WD_TS"
 echo "Clip SNR: $CLIPSNR"
 echo "Tau stats collection: ENABLED"
+echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
 echo "=========================================="
 
 # Build iterations_to_run flag if provided
 ITERATIONS_TO_RUN_FLAG=""
 if [ -n "$ITERATIONS_TO_RUN" ]; then
     ITERATIONS_TO_RUN_FLAG="--iterations_to_run $ITERATIONS_TO_RUN"
+fi
+
+# Build no-qknorm flag if requested
+NO_QKNORM_FLAG=""
+if [ "$NO_QKNORM" = true ]; then
+    NO_QKNORM_FLAG="--no-qknorm"
 fi
 
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_format base --model qwen3 \
@@ -192,4 +204,5 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --eval_interval $EVAL_INTERVAL --log_interval 50 \
     --results_base_folder "$RESULTS_BASE_FOLDER" \
     --weight_tying false \
-    --collect-tau-stats
+    --collect-tau-stats \
+    $NO_QKNORM_FLAG

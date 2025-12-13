@@ -94,9 +94,11 @@ class DiLoCoAttention(CausalSelfAttention):
                 ).view(1, 1, config.sequence_length, config.sequence_length),
             )
 
-        # Add LayerNorm for Q and K using the custom QKV dimension
-        self.q_layernorm = LayerNorm(self.qkv_dim, bias=config.bias)
-        self.k_layernorm = LayerNorm(self.qkv_dim, bias=config.bias)
+        # Add LayerNorm for Q and K using the custom QKV dimension (optional)
+        self.use_qknorm = not getattr(config, 'no_qknorm', False)
+        if self.use_qknorm:
+            self.q_layernorm = LayerNorm(self.qkv_dim, bias=config.bias)
+            self.k_layernorm = LayerNorm(self.qkv_dim, bias=config.bias)
 
     def forward(self, x, freqs_cis):
         # batch size, sequence length, embedding dimensionality (n_embd)
@@ -110,9 +112,10 @@ class DiLoCoAttention(CausalSelfAttention):
         q = q.view(B, T, self.n_head, self.qkv_dim)
         v = v.view(B, T, self.n_head, self.qkv_dim)
 
-        # Apply QK-LayerNorm
-        q = self.q_layernorm(q)
-        k = self.k_layernorm(k)
+        # Apply QK-LayerNorm (if enabled)
+        if self.use_qknorm:
+            q = self.q_layernorm(q)
+            k = self.k_layernorm(k)
 
         # Apply RoPE after layer norm operations
         q, k = apply_rotary_emb(q, k, freqs_cis)
