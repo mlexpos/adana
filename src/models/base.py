@@ -227,6 +227,29 @@ class GPTBase(nn.Module):
             }
         return {}
 
+    def compute_hoyer_loss(self, embeddings):
+        """
+        Compute Hoyer loss (sparsity measure) for embeddings.
+        Hoyer loss = (||x||_1 / ||x||_2) normalized by sqrt(n)
+        This encourages sparse representations in the embedding space.
+
+        Args:
+            embeddings: tensor of shape (batch_size, seq_len, n_embd)
+
+        Returns:
+            Scalar Hoyer loss averaged over batch and sequence.
+        """
+        # Compute L1 and L2 norms over the embedding dimension
+        l1_norm = torch.abs(embeddings).sum(dim=-1)  # (batch_size, seq_len)
+        l2_norm = torch.norm(embeddings, p=2, dim=-1)  # (batch_size, seq_len)
+
+        # Hoyer measure: ||x||_1 / ||x||_2
+        # Add small epsilon to avoid division by zero
+        hoyer = l1_norm / (l2_norm + 1e-8)
+
+        # Average over batch and sequence
+        return hoyer.mean()
+
     def get_num_params(self, non_embedding=True, exclude_embeddings=False):
         """
         Return the number of parameters in the model.

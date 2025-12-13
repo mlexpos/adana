@@ -376,6 +376,11 @@ class Qwen3(GPTBase):
             aux_losses["z_loss"] = z_loss
             loss += self.config.z_loss_coeff * z_loss
 
+            # Add Hoyer loss for embedding sparsity
+            hoyer_loss = self.compute_hoyer_loss(tok_emb)
+            aux_losses["hoyer_loss"] = hoyer_loss
+            loss += self.config.hoyer_loss_coeff * hoyer_loss
+
             if moe and self.config.moe_routing == "standard_gating":
                 # calculate the router losses per layer
                 for logit, expert_choice in zip(router_logits, experts):
