@@ -191,4 +191,5 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --wandb --wandb_project $WANDB_PROJECT --wandb_entity $WANDB_ENTITY \
     --eval_interval $EVAL_INTERVAL --log_interval 50 \
     --results_base_folder "$RESULTS_BASE_FOLDER" \
+    --weight_tying false \
     --collect-tau-stats
