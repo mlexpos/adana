@@ -153,20 +153,16 @@ sbatch --time=${TIME_HOURS}:00:00 \
        --cpus-per-gpu=${CPUS_PER_GPU} \
        --mem=${MEM} \
        --job-name=TauStats_Enoki_h${ENOKI_HEADS} \
-       scripts/narval/Enoki_epaq_scaledGPT.sh \
+       scripts/narval/Enoki_tau_stats.sh \
        --heads $ENOKI_HEADS \
        --lr $ENOKI_LR \
        --omega $OMEGA \
        --kappa $KAPPA \
        --batch_size $BATCH_SIZE \
        --acc_steps $ACC_STEPS \
-       --optimizer dana-star-mk4 \
        --clipsnr $CLIPSNR \
        --nproc_per_node ${GPUS_PER_NODE} \
-       --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-       --iterations $ENOKI_ITERATIONS \
-       --collect-tau-stats \
-       --wandb_run_group tau_stats
+       --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
 
 if [ $? -eq 0 ]; then
     echo "  ✓ Job submitted successfully"
@@ -201,20 +197,17 @@ sbatch --time=${TIME_HOURS}:00:00 \
        --cpus-per-gpu=${CPUS_PER_GPU} \
        --mem=${MEM} \
        --job-name=TauStats_Qwen3_h${QWEN3_HEADS} \
-       scripts/narval/narval_Qwen3_dana-star-mk4.sh \
+       scripts/narval/Qwen3_tau_stats.sh \
        --heads $QWEN3_HEADS \
        --lr $QWEN3_LR \
        --omega $OMEGA \
        --kappa $KAPPA \
        --batch_size $BATCH_SIZE \
        --acc_steps $ACC_STEPS \
-       --optimizer dana-star-mk4 \
        --clipsnr $CLIPSNR \
        --nproc_per_node ${GPUS_PER_NODE} \
        --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-       --iterations_to_run $QWEN3_ITERATIONS \
-       --collect-tau-stats \
-       --wandb_run_group tau_stats
+       --iterations_to_run $QWEN3_ITERATIONS
 
 if [ $? -eq 0 ]; then
     echo "  ✓ Job submitted successfully"
