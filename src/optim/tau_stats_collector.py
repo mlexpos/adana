@@ -227,13 +227,10 @@ class TauStatsCollector:
             'architecture': architecture,
             'model_params': self._extract_model_params(),
             'optimizer_params': self._extract_optimizer_params(),
-            'training_params': {
-                'iterations': self.cfg.iterations,
-                'batch_size': self.cfg.batch_size,
-                'acc_steps': self.cfg.acc_steps,
-                'sequence_length': self.cfg.sequence_length,
-                'eval_interval': self.cfg.eval_interval,
-            },
+            'training_params': self._extract_training_params(),
+            'loss_params': self._extract_loss_params(),
+            'initialization_params': self._extract_init_params(),
+            'scheduler_params': self._extract_scheduler_params(),
             'collection_schedule': self.collection_eval_steps,
         }
 
@@ -247,18 +244,86 @@ class TauStatsCollector:
         """Extract model parameters from config."""
         params = {}
         model_attrs = ['model', 'n_head', 'n_layer', 'n_embd', 'head_dim',
-                      'mlp_hidden_mult', 'vocab_size']
+                      'qkv_dim', 'mlp_hidden_dim', 'mlp_hidden_mult', 'vocab_size',
+                      'dropout', 'bias', 'weight_tying', 'parallel_block',
+                      'normalization_layer_type', 'elementwise_attn_output_gate']
         for attr in model_attrs:
             if hasattr(self.cfg, attr):
-                params[attr] = getattr(self.cfg, attr)
+                val = getattr(self.cfg, attr)
+                # Convert to native Python types for JSON serialization
+                if isinstance(val, (np.integer, np.floating)):
+                    val = val.item()
+                params[attr] = val
+
+        # Add QK normalization status (inverse of no_qknorm flag)
+        if hasattr(self.cfg, 'no_qknorm'):
+            params['qk_normalization'] = not self.cfg.no_qknorm
+
         return params
 
     def _extract_optimizer_params(self) -> Dict:
         """Extract optimizer parameters from config."""
         params = {}
         opt_attrs = ['lr', 'delta', 'kappa', 'clipsnr', 'weight_decay',
-                    'mk4A', 'mk4B', 'omega']
+                    'mk4A', 'mk4B', 'omega', 'beta1', 'beta2',
+                    'wd_decaying', 'wd_ts', 'grad_clip']
         for attr in opt_attrs:
+            if hasattr(self.cfg, attr):
+                val = getattr(self.cfg, attr)
+                # Convert to native Python types for JSON serialization
+                if isinstance(val, (np.integer, np.floating)):
+                    val = val.item()
+                params[attr] = val
+        return params
+
+    def _extract_training_params(self) -> Dict:
+        """Extract training parameters from config."""
+        params = {}
+        training_attrs = ['iterations', 'iterations_to_run', 'batch_size', 'acc_steps',
+                         'sequence_length', 'eval_interval', 'log_interval',
+                         'warmup_steps', 'seed', 'data_seed']
+        for attr in training_attrs:
+            if hasattr(self.cfg, attr):
+                val = getattr(self.cfg, attr)
+                # Convert to native Python types for JSON serialization
+                if isinstance(val, (np.integer, np.floating)):
+                    val = val.item()
+                params[attr] = val
+        return params
+
+    def _extract_loss_params(self) -> Dict:
+        """Extract loss-related parameters from config."""
+        params = {}
+        loss_attrs = ['z_loss_coeff', 'hoyer_loss_coeff']
+        for attr in loss_attrs:
+            if hasattr(self.cfg, attr):
+                val = getattr(self.cfg, attr)
+                # Convert to native Python types for JSON serialization
+                if isinstance(val, (np.integer, np.floating)):
+                    val = val.item()
+                params[attr] = val
+        return params
+
+    def _extract_init_params(self) -> Dict:
+        """Extract initialization parameters from config."""
+        params = {}
+        init_attrs = ['init_scheme', 'init_std', 'residual_stream_scalar']
+        for attr in init_attrs:
+            if hasattr(self.cfg, attr):
+                val = getattr(self.cfg, attr)
+                # Convert to native Python types for JSON serialization
+                if isinstance(val, (np.integer, np.floating)):
+                    val = val.item()
+                params[attr] = val
+        return params
+
+    def _extract_scheduler_params(self) -> Dict:
+        """Extract learning rate scheduler parameters from config."""
+        params = {}
+        scheduler_attrs = ['scheduler', 'div_factor', 'final_div_factor',
+                          'cos_inf_steps', 'wsd_final_lr_scale', 'wsd_fract_decay',
+                          'decay_type']
+        for attr in scheduler_attrs:
             if hasattr(self.cfg, attr):
                 val = getattr(self.cfg, attr)
                 # Convert to native Python types for JSON serialization

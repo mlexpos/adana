@@ -7,14 +7,14 @@
 #SBATCH --error=logs/%x-%j.err
 #SBATCH --mem=0
 
-# Qwen3 Tau Statistics Collection Script
-# Wrapper script that adds --collect-tau-stats to the standard Qwen3 training
+# Qwen3 Hoyer Loss Training Script
+# Wrapper script for Qwen3 training with Hoyer loss on embeddings
 
 # Hugging Face caches
 export HF_HOME="$SLURM_TMPDIR/hf"
 export WANDB_API_KEY=03c99521910548176ebfa4f418db1c9602e2afa3
 export WANDB_PROJECT=danastar
-export WANDB_RUN_GROUP=tau_stats
+export WANDB_RUN_GROUP=hoyer_experiments
 export WANDB_ENTITY=ep-rmt-ml-opt
 
 export TIKTOKEN_CACHE_DIR=$HOME/tiktoken_cache
@@ -50,6 +50,7 @@ DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=""
 NO_QKNORM=false
 HOYER_LOSS_COEFF=0.0
+OPTIMIZER="dana-star-mk4"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -95,6 +96,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --hoyer_loss_coeff)
             HOYER_LOSS_COEFF="$2"
+            shift 2
+            ;;
+        --optimizer)
+            OPTIMIZER="$2"
             shift 2
             ;;
         --no-qknorm)
@@ -150,10 +155,28 @@ ITERATIONS=$(python3 -c "print(int(20 * $TOTAL_PARAMS / 65536))")
 # Calculate residual stream scalar
 RESIDUAL_STREAM_SCALAR=$(python3 -c "print($N_LAYER ** $DEPTH_SCALAR_EXPONENT)")
 
-# Calculate weight decay
-WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
-WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
-WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+# Configure optimizer-specific parameters and compute weight decay from OMEGA
+case $OPTIMIZER in
+    dana-star-mk4)
+        # For dana-star-mk4: WD_TS = ITERATIONS/10, WEIGHT_DECAY = OMEGA / (LR * WD_TS)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt dana-star-mk4 --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS"
+        ;;
+    adamw)
+        # For adamw: WEIGHT_DECAY = OMEGA / (LR * ITERATIONS)
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        WD_TS="N/A"
+        WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
+        OPT_PARAMS="--opt adamw --lr $LR --weight_decay $WEIGHT_DECAY --beta1 0.9 --beta2 0.999"
+        ;;
+    *)
+        echo "Error: Unknown optimizer $OPTIMIZER"
+        echo "Available optimizers: dana-star-mk4, adamw"
+        exit 1
+        ;;
+esac
 
 # Evaluation interval
 EVAL_INTERVAL=115
@@ -176,6 +199,7 @@ echo "Weight decay: $WEIGHT_DECAY"
 echo "Weight decay timestep: $WD_TS"
 echo "Clip SNR: $CLIPSNR"
 echo "Hoyer loss coeff: $HOYER_LOSS_COEFF"
+echo "Optimizer: $OPTIMIZER"
 echo "Tau stats collection: ENABLED"
 echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
 echo "=========================================="
@@ -203,8 +227,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
     --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
     --z_loss_coeff 0.0 --hoyer_loss_coeff $HOYER_LOSS_COEFF \
-    --opt dana-star-mk4 --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR \
-    --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS \
+    $OPT_PARAMS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
     --wandb --wandb_project $WANDB_PROJECT --wandb_entity $WANDB_ENTITY \
     --eval_interval $EVAL_INTERVAL --log_interval 50 \

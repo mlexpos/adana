@@ -1,38 +1,41 @@
 #!/bin/bash
 
-# Enoki Adamw-decaying-wd ScaledGPT Initialization Single-GPU Sweep for Fir
+# Enoki Dana ScaledGPT Initialization Single-GPU Sweep for Narval
 # Uses ScaledGPT initialization scheme with 1 GPU
 # For each head count, runs multiple learning rates: multipliers of the formula prediction
-# Learning rate formula: 6.42e1 \times (7.89e3 + P)^{-0.607} where P = NON_EMB
+# Learning rate formula: lr =2.07e-06 + 1.35e+03 * P^{-0.779} where P = NON_EMB
 # Enoki scaling: head_dim=64 (fixed), n_layer=3*heads/4, n_embd=64*heads, mlp=4*n_embd
-# iterations to run formula = 24*3600 / (6.68 × 10^-4 * (TOTAL_PARAMS/1e6)^0.91) / 2
-
-
+# Sizes up to 14 and 1.0 iter factor can run on 1 GPU for 1 day.
+# For 18 heads, need to use acc_steps and 4 gpus per node.
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 30 )
-LR_MULTIPLIERS=( 1.0 )
-CLIPSNR=2.0
-BATCH_SIZE=32 #32   #2   #32
-ACC_STEPS=1 #1    #16   #1
-# for adamw: batch/accum depend on HEADS (set per-job later)
+HEADS_ARRAY=( 20 22 24 )
+GAMMA_3_FACTOR_POWERS=( -0.70 -0.75 -0.80 -0.85 -0.90 -0.95 -1.0 -1.05 -1.1 )
+ITERATION_FACTOR_ARRAY=( 1.0 )
+# HEADS_ARRAY=(6)
+# GAMMA_3_FACTOR_POWERS=( -0.25 )
+# ITERATION_FACTOR_ARRAY=( 0.1 )
+BATCH_SIZE=1
+ACC_STEPS=32
 
-# SLURM configuration for Fir (4 GPUs per node)
+# SLURM configuration for Narval (4 GPUs per node)
 GPUS_PER_NODE=4
 CPUS_PER_GPU=8
-TOTAL_CPUS=32            # 4 GPUs × 8 CPUs/GPU
-MEM=0                  # 0 = allocate as needed
-TIME_HOURS=24
+TOTAL_CPUS=32
+MEM=128GB          # 0 = allocate as needed
+TIME_HOURS=48
 
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=200000
 
-echo "Starting Enoki Adamw-decaying-wd ScaledGPT Initialization sweep (Fir)"
+echo "Starting Enoki Dana ScaledGPT Initialization sweep (Narval)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
-echo "LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "Clip SNR: $CLIPSNR"
+echo "Gamma 3 factor powers: ${GAMMA_3_FACTOR_POWERS[@]}"
+echo "Iteration factors: ${ITERATION_FACTOR_ARRAY[@]}"
+echo "Batch size: $BATCH_SIZE"
+echo "Accumulation steps: $ACC_STEPS"
+echo "Effective batch size: $((BATCH_SIZE * ACC_STEPS))"
 echo "GPUs per node: $GPUS_PER_NODE"
 echo "CPUs per GPU: $CPUS_PER_GPU"
 echo "Total CPUs: $TOTAL_CPUS"
@@ -40,7 +43,6 @@ echo "Memory: ${MEM} (allocate as needed)"
 echo "Time allocation: ${TIME_HOURS}h"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
-echo "Iterations to run: $ITERATIONS_TO_RUN"
 echo ""
 
 # Function to calculate model parameters for a given head count
@@ -62,17 +64,16 @@ calculate_params() {
     local TOTAL_PARAMS=$(python3 -c "print(int($NON_EMB + 2 * $N_EMBD * 50304))")
     local ITERATIONS=$(python3 -c "print(int(20 * $TOTAL_PARAMS / 65536))")
 
-    echo "$NON_EMB $ITERATIONS $TOTAL_PARAMS"
+    echo "$NON_EMB $ITERATIONS"
 }
 
 # Calculate reference for heads=16
-read NON_EMB_16 ITERATIONS_16 TOTAL_PARAMS_16 <<< $(calculate_params 16)
+read NON_EMB_16 ITERATIONS_16 <<< $(calculate_params 16)
 C_16=$(python3 -c "print($NON_EMB_16 * $ITERATIONS_16)")
 
 echo "Reference (heads=16):"
 echo "  NON_EMB = $NON_EMB_16"
 echo "  ITERATIONS = $ITERATIONS_16"
-echo "  TOTAL_PARAMS = $TOTAL_PARAMS_16"
 echo "  C(16) = $C_16"
 echo ""
 
@@ -92,13 +93,13 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         echo "  Processing heads=$HEADS (omega=$OMEGA)"
 
         # Calculate parameters for this head count
-        read NON_EMB ITERATIONS TOTAL_PARAMS <<< $(calculate_params $HEADS)
+        read NON_EMB ITERATIONS <<< $(calculate_params $HEADS)
 
         # Calculate computational cost C = NON_EMB * ITERATIONS
         C=$(python3 -c "print($NON_EMB * $ITERATIONS)")
 
-        # Calculate base learning rate using formula: lr = 6.42e1 \times (7.89e3 + P)^{-0.607}
-        BASE_LR=$(python3 -c "print(6.42e01 * ((7.89e03 + $NON_EMB) ** -0.607))")
+        # Calculate base learning rate using formula: lr = 2.07e-06 + 1.35e+03 * P^{-0.779}
+        BASE_LR=$(python3 -c "print(2.07e-06 + 1.35e+03 * $NON_EMB ** -0.779)")
 
         # Calculate n_layer for this head count
         N_LAYER=$(python3 -c "print(int(3 * $HEADS // 4))")
@@ -108,44 +109,51 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
         echo "    NON_EMB = $NON_EMB"
         echo "    ITERATIONS = $ITERATIONS"
         echo "    C = $C"
-        echo "    TOTAL_PARAMS = $TOTAL_PARAMS"
         echo "    Time allocation: ${TIME_HOURS}h"
         echo "    Base LR (formula): $BASE_LR"
         echo ""
 
         # Loop over learning rate multipliers
-        for MULT in "${LR_MULTIPLIERS[@]}"; do
+        for ITERATION_FACTOR in "${ITERATION_FACTOR_ARRAY[@]}"; do
+            for GAMMA_3_FACTOR_POWER in "${GAMMA_3_FACTOR_POWERS[@]}"; do
+            
             # Calculate actual learning rate
-            LR=$(python3 -c "print($MULT * $BASE_LR)")
+            LR=$(python3 -c "print($BASE_LR)")
+            ITERATIONS_EFFECTIVE=$(python3 -c "print($ITERATIONS * $ITERATION_FACTOR)")
+            GAMMA_3_FACTOR_EFFECTIVE=$(python3 -c "print($ITERATIONS_EFFECTIVE ** $GAMMA_3_FACTOR_POWER)")
+
 
             job_count=$((job_count + 1))
-            echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
+            echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, gamma3_factor=$GAMMA_3_FACTOR_POWER, iteration_factor=$ITERATION_FACTOR"
 
             # Submit the job with single-GPU configuration and ScaledGPT initialization
             sbatch --time=${TIME_HOURS}:00:00 \
-                   --gpus-per-node=h100:${GPUS_PER_NODE} \
+                   --gpus-per-node=a100:${GPUS_PER_NODE} \
                    --cpus-per-gpu=${CPUS_PER_GPU} \
                    --mem=${MEM} \
-                   --job-name=EN_Adamw-decaying-wd_SGPT_om${OMEGA}_h${HEADS}_lr${MULT} \
-                   scripts/tamia/fir_Enoki_adamw-decaying-wd.sh \
+                   --job-name=EN_AM_SGPT_om${OMEGA}_h${HEADS}_gamma3_${GAMMA_3_FACTOR_POWER}_iter${ITERATION_FACTOR} \
+                   scripts/scripts_dfer/Enoki_scaledGPT/gamma_3_search/narval_Enoki_dfer_gamma3_search.sh \
                    --heads $HEADS \
                    --lr $LR \
                    --omega $OMEGA \
                    --batch_size $BATCH_SIZE \
                    --acc_steps $ACC_STEPS \
-                   --optimizer adamw-decaying-wd \
+                   --optimizer dana \
+                   --kappa 0 \
+                   --gamma-3-factor $GAMMA_3_FACTOR_EFFECTIVE \
+                   --iteration-factor $ITERATION_FACTOR \
                    --nproc_per_node ${GPUS_PER_NODE} \
-                   --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-                   --iterations_to_run $ITERATIONS_TO_RUN
+                   --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT
 
             # Check if the job was successful
             if [ $? -eq 0 ]; then
-                echo "      ✓ Job submitted successfully"
+                echo "      ✓ Job submitted successfully: gamma_3_factor=$GAMMA_3_FACTOR_EFFECTIVE, iterations=$ITERATIONS_EFFECTIVE"
             else
                 echo "      ✗ Job failed with exit code $?"
             fi
 
-            echo ""
+                echo ""
+            done
         done
 
         echo "  ----------------------------------------"
@@ -159,13 +167,11 @@ echo ""
 echo "Sweep configuration:"
 echo "  Omega values: ${OMEGA_ARRAY[@]}"
 echo "  Head counts: ${HEADS_ARRAY[@]}"
-echo "  LR multipliers: ${LR_MULTIPLIERS[@]}"
-echo "  LR formula: lr = 7.46e+00 × (4.52e + 03 + P)^-0.526"
-echo "  Clip SNR: $CLIPSNR"
+echo "  Gamma 3 factor powers: ${GAMMA_3_FACTOR_POWERS[@]}"
+echo "  Iteration factors: ${ITERATION_FACTOR_ARRAY[@]}"
 echo ""
 echo "Resource allocation per job:"
-echo "  Nodes: 1"
-echo "  GPUs: ${GPUS_PER_NODE} × H100"
+echo "  GPUs: ${GPUS_PER_NODE} × A100"
 echo "  CPUs: ${TOTAL_CPUS} (${CPUS_PER_GPU} per GPU)"
 echo "  Memory: ${MEM} (allocate as needed)"
 echo "  Time: ${TIME_HOURS} hours"

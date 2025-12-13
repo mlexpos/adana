@@ -364,6 +364,7 @@ def parse_args(base_parser, args, namespace):
     )
     parser.add_argument("--plot_router_logits", action="store_true")
     parser.add_argument("--z_loss_coeff", default=1e-4, type=float)
+    parser.add_argument("--hoyer_loss_coeff", default=0.0, type=float)
 
     # Qwen3Next specific parameters
     parser.add_argument(
