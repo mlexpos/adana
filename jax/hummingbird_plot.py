@@ -372,7 +372,7 @@ def plot_hummingbird(results, kappa_values, args):
     plt.tight_layout()
 
     # Save plot
-    filename = f"{args.output_prefix}_{args.optimizer}_alpha{args.alpha}_m{args.m}_zeta{args.zeta}_beta{args.beta}_steps{args.steps}.pdf"
+    filename = f"{args.output_prefix}_{args.optimizer}_alpha{args.alpha}_m{args.m}_zeta{args.zeta}_beta{args.beta}_sigma{args.sigma}_steps{args.steps}.pdf"
     filepath = os.path.join(args.results_dir, filename)
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     print(f"\nHummingbird plot saved to: {filepath}")

@@ -331,7 +331,7 @@ if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]];
         gres_raw=$(echo "$scontext" | grep -o 'Gres=[^ ]*' | cut -d= -f2)
         if [ -z "$gres_raw" ]; then
             if [ -n "$SLURM_GPUS_PER_NODE" ]; then
-                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]]; then
+                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]] || [[ "$SLURM_GPUS_PER_NODE" == a100:* ]]; then
                     gpus_per_node="$SLURM_GPUS_PER_NODE"
                 else
                     gpus_per_node="h100:${SLURM_GPUS_PER_NODE}"
@@ -384,7 +384,7 @@ if [ "$ITERATIONS_TO_RUN" != "none" ] && [[ "$ITERATIONS_TO_RUN" =~ ^[0-9]+$ ]];
         gres_raw=$(echo "$scontext" | grep -o 'Gres=[^ ]*' | cut -d= -f2)
         if [ -z "$gres_raw" ]; then
             if [ -n "$SLURM_GPUS_PER_NODE" ]; then
-                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]]; then
+                if [[ "$SLURM_GPUS_PER_NODE" == h100:* ]] || [[ "$SLURM_GPUS_PER_NODE" == a100:* ]]; then
                     gpus_per_node="$SLURM_GPUS_PER_NODE"
                 else
                     gpus_per_node="h100:${SLURM_GPUS_PER_NODE}"

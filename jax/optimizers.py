@@ -1273,11 +1273,11 @@ class AdEMAMixOptimizerState(NamedTuple):
 
 
 def ademamix_optimizer(
-    beta1: float = 0.9,
-    beta2: float = 0.999,
-    beta3: float = 0.9999,
-    alpha: float = 2.0,
-    gamma_3_factor: float = 1.0,
+    beta1: base.ScalarOrSchedule = 0.9,
+    beta2: base.ScalarOrSchedule = 0.999,
+    beta3: base.ScalarOrSchedule = 0.9999,
+    alpha: base.ScalarOrSchedule = 2.0,
+    gamma_3_factor: base.ScalarOrSchedule = 1.0,
     epsilon: float = 1e-8,
     wd: Optional[base.ScalarOrSchedule] = None,
     *,
@@ -1294,11 +1294,11 @@ def ademamix_optimizer(
     The update combines both EMAs with the slow EMA scaled by alpha and gamma_3_factor.
 
     Args:
-        beta1: Decay rate for fast EMA (default: 0.9)
-        beta2: Decay rate for second moment estimate (default: 0.999)
-        beta3: Decay rate for slow EMA (default: 0.9999)
-        alpha: Weight for slow EMA in the update (default: 2.0)
-        gamma_3_factor: Additional scaling factor for slow EMA (default: 1.0)
+        beta1: Decay rate for fast EMA (scalar or schedule, default: 0.9)
+        beta2: Decay rate for second moment estimate (scalar or schedule, default: 0.999)
+        beta3: Decay rate for slow EMA (scalar or schedule, default: 0.9999)
+        alpha: Weight for slow EMA in the update (scalar or schedule, default: 2.0)
+        gamma_3_factor: Additional scaling factor for slow EMA (scalar or schedule, default: 1.0)
         epsilon: Small constant for numerical stability (default: 1e-8)
         wd: Optional weight decay schedule or constant
         y_dtype: Optional dtype for momentum accumulators
@@ -1308,15 +1308,38 @@ def ademamix_optimizer(
     """
     y_dtype = utils.canonicalize_dtype(y_dtype)
 
+    # Convert scalars to callables
     if wd is None:
         wd = lambda _: 0.0
     elif not callable(wd):
         wd_val = wd
         wd = lambda _: wd_val
 
+    if not callable(beta1):
+        beta1_val = beta1
+        beta1 = lambda _: beta1_val
+
+    if not callable(beta2):
+        beta2_val = beta2
+        beta2 = lambda _: beta2_val
+
+    if not callable(beta3):
+        beta3_val = beta3
+        beta3 = lambda _: beta3_val
+
+    if not callable(alpha):
+        alpha_val = alpha
+        alpha = lambda _: alpha_val
+
+    if not callable(gamma_3_factor):
+        gamma_3_factor_val = gamma_3_factor
+        gamma_3_factor = lambda _: gamma_3_factor_val
+
     def init_fn(params):
         # Initialize fast and slow EMAs, and second moment
-        exp_avg_fast = otu.tree_zeros_like(params, dtype=y_dtype) if beta1 != 0.0 else None
+        # Check if beta1(0) is 0 for initialization
+        init_beta1 = beta1(0)
+        exp_avg_fast = otu.tree_zeros_like(params, dtype=y_dtype) if init_beta1 != 0.0 else None
         exp_avg_slow = otu.tree_zeros_like(params, dtype=y_dtype)
         exp_avg_sq = otu.tree_zeros_like(params, dtype=y_dtype)
         return AdEMAMixOptimizerState(
@@ -1330,14 +1353,21 @@ def ademamix_optimizer(
         new_wd = wd(state.count)
         count = state.count + 1
 
+        # Get current values from schedules
+        current_beta1 = beta1(state.count)
+        current_beta2 = beta2(state.count)
+        current_beta3 = beta3(state.count)
+        current_alpha = alpha(state.count)
+        current_gamma_3_factor = gamma_3_factor(state.count)
+
         # Compute bias corrections
-        bias_correction1 = 1.0 - beta1 ** count
-        bias_correction2 = 1.0 - beta2 ** count
+        bias_correction1 = 1.0 - current_beta1 ** count
+        bias_correction2 = 1.0 - current_beta2 ** count
 
         # Update fast EMA (if beta1 != 0)
-        if beta1 != 0.0:
+        if state.exp_avg_fast is not None:
             new_exp_avg_fast = jax.tree.map(
-                lambda m, u: None if m is None else m * beta1 + u * (1.0 - beta1),
+                lambda m, u: None if m is None else m * current_beta1 + u * (1.0 - current_beta1),
                 state.exp_avg_fast,
                 updates,
                 is_leaf=lambda x: x is None,
@@ -1348,7 +1378,7 @@ def ademamix_optimizer(
 
         # Update slow EMA
         new_exp_avg_slow = jax.tree.map(
-            lambda m, u: None if m is None else m * beta3 + u * (1.0 - beta3),
+            lambda m, u: None if m is None else m * current_beta3 + u * (1.0 - current_beta3),
             state.exp_avg_slow,
             updates,
             is_leaf=lambda x: x is None,
@@ -1356,7 +1386,7 @@ def ademamix_optimizer(
 
         # Update second moment
         new_exp_avg_sq = jax.tree.map(
-            lambda v, u: None if v is None else v * beta2 + (u ** 2) * (1.0 - beta2),
+            lambda v, u: None if v is None else v * current_beta2 + (u ** 2) * (1.0 - current_beta2),
             state.exp_avg_sq,
             updates,
             is_leaf=lambda x: x is None,
@@ -1367,10 +1397,10 @@ def ademamix_optimizer(
         sqrt_bias_correction2 = jnp.sqrt(bias_correction2)
 
         # Compute update: (m_fast / bias_correction1 + alpha * m_slow * gamma_3_factor) / denom
-        if beta1 != 0.0:
+        if state.exp_avg_fast is not None:
             updates = jax.tree.map(
                 lambda m_fast, m_slow, v, p: None if m_fast is None else compute_update(
-                    m_fast, m_slow, v, p, bias_correction1, sqrt_bias_correction2, new_wd
+                    m_fast, m_slow, v, p, bias_correction1, sqrt_bias_correction2, new_wd, current_alpha, current_gamma_3_factor
                 ),
                 new_exp_avg_fast,
                 new_exp_avg_slow,
@@ -1382,7 +1412,7 @@ def ademamix_optimizer(
             # If beta1 = 0, fast EMA is just the gradient (no bias correction needed)
             updates = jax.tree.map(
                 lambda m_fast, m_slow, v, p: None if m_fast is None else compute_update_beta1_zero(
-                    m_fast, m_slow, v, p, sqrt_bias_correction2, new_wd
+                    m_fast, m_slow, v, p, sqrt_bias_correction2, new_wd, current_alpha, current_gamma_3_factor
                 ),
                 new_exp_avg_fast,
                 new_exp_avg_slow,
@@ -1403,19 +1433,19 @@ def ademamix_optimizer(
             exp_avg_sq=new_exp_avg_sq
         )
 
-    def compute_update(m_fast, m_slow, v, p, bias_correction1, sqrt_bias_correction2, wd_val):
+    def compute_update(m_fast, m_slow, v, p, bias_correction1, sqrt_bias_correction2, wd_val, current_alpha, current_gamma_3_factor):
         """Compute update with bias correction for beta1."""
         denom = (jnp.sqrt(v) / sqrt_bias_correction2) + epsilon
-        numerator = (m_fast / bias_correction1) + alpha * m_slow * gamma_3_factor
+        numerator = (m_fast / bias_correction1) + current_alpha * m_slow * current_gamma_3_factor
         update = numerator / denom
         # Add weight decay
         update = update + wd_val * p
         return -update  # Negative for gradient descent
 
-    def compute_update_beta1_zero(m_fast, m_slow, v, p, sqrt_bias_correction2, wd_val):
+    def compute_update_beta1_zero(m_fast, m_slow, v, p, sqrt_bias_correction2, wd_val, current_alpha, current_gamma_3_factor):
         """Compute update when beta1 = 0 (no bias correction for fast EMA)."""
         denom = (jnp.sqrt(v) / sqrt_bias_correction2) + epsilon
-        numerator = m_fast + alpha * m_slow * gamma_3_factor
+        numerator = m_fast + current_alpha * m_slow * current_gamma_3_factor
         update = numerator / denom
         # Add weight decay
         update = update + wd_val * p
@@ -1426,11 +1456,11 @@ def ademamix_optimizer(
 
 def get_ademamix(
     learning_rate: base.ScalarOrSchedule,
-    beta1: float = 0.9,
-    beta2: float = 0.999,
-    beta3: float = 0.9999,
-    alpha: float = 2.0,
-    gamma_3_factor: float = 1.0,
+    beta1: base.ScalarOrSchedule = 0.9,
+    beta2: base.ScalarOrSchedule = 0.999,
+    beta3: base.ScalarOrSchedule = 0.9999,
+    alpha: base.ScalarOrSchedule = 2.0,
+    gamma_3_factor: base.ScalarOrSchedule = 1.0,
     epsilon: float = 1e-8,
     weight_decay: float = 0.0,
     y_dtype: Optional[chex.ArrayDType] = None
@@ -1439,11 +1469,11 @@ def get_ademamix(
 
     Args:
         learning_rate: Outer learning rate schedule or constant.
-        beta1: Decay rate for fast EMA (default: 0.9)
-        beta2: Decay rate for second moment estimate (default: 0.999)
-        beta3: Decay rate for slow EMA (default: 0.9999)
-        alpha: Weight for slow EMA in the update (default: 2.0)
-        gamma_3_factor: Additional scaling factor for slow EMA (default: 1.0).
+        beta1: Decay rate for fast EMA (scalar or schedule, default: 0.9)
+        beta2: Decay rate for second moment estimate (scalar or schedule, default: 0.999)
+        beta3: Decay rate for slow EMA (scalar or schedule, default: 0.9999)
+        alpha: Weight for slow EMA in the update (scalar or schedule, default: 2.0)
+        gamma_3_factor: Additional scaling factor for slow EMA (scalar or schedule, default: 1.0).
                        This can be used to implement kappa-based scaling.
         epsilon: Small constant for numerical stability (default: 1e-8)
         weight_decay: Weight decay coefficient (default: 0.0)
