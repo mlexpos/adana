@@ -49,6 +49,7 @@ INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=""
 NO_QKNORM=false
+HOYER_LOSS_COEFF=0.0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -90,6 +91,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --iterations_to_run)
             ITERATIONS_TO_RUN="$2"
+            shift 2
+            ;;
+        --hoyer_loss_coeff)
+            HOYER_LOSS_COEFF="$2"
             shift 2
             ;;
         --no-qknorm)
@@ -170,6 +175,7 @@ echo "Kappa: $KAPPA"
 echo "Weight decay: $WEIGHT_DECAY"
 echo "Weight decay timestep: $WD_TS"
 echo "Clip SNR: $CLIPSNR"
+echo "Hoyer loss coeff: $HOYER_LOSS_COEFF"
 echo "Tau stats collection: ENABLED"
 echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
 echo "=========================================="
@@ -196,7 +202,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py --config_fo
     $ITERATIONS_TO_RUN_FLAG \
     --dropout 0.0 --warmup_steps $WARMUP_STEPS --grad_clip 0.5 --seed 0 \
     --init-scheme $INIT_SCHEME --residual-stream-scalar $RESIDUAL_STREAM_SCALAR \
-    --z_loss_coeff 0.0 \
+    --z_loss_coeff 0.0 --hoyer_loss_coeff $HOYER_LOSS_COEFF \
     --opt dana-star-mk4 --lr $LR --delta 8 --kappa $KAPPA --clipsnr $CLIPSNR \
     --weight_decay $WEIGHT_DECAY --wd_decaying --wd_ts $WD_TS \
     --scheduler cos_inf --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1 \
