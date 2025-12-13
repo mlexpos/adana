@@ -140,6 +140,8 @@ def parse_args(base_parser, args, namespace):
             "ademamix-decaying-wd",
             #"ademamix-beta2-decaying-wd-decaying",
             "dana-star-no-tau",
+            "dana-star-no-tau-kappa-0-8",
+            "dana-star-no-tau-kappa-0-85",
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)
