@@ -83,6 +83,18 @@ SCALING_RULE_CONFIG = {
         'color': 'tab:pink',
         'marker': '^',
         'linestyle': '-',
+    },
+    'Qwen3_Scaled': {
+        'group': 'Qwen3_ScaledGPT',
+        'color': 'tab:purple',
+        'marker': 's',
+        'linestyle': '-',
+    },
+    'Qwen3_Hoyer': {
+        'group': 'Qwen3_Hoyer',
+        'color': 'tab:red',
+        'marker': 's',
+        'linestyle': '--',
     }
 }
 
@@ -99,7 +111,7 @@ rcParams['figure.figsize'] = (14, 8)
 
 parser = argparse.ArgumentParser(description='Compare scaling rules performance')
 parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
-                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'],
+                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
                     choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star'],
@@ -141,8 +153,8 @@ def compute_params(size, scaling_rule):
     Compute parameters for a given size and scaling rule.
 
     Args:
-        size: For BigHead, this is depth. For EggHead/Enoki/Eryngii, this is heads.
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled'
+        size: For BigHead, this is depth. For EggHead/Enoki/Eryngii/Qwen3_Scaled/Qwen3_Hoyer, this is heads.
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'
 
     Returns:
         dict with non_emb, total_params, compute (PFH), etc.
@@ -208,6 +220,29 @@ def compute_params(size, scaling_rule):
 
         # Non-embedding params (DiLoco formula)
         non_emb = float(12 * n_embd * n_embd * n_layer)
+
+        # Total params
+        vocab_size = 50304
+        total_params = float(non_emb + 2 * n_embd * vocab_size)
+
+    elif scaling_rule == 'Qwen3_Scaled' or scaling_rule == 'Qwen3_Hoyer':
+        # Qwen3_Scaled / Qwen3_Hoyer: heads-based Qwen3 scaling with elementwise gating
+        # head_dim=128, n_layer=2*heads, n_embd=128*heads, mlp_hidden=3*n_embd
+        heads = size
+        head_dim = 128
+        n_head = heads
+        n_layer = 2 * heads
+        n_embd = 128 * heads
+        total_qkv_dim = n_head * head_dim
+
+        # Qwen3 with gating: non_emb = n_layer * (5 * n_embd * total_qkv_dim + 2 * head_dim + 9 * n_embd^2 + 2 * n_embd) + n_embd
+        # Per layer:
+        # - attn = 5 * n_embd * total_qkv_dim  # q_proj (2x with gating) + k_proj + v_proj + o_proj
+        # - qk_norm = 2 * head_dim
+        # - mlp = 9 * n_embd^2  # SwiGLU: gate_proj + up_proj + down_proj (mlp_hidden = 3 * n_embd)
+        # - layer_norms = 2 * n_embd
+        per_layer = 5 * n_embd * total_qkv_dim + 2 * head_dim + 9 * n_embd * n_embd + 2 * n_embd
+        non_emb = float(n_layer * per_layer + n_embd)  # +n_embd for final norm
 
         # Total params
         vocab_size = 50304
@@ -317,7 +352,7 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
         # Get size parameter based on scaling rule
         if scaling_rule == 'BigHead':
             size = run_config.get('n_layer')  # depth
-        else:  # EggHead, Enoki, Enoki_Scaled, Eryngii, or Eryngii_Scaled
+        else:  # EggHead, Enoki, Enoki_Scaled, Eryngii, Eryngii_Scaled, Qwen3_Scaled, or Qwen3_Hoyer
             size = run_config.get('n_head')  # heads
 
         val_loss = summary.get('final-val/loss')

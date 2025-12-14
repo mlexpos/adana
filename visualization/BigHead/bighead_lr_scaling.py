@@ -93,6 +93,16 @@ SCALING_RULE_CONFIG = {
         'group': 'Eryngii_ScaledGPT',
         'extrapolation_sizes': [8, 9, 10, 11, 12, 13, 14, 15],
         'size_step': 1,  # Show all consecutive integers
+    },
+    'Qwen3_Scaled': {
+        'group': 'Qwen3_ScaledGPT',
+        'extrapolation_sizes': [4, 6, 8, 10, 12, 14, 16],
+        'size_step': 2,  # Show multiples of 2
+    },
+    'Qwen3_Hoyer': {
+        'group': 'Qwen3_Hoyer',
+        'extrapolation_sizes': [4, 6, 8, 10, 12, 14, 16],
+        'size_step': 2,  # Show multiples of 2
     }
 }
 
@@ -108,8 +118,8 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 # =============================================================================
 
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
-parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Eryngii_Scaled'],
-                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Eryngii (increased head dim and depth), or Eryngii_Scaled (ScaledGPT init)')
+parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
+                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Eryngii (increased head dim and depth), Eryngii_Scaled (ScaledGPT init), Qwen3_Scaled (ScaledGPT init), or Qwen3_Hoyer (ScaledGPT init with Hoyer loss)')
 parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star'],
                     help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, manau, adamw-decaying-wd, dana-mk4, ademamix-decaying-wd, dana-star-no-tau, or dana-star')
 parser.add_argument('--target-omega', type=float, default=4.0,
@@ -168,8 +178,8 @@ def compute_non_embedding_params(size, scaling_rule):
     Compute non-embedding parameters based on scaling rule.
 
     Args:
-        size: For BigHead, this is depth. For EggHead/Enoki/Eryngii, this is heads.
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', or 'Eryngii_Scaled'
+        size: For BigHead, this is depth. For EggHead/Enoki/Eryngii/Qwen3_Scaled/Qwen3_Hoyer, this is heads.
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', or 'Qwen3_Hoyer'
 
     Returns:
         int: Number of non-embedding parameters
@@ -218,6 +228,25 @@ def compute_non_embedding_params(size, scaling_rule):
         # Non-emb = 12 * n_embd^2 * n_layer (standard DiLoco formula)
         non_emb = 12 * n_embd * n_embd * n_layer
 
+    elif scaling_rule == 'Qwen3_Scaled' or scaling_rule == 'Qwen3_Hoyer':
+        # Qwen3_Scaled / Qwen3_Hoyer: heads-based Qwen3 scaling with elementwise gating
+        # head_dim=128, n_layer=2*heads, n_embd=128*heads, mlp_hidden=3*n_embd
+        heads = size
+        head_dim = 128
+        n_head = heads
+        n_layer = 2 * heads
+        n_embd = 128 * heads
+        total_qkv_dim = n_head * head_dim
+
+        # Qwen3 with gating: non_emb = n_layer * (5 * n_embd * total_qkv_dim + 2 * head_dim + 9 * n_embd^2 + 2 * n_embd) + n_embd
+        # Per layer:
+        # - attn = 5 * n_embd * total_qkv_dim  # q_proj (2x with gating) + k_proj + v_proj + o_proj
+        # - qk_norm = 2 * head_dim
+        # - mlp = 9 * n_embd^2  # SwiGLU: gate_proj + up_proj + down_proj (mlp_hidden = 3 * n_embd)
+        # - layer_norms = 2 * n_embd
+        per_layer = 5 * n_embd * total_qkv_dim + 2 * head_dim + 9 * n_embd * n_embd + 2 * n_embd
+        non_emb = n_layer * per_layer + n_embd  # +n_embd for final norm
+
     else:
         raise ValueError(f"Unknown scaling rule: {scaling_rule}")
 
@@ -243,6 +272,9 @@ def compute_total_params(size, scaling_rule):
         heads = size
         head_dim = int(round(32 * heads / 3 / 8) * 8)  # Rounded to multiple of 8
         n_embd = heads * head_dim
+        vocab_size = 50304
+    elif scaling_rule == 'Qwen3_Scaled' or scaling_rule == 'Qwen3_Hoyer':
+        n_embd = size * 128
         vocab_size = 50304
     else:
         raise ValueError(f"Unknown scaling rule: {scaling_rule}")
@@ -303,7 +335,7 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
     """Load data from WandB
 
     Args:
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', or 'Eryngii_Scaled' to determine size parameter
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', or 'Qwen3_Hoyer' to determine size parameter
         wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
         target_residual_exponent: If provided, filter runs where residual_stream_scalar ≈ n_layer^exponent (for Enoki_std)
     """
@@ -427,6 +459,10 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             size_name = 'heads'
         elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
             # Eryngii and Eryngii_Scaled use n_head as heads
+            size = config.get('n_head')
+            size_name = 'heads'
+        elif scaling_rule == 'Qwen3_Scaled' or scaling_rule == 'Qwen3_Hoyer':
+            # Qwen3_Scaled / Qwen3_Hoyer use n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
         else:
@@ -592,7 +628,7 @@ def collect_weighted_data_for_depths(optimizer_type, scaling_rule, target_omega,
     Collect top-K LRs for each size at target omega, with weights.
 
     Args:
-        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', or 'Eryngii_Scaled'
+        scaling_rule: One of 'BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', or 'Qwen3_Hoyer'
         wd_decaying_filter: If True, only include runs with wd_decaying=True (for Manau)
         target_residual_exponent: If provided, filter runs where residual_stream_scalar ≈ n_layer^exponent
     """
