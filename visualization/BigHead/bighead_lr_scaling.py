@@ -120,10 +120,6 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
 parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
                     help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Eryngii (increased head dim and depth), Eryngii_Scaled (ScaledGPT init), Qwen3_Scaled (ScaledGPT init), or Qwen3_Hoyer (ScaledGPT init with Hoyer loss)')
-parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star'],
-                    help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, manau, adamw-decaying-wd, dana-mk4, ademamix-decaying-wd, dana-star-no-tau, or dana-star')
-parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Eryngii_Scaled'],
-                    help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Eryngii (increased head dim and depth), or Eryngii_Scaled (ScaledGPT init)')
 parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9'],
                     help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, manau, adamw-decaying-wd, dana-mk4, ademamix-decaying-wd, dana-star-no-tau, dana-star, or dana-star-no-tau-kappa-0-8/85/9')
 parser.add_argument('--target-omega', type=float, default=4.0,
