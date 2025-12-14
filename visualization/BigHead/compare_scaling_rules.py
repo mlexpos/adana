@@ -98,12 +98,18 @@ SCALING_RULE_CONFIG = {
     }
 }
 
-# Matplotlib formatting
-style.use('default')
+# Matplotlib formatting - improved aesthetics
+style.use('seaborn-v0_8-darkgrid')
 rc('font', family='sans-serif')
-rcParams['font.weight'] = 'light'
-rcParams['font.size'] = 18
-rcParams['figure.figsize'] = (14, 8)
+rcParams['font.weight'] = 'normal'
+rcParams['font.size'] = 16
+rcParams['figure.figsize'] = (16, 10)
+rcParams['axes.linewidth'] = 1.5
+rcParams['axes.edgecolor'] = '#333333'
+rcParams['grid.alpha'] = 0.3
+rcParams['grid.linestyle'] = '--'
+rcParams['legend.framealpha'] = 0.95
+rcParams['legend.edgecolor'] = '#333333'
 
 # =============================================================================
 # COMMAND LINE ARGUMENTS
@@ -114,7 +120,7 @@ parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
                     choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
-                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star'],
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9'],
                     help='Optimizer types to analyze (can specify multiple, e.g., --optimizers adamw mk4)')
 parser.add_argument('--project', type=str, default='danastar',
                     help='WandB project name (default: danastar)')
@@ -141,7 +147,7 @@ args = parser.parse_args()
 
 # Map optimizer names
 optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix',
-                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd', 'dana-star-no-tau': 'dana-star-no-tau', 'dana-star': 'dana-star'}
+                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd', 'dana-star-no-tau': 'dana-star-no-tau', 'dana-star': 'dana-star', 'dana-star-no-tau-kappa-0-8': 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85': 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9': 'dana-star-no-tau-kappa-0-9'}
 optimizer_types = [optimizer_map[opt] for opt in args.optimizers]
 
 # =============================================================================
@@ -663,15 +669,23 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
     """
     fig, ax = plt.subplots(figsize=(18, 10))
 
-    # Color scheme for optimizers
+    # Color scheme for optimizers - expanded with all variants
     opt_colors = {
-        'adamw': 'tab:blue',
-        'mk4': 'tab:red',
-        'dana': 'tab:green',
-        'ademamix': 'tab:purple',
-        'd-muon': 'tab:orange',
-        'manau': 'tab:brown',
-        'manau-hard': 'tab:pink'
+        'adamw': '#1f77b4',           # Deep blue
+        'adamw-decaying-wd': '#00CED1', # Dark turquoise
+        'mk4': '#d62728',              # Red
+        'dana': '#2ca02c',             # Green
+        'dana-mk4': '#8c564b',         # Brown
+        'dana-star': '#7f7f7f',        # Gray
+        'dana-star-no-tau': '#bcbd22', # Olive
+        'dana-star-no-tau-kappa-0-8': '#006400',   # Dark green
+        'dana-star-no-tau-kappa-0-85': '#228B22',  # Forest green
+        'dana-star-no-tau-kappa-0-9': '#32CD32',   # Lime green
+        'ademamix': '#9467bd',         # Purple
+        'ademamix-decaying-wd': '#e377c2', # Pink
+        'd-muon': '#ff7f0e',           # Orange
+        'manau': '#8B4513',            # Saddle brown
+        'manau-hard': '#DC143C'        # Crimson
     }
 
     # Scaling rule markers
@@ -726,10 +740,10 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
             marker = rule_markers.get(rule, 'x')
             linestyle = rule_linestyles.get(rule, '-')
 
-            # Plot observed data (no label yet)
+            # Plot observed data (no label yet) - improved styling
             scatter = ax.scatter(df[fit_metric], df['val_loss'],
-                      s=120, marker=marker, c=color, edgecolors='black', linewidths=1.5,
-                      zorder=10, alpha=0.8)
+                      s=150, marker=marker, c=color, edgecolors='white', linewidths=2.0,
+                      zorder=10, alpha=0.85)
 
             obs_key = (rule, opt_short)
             obs_handles[obs_key] = (scatter, f'{opt_short} {rule} (observed)')
@@ -745,8 +759,8 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
                 # Saturated power law
                 loss_fit = a + b * np.power(plot_range, c)
 
-                line, = ax.plot(plot_range, loss_fit, linestyle=linestyle, color=color, linewidth=2.5,
-                       zorder=9)
+                line, = ax.plot(plot_range, loss_fit, linestyle=linestyle, color=color, linewidth=3.0,
+                       zorder=9, alpha=0.9)
 
                 fit_key = (rule, opt_short)
                 fit_handles[fit_key] = (line, f'{opt_short} {rule}: {a:.3f} + {b:.2e} × {metric_symbol}$^{{{c:.4f}}}$ ($R^2$={r2:.3f})')
@@ -779,19 +793,24 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
     else:  # non_emb
         xlabel = 'Non-embedding Parameters'
 
-    # Formatting
-    ax.set_xlabel(xlabel, fontsize=20)
-    ax.set_ylabel('Validation Loss', fontsize=20)
+    # Formatting - improved aesthetics
+    ax.set_xlabel(xlabel, fontsize=22, fontweight='bold')
+    ax.set_ylabel('Validation Loss', fontsize=22, fontweight='bold')
     ax.set_xscale('log')
     ax.set_yscale('log')
+    
+    # Improve tick labels
+    ax.tick_params(axis='both', which='major', labelsize=14, width=1.5, length=6)
+    ax.tick_params(axis='both', which='minor', width=1.0, length=4)
 
     opts_str = ', '.join(optimizer_shorts)
     rules_str = ' vs '.join(scaling_rules)
     ax.set_title(f'Scaling Laws Comparison: {rules_str}\nOptimizers: {opts_str} (Shared saturation a = {fit_results["a"]:.4f})',
-                fontsize=18, fontweight='bold')
+                fontsize=20, fontweight='bold', pad=20)
 
-    ax.legend(legend_handles, legend_labels, fontsize=11, loc='best', framealpha=0.9, ncol=2)
-    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.legend(legend_handles, legend_labels, fontsize=12, loc='best', framealpha=0.95, ncol=2, 
+              edgecolor='#333333', fancybox=True, shadow=True)
+    ax.grid(True, alpha=0.3, linestyle='--', which='both')
 
     # Add second x-axis showing size (heads or depth) on top
     ax2 = ax.twiny()
@@ -851,15 +870,23 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
     """
     fig, ax = plt.subplots(figsize=(18, 10))
 
-    # Color scheme for optimizers
+    # Color scheme for optimizers - expanded with all variants
     opt_colors = {
-        'adamw': 'tab:blue',
-        'mk4': 'tab:red',
-        'dana': 'tab:green',
-        'ademamix': 'tab:purple',
-        'd-muon': 'tab:orange',
-        'manau': 'tab:brown',
-        'manau-hard': 'tab:pink'
+        'adamw': '#1f77b4',           # Deep blue
+        'adamw-decaying-wd': '#00CED1', # Dark turquoise
+        'mk4': '#d62728',              # Red
+        'dana': '#2ca02c',             # Green
+        'dana-mk4': '#8c564b',         # Brown
+        'dana-star': '#7f7f7f',        # Gray
+        'dana-star-no-tau': '#bcbd22', # Olive
+        'dana-star-no-tau-kappa-0-8': '#006400',   # Dark green
+        'dana-star-no-tau-kappa-0-85': '#228B22',  # Forest green
+        'dana-star-no-tau-kappa-0-9': '#32CD32',   # Lime green
+        'ademamix': '#9467bd',         # Purple
+        'ademamix-decaying-wd': '#e377c2', # Pink
+        'd-muon': '#ff7f0e',           # Orange
+        'manau': '#8B4513',            # Saddle brown
+        'manau-hard': '#DC143C'        # Crimson
     }
 
     # Scaling rule markers
@@ -943,10 +970,10 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
             # Ratio in log space = difference of logs
             normalized_losses = observed_losses / adamw_baseline
 
-            # Plot normalized observed data (log scale for y)
+            # Plot normalized observed data (log scale for y) - improved styling
             scatter = ax.scatter(metric_vals, normalized_losses,
-                      s=120, marker=marker, c=color, edgecolors='black', linewidths=1.5,
-                      zorder=10, alpha=0.8)
+                      s=150, marker=marker, c=color, edgecolors='white', linewidths=2.0,
+                      zorder=10, alpha=0.85)
 
             obs_key = (rule, opt_short)
             obs_handles[obs_key] = (scatter, f'{opt_short} {rule} (observed)')
@@ -965,8 +992,8 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
                 adamw_baseline_curve = adamw_a + adamw_b * np.power(plot_range, adamw_c)
                 normalized_fit = opt_fit / adamw_baseline_curve
 
-                line, = ax.plot(plot_range, normalized_fit, linestyle=linestyle, color=color, linewidth=2.5,
-                       zorder=9)
+                line, = ax.plot(plot_range, normalized_fit, linestyle=linestyle, color=color, linewidth=3.0,
+                       zorder=9, alpha=0.9)
 
                 fit_key = (rule, opt_short)
                 
@@ -1008,22 +1035,27 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
     else:  # non_emb
         xlabel = 'Non-embedding Parameters'
 
-    # Formatting - both axes in log scale
-    ax.set_xlabel(xlabel, fontsize=20)
-    ax.set_ylabel('Validation Loss Ratio (Loss / Loss$_{AdamW}$)', fontsize=20)
+    # Formatting - both axes in log scale, improved aesthetics
+    ax.set_xlabel(xlabel, fontsize=22, fontweight='bold')
+    ax.set_ylabel('Validation Loss Ratio (Loss / Loss$_{AdamW}$)', fontsize=22, fontweight='bold')
     ax.set_xscale('log')
     ax.set_yscale('log')
     
+    # Improve tick labels
+    ax.tick_params(axis='both', which='major', labelsize=14, width=1.5, length=6)
+    ax.tick_params(axis='both', which='minor', width=1.0, length=4)
+    
     # Horizontal line at y=1 represents AdamW baseline (slope 0 in log-log)
-    ax.axhline(y=1.0, color='black', linestyle='--', linewidth=1.5, alpha=0.7, label='AdamW baseline (ratio=1)')
+    ax.axhline(y=1.0, color='#333333', linestyle='--', linewidth=2.5, alpha=0.8, label='AdamW baseline (ratio=1)', zorder=5)
 
     opts_str = ', '.join(optimizer_shorts)
     rules_str = ' vs '.join(scaling_rules)
     ax.set_title(f'Scaling Laws Comparison (Relative to AdamW, Log-Log): {rules_str}\nOptimizers: {opts_str}',
-                fontsize=18, fontweight='bold')
+                fontsize=20, fontweight='bold', pad=20)
 
-    ax.legend(legend_handles, legend_labels, fontsize=11, loc='best', framealpha=0.9, ncol=2)
-    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.legend(legend_handles, legend_labels, fontsize=12, loc='best', framealpha=0.95, ncol=2,
+              edgecolor='#333333', fancybox=True, shadow=True)
+    ax.grid(True, alpha=0.3, linestyle='--', which='both')
 
     # Add second x-axis showing size (heads or depth) on top
     ax2 = ax.twiny()
