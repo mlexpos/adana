@@ -44,6 +44,8 @@ echo "Time allocation: ${TIME_HOURS}h"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
 echo "Iterations to run: $ITERATIONS_TO_RUN"
+echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
+echo "Tau stats collection: $([ "$COLLECT_TAU_STATS" = true ] && echo "ENABLED" || echo "DISABLED")"
 echo ""
 
 # Function to calculate model parameters for a given head count
@@ -132,6 +134,15 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
+            # Build optional flags
+            OPTIONAL_FLAGS=""
+            if [ "$NO_QKNORM" = true ]; then
+                OPTIONAL_FLAGS="$OPTIONAL_FLAGS --no-qknorm"
+            fi
+            if [ "$COLLECT_TAU_STATS" = true ]; then
+                OPTIONAL_FLAGS="$OPTIONAL_FLAGS --collect-tau-stats"
+            fi
+
             # Submit the job with ScaledGPT initialization
             sbatch --account=rrg-bengioy-ad \
                    --time=${TIME_HOURS}:00:00 \
@@ -150,7 +161,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --clipsnr $CLIPSNR \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-                   --iterations_to_run $ITERATIONS_TO_RUN
+                   --iterations_to_run $ITERATIONS_TO_RUN \
+                   $OPTIONAL_FLAGS
 
             # Check if the job was successful
             if [ $? -eq 0 ]; then
