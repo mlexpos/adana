@@ -27,6 +27,10 @@ INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
 ITERATIONS_TO_RUN=100000
 
+# QK normalization and tau stats flags
+NO_QKNORM=false
+COLLECT_TAU_STATS=true
+
 echo "Starting Enoki DANA-MK4 ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
 echo "Omega values: ${OMEGA_ARRAY[@]}"
