@@ -9,7 +9,7 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 43 )
+HEADS_ARRAY=( 26 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 BATCH_SIZE=32
@@ -25,10 +25,10 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=100000
+ITERATIONS_TO_RUN=300000
 
 # QK normalization and tau stats flags
-NO_QKNORM=false
+NO_QKNORM=true
 COLLECT_TAU_STATS=true
 
 echo "Starting Enoki DANA-MK4 ScaledGPT Initialization sweep (Fir)"
@@ -132,6 +132,16 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
 
+
+            # Build optional flags
+            OPTIONAL_FLAGS=""
+            if [ "$NO_QKNORM" = true ]; then
+                OPTIONAL_FLAGS="$OPTIONAL_FLAGS --no-qknorm"
+            fi
+            if [ "$COLLECT_TAU_STATS" = true ]; then
+                OPTIONAL_FLAGS="$OPTIONAL_FLAGS --collect-tau-stats"
+            fi
+
             # Submit the job with ScaledGPT initialization
             sbatch --account=rrg-bengioy-ad \
                    --time=${TIME_HOURS}:00:00 \
@@ -150,7 +160,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --clipsnr $CLIPSNR \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-                   --iterations_to_run $ITERATIONS_TO_RUN
+                   --iterations_to_run $ITERATIONS_TO_RUN \
+                   $OPTIONAL_FLAGS
 
             # Check if the job was successful
             if [ $? -eq 0 ]; then
