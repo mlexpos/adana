@@ -44,6 +44,8 @@ echo "Time allocation: ${TIME_HOURS}h"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
 echo "Iterations to run: $ITERATIONS_TO_RUN"
+echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
+echo "Tau stats collection: $([ "$COLLECT_TAU_STATS" = true ] && echo "ENABLED" || echo "DISABLED")"
 echo ""
 
 # Function to calculate model parameters for a given head count
@@ -131,7 +133,6 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
 
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
-
 
             # Build optional flags
             OPTIONAL_FLAGS=""

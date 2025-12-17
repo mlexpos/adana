@@ -159,7 +159,8 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
                    --optimizer adamw \
                    --nproc_per_node ${GPUS_PER_NODE} \
                    --depth-scalar-exponent $DEPTH_SCALAR_EXPONENT \
-                   --iterations_to_run $ITERATIONS_TO_RUN
+                   --iterations_to_run $ITERATIONS_TO_RUN \
+                   $OPTIONAL_FLAGS
 
             # Check if the job was successful
             if [ $? -eq 0 ]; then
