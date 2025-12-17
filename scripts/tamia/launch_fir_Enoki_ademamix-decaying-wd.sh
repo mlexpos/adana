@@ -9,7 +9,7 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 34)
+HEADS_ARRAY=( 26 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
 # for adamw: batch/accum depend on HEADS (set per-job later)
@@ -24,7 +24,7 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=140000
+ITERATIONS_TO_RUN=250000
 
 echo "Starting Enoki Ademamix-decaying-wd ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
