@@ -9,11 +9,11 @@
 
 
 OMEGA_ARRAY=( 4.0 )
-HEADS_ARRAY=( 41 )
+HEADS_ARRAY=( 26 )
 LR_MULTIPLIERS=( 1.0 )
 CLIPSNR=2.0
-BATCH_SIZE=2 #32 #2
-ACC_STEPS=16 #1 #16
+BATCH_SIZE=32 #32 #2
+ACC_STEPS=1 #1 #16
 
 # SLURM configuration for Fir (4 GPUs)
 GPUS_PER_NODE=4
@@ -25,7 +25,11 @@ TIME_HOURS=24
 # ScaledGPT initialization parameters
 INIT_SCHEME="ScaledGPT"
 DEPTH_SCALAR_EXPONENT=0.0
-ITERATIONS_TO_RUN=837015
+ITERATIONS_TO_RUN=250000
+
+# QK normalization and tau stats flags
+NO_QKNORM=true
+COLLECT_TAU_STATS=true
 
 echo "Starting Enoki AdamW ScaledGPT Initialization sweep (Fir)"
 echo "Head counts: ${HEADS_ARRAY[@]}"
@@ -40,6 +44,8 @@ echo "Time allocation: ${TIME_HOURS}h"
 echo "Init scheme: $INIT_SCHEME"
 echo "Depth scalar exponent: $DEPTH_SCALAR_EXPONENT"
 echo "Iterations to run: $ITERATIONS_TO_RUN"
+echo "QK Normalization: $([ "$NO_QKNORM" = true ] && echo "DISABLED" || echo "ENABLED")"
+echo "Tau stats collection: $([ "$COLLECT_TAU_STATS" = true ] && echo "ENABLED" || echo "DISABLED")"
 echo ""
 
 # Function to calculate model parameters for a given head count
@@ -127,6 +133,15 @@ for OMEGA in "${OMEGA_ARRAY[@]}"; do
 
             job_count=$((job_count + 1))
             echo "    Job $job_count/$total_jobs: omega=$OMEGA, heads=$HEADS, lr=$LR (${MULT}x base)"
+
+            # Build optional flags
+            OPTIONAL_FLAGS=""
+            if [ "$NO_QKNORM" = true ]; then
+                OPTIONAL_FLAGS="$OPTIONAL_FLAGS --no-qknorm"
+            fi
+            if [ "$COLLECT_TAU_STATS" = true ]; then
+                OPTIONAL_FLAGS="$OPTIONAL_FLAGS --collect-tau-stats"
+            fi
 
             # Submit the job with ScaledGPT initialization
             sbatch --time=${TIME_HOURS}:00:00 \
