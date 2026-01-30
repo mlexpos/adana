@@ -19,7 +19,14 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# When SLURM executes a batch script, it copies it to a local spool directory,
+# so BASH_SOURCE[0] resolves to the spool path (not the repo). Use
+# SLURM_SUBMIT_DIR (the directory where sbatch was invoked) instead.
+if [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+    SCRIPT_DIR="$SLURM_SUBMIT_DIR/scripts"
+else
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 RESTART_COUNT="${RESTART_COUNT:-0}"
 
 echo "============================================================"
