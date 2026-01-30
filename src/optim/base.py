@@ -8,13 +8,18 @@ import torch
 import wandb
 import yaml
 import torch.distributed as dist
-import pdb
 from logger.logger import DynamicsLogger
 
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
                     load_worker_state, log_prodigy_lr, log_optimizer_schedules,
-                    save_checkpoint, save_worker_state, visualize_routing)
+                    save_checkpoint, save_worker_state, visualize_routing,
+                    wait_for_rsync)
 from .tau_stats_collector import TauStatsCollector
+
+
+def _all_ranks_checkpoint(backend):
+    """Check if checkpoint save/load requires all ranks (e.g. FSDP)."""
+    return hasattr(backend, 'all_ranks_checkpoint') and backend.all_ranks_checkpoint()
 
 
 def train(
@@ -45,6 +50,8 @@ def train(
     # Initialize datareaders early so we can restore their state if resuming
     train_reader, val_reader = datareaders["train"], datareaders["val"]
     
+    _fsdp_all_ranks = _all_ranks_checkpoint(distributed_backend)
+
     if cfg.resume_from :
         # This is a full resume including the model weights, optimizer, state
         # dataloader state, random seed, etc. Not indended for fine tuning or
@@ -57,6 +64,7 @@ def train(
             scheduler,
             ckpt_dir / "main.pt",
             cfg.device,
+            distributed_backend=distributed_backend,
         )
         # Load worker state including dataloader state
         load_worker_state(ckpt_dir, train_reader=train_reader)
@@ -82,7 +90,7 @@ def train(
 
     # Initialize tau statistics collector if requested
     tau_stats_collector = None
-    if distributed_backend.is_master_process() and getattr(cfg, 'collect_tau_stats', False) and cfg.opt == "dana-star-mk4":
+    if distributed_backend.is_master_process() and getattr(cfg, 'collect_tau_stats', False) and cfg.opt in ("dana-star-mk4", "dana-star"):
         # Extract parameter names from optimizer groups
         param_names = []
         for group in opt.param_groups:
@@ -106,7 +114,9 @@ def train(
                 ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
-                    save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                if distributed_backend.is_master_process() or _fsdp_all_ranks:
+                    save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
+                if distributed_backend.is_master_process():
                     # Save wandb run ID when saving checkpoint
                     if cfg.wandb and wandb.run is not None:
                         wandb_id_file = exp_dir / "wandb_run_id.txt"
@@ -123,7 +133,9 @@ def train(
                 ckpt_dir = exp_dir / "ckpts" / "latest"
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] START latest    iter={curr_iter} -> {ckpt_dir}")
-                    save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                if distributed_backend.is_master_process() or _fsdp_all_ranks:
+                    save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
+                if distributed_backend.is_master_process():
                     # Save wandb run ID when saving checkpoint
                     if cfg.wandb and wandb.run is not None:
                         wandb_id_file = exp_dir / "wandb_run_id.txt"
@@ -167,7 +179,9 @@ def train(
             ckpt_dir = exp_dir / "ckpts" / "latest"
             if distributed_backend.is_master_process():
                 print(f"[Checkpoint] START latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
-                save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+            if distributed_backend.is_master_process() or _fsdp_all_ranks:
+                save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
+            if distributed_backend.is_master_process():
                 # Save wandb run ID when saving checkpoint
                 if cfg.wandb and wandb.run is not None:
                     wandb_id_file = exp_dir / "wandb_run_id.txt"
@@ -183,7 +197,9 @@ def train(
                     ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
                     if distributed_backend.is_master_process():
                         print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
-                        save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir)
+                    if distributed_backend.is_master_process() or _fsdp_all_ranks:
+                        save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
+                    if distributed_backend.is_master_process():
                         # Save wandb run ID when saving checkpoint
                         if cfg.wandb and wandb.run is not None:
                             wandb_id_file = exp_dir / "wandb_run_id.txt"
@@ -216,14 +232,10 @@ def train(
             substep += 1
 
         if cfg.grad_clip != 0.0:
-            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.module.parameters(), cfg.grad_clip
-                )
-            else:
-                grad_norm = torch.nn.utils.clip_grad_norm_(
-                    model.parameters(), cfg.grad_clip
-                )
+            raw_model = distributed_backend.get_raw_model(model)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                raw_model.parameters(), cfg.grad_clip
+            )
             grad_norms.append(grad_norm)
 
         if cfg.opt == "sf-sgd" or cfg.opt == "sf-adamw":
@@ -320,6 +332,9 @@ def train(
 
             grad_norms = []
 
+    # Wait for any background checkpoint rsync to complete before returning
+    wait_for_rsync()
+
     return stats
 
 
@@ -335,8 +350,11 @@ def eval_and_log(
     opt,
     full_eval=False,
 ):
-    if not distributed_backend.is_master_process():
-        # Only evaluate and log on master rank
+    # With FSDP, all ranks must participate in forward passes (parameter all-gather).
+    # For DDP/single, only master rank evaluates (original behavior).
+    _fsdp = _all_ranks_checkpoint(distributed_backend)
+
+    if not _fsdp and not distributed_backend.is_master_process():
         return
 
     model.eval()
@@ -362,49 +380,51 @@ def eval_and_log(
         cfg=cfg,
     )
 
-    print(
-        f">Eval: Iter={curr_iter} ({epoch:0.3f} epochs) "
-        f"val_loss={val_loss:.3f} "
-        f"val_pp={val_perplexity:.3f} "
-        f"val_acc={val_acc:3f}"
-    )
+    # Only master logs results
+    if distributed_backend.is_master_process():
+        print(
+            f">Eval: Iter={curr_iter} ({epoch:0.3f} epochs) "
+            f"val_loss={val_loss:.3f} "
+            f"val_pp={val_perplexity:.3f} "
+            f"val_acc={val_acc:3f}"
+        )
 
-    if cfg.wandb:
-        if curr_iter == cfg.iterations or full_eval:
-            logs = {
-                "tokens": tokens,
-                "iter": curr_iter,
-                "final-val/loss": val_loss,
-                "final-val/perplexity": val_perplexity,
-                "final-val/acc": val_acc,
-                **val_aux_losses,
-            }
-        else:
-            logs = {
-                "tokens": tokens,
-                "iter": curr_iter,
-                "val/loss": val_loss,
-                "val/perplexity": val_perplexity,
-                "val/acc": val_acc,
-                **val_aux_losses,
-            }
-        if cfg.moe and cfg.plot_router_logits:
-            routing_logs = visualize_routing(router_logits, cfg)
-            logs = {**logs, **routing_logs}
+        if cfg.wandb:
+            if curr_iter == cfg.iterations or full_eval:
+                logs = {
+                    "tokens": tokens,
+                    "iter": curr_iter,
+                    "final-val/loss": val_loss,
+                    "final-val/perplexity": val_perplexity,
+                    "final-val/acc": val_acc,
+                    **val_aux_losses,
+                }
+            else:
+                logs = {
+                    "tokens": tokens,
+                    "iter": curr_iter,
+                    "val/loss": val_loss,
+                    "val/perplexity": val_perplexity,
+                    "val/acc": val_acc,
+                    **val_aux_losses,
+                }
+            if cfg.moe and cfg.plot_router_logits:
+                routing_logs = visualize_routing(router_logits, cfg)
+                logs = {**logs, **routing_logs}
 
-        wandb.log(logs, step=curr_iter)
-        if cfg.eval_seq_prefix != "none" and (
-            curr_iter % (cfg.eval_interval * 5) == 0 or curr_iter == cfg.iterations
-        ):
-            text_table = wandb.Table(columns=["itr", "val-pp", "text"])
+            wandb.log(logs, step=curr_iter)
+            if cfg.eval_seq_prefix != "none" and (
+                curr_iter % (cfg.eval_interval * 5) == 0 or curr_iter == cfg.iterations
+            ):
+                text_table = wandb.Table(columns=["itr", "val-pp", "text"])
 
-            out_str = distributed_backend.get_raw_model(model).generate_from_string(
-                cfg.eval_seq_prefix,
-                max_new_tokens=40,
-                temperature=0.9,
-                top_k=None,
-            )
-            text_table.add_data(curr_iter, val_perplexity, out_str)
-            # why a copy? see github.com/wandb/wandb/issues/2981
-            wandb.log({f"generated-text-{wandb.run.name}": copy.copy(text_table)}, step=curr_iter)
+                out_str = distributed_backend.get_raw_model(model).generate_from_string(
+                    cfg.eval_seq_prefix,
+                    max_new_tokens=40,
+                    temperature=0.9,
+                    top_k=None,
+                )
+                text_table.add_data(curr_iter, val_perplexity, out_str)
+                # why a copy? see github.com/wandb/wandb/issues/2981
+                wandb.log({f"generated-text-{wandb.run.name}": copy.copy(text_table)}, step=curr_iter)
     model.train()

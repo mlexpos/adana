@@ -6,7 +6,6 @@ import os
 import random
 import sys
 from pathlib import Path
-import pdb
 import numpy as np
 import torch
 import wandb
@@ -25,18 +24,15 @@ from optim.mars import MARS
 from optim.muon import CombinedScheduler, DistributedMuon, Muon
 from optim.manau import Manau
 from optim.prodigy import Prodigy
-from optim.schedule import cos_inf_schedule, wsd_schedule, powerlaw_schedule_with_warmup # cosine_wsd_decay_schedule, dd_schedule, DOES NOT EXIST
+from optim.schedule import cos_inf_schedule, wsd_schedule, powerlaw_schedule_with_warmup
 from optim.schedulefree import AdamWScheduleFree, SGDScheduleFree
 from optim.sign import Signum
 from optim.soap import SOAP
 from optim.sophia import SophiaG
-from optim.dana_star import DANA_STAR, DANA
+from optim.adana import ADana
 from optim.dana_star_mk4 import DANA_STAR_MK4
-from optim.auto_dana import AUTO_DANA
-from optim.sign_dana import sign_DANA
-from optim.snoo_dana import snoo_DANA, snoo
-from optim.ablation import AdamWDecayingWD, DANA_MK4, AdEMAMix_DecayingWD, DANA_STAR_NO_TAU, DANA_STAR_NO_TAU_KAPPA_0_8, DANA_STAR_NO_TAU_KAPPA_0_85, DANA_STAR_NO_TAU_KAPPA_0_9  #AdEMAMix_DecayingBETA2_DecayingWD
-import pdb
+from optim.adamw_decaying_wd import AdamWDecayingWD
+from optim.ademamix_decaying_wd import AdEMAMix_DecayingWD
 
 
 def get_args():
@@ -50,12 +46,200 @@ def get_args():
     final_args = config.parse_args_with_format(
         format=args.config_format, base_parser=parser, args=rem_args, namespace=args
     )
+
+    # Apply scaling rule (auto-computes dimensions, LR, iterations from --heads)
+    from config.scaling import apply_scaling_rule
+    apply_scaling_rule(args)
+
     # Use provided beta3 if given, otherwise compute it
     if args.adema_beta3 is None:
         args.adema_beta3 = 1 - args.delta / args.iterations
     args.adema_alpha = args.iterations ** (1 - args.kappa)
-    
+
     return final_args, parser
+
+
+def build_optimizer(args, model, group_specs):
+    """Build optimizer from args using a registry pattern."""
+    def _adamw():
+        device_type = "cuda" if "cuda" in args.device else "cpu"
+        use_fused = (device_type == "cuda") and (
+            "fused" in inspect.signature(torch.optim.AdamW).parameters
+        )
+        print(f"using fused AdamW: {use_fused}")
+        extra_args = dict(fused=True) if use_fused else dict()
+        return torch.optim.AdamW(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay, **extra_args,
+        )
+
+    def _sgd():
+        return torch.optim.SGD(
+            group_specs, lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay, nesterov=args.nesterov,
+        )
+
+    def _muon():
+        param_list = (
+            list(model.parameters())
+            if args.distributed_backend is None
+            else list(model.module.parameters())
+        )
+        return Muon(
+            muon_params=param_list, lr=args.muon_lr_factor,
+            momentum=args.momentum, nesterov=args.nesterov,
+            ns_steps=args.muon_ns_steps, adamw_params=None,
+            adamw_lr=args.lr, adamw_betas=(args.beta1, args.beta2),
+            adamw_eps=1e-8, adamw_wd=args.weight_decay,
+        )
+
+    OPTIMIZER_REGISTRY = {
+        "adamw": _adamw,
+        "sgd": _sgd,
+        "muon": _muon,
+        "d-muon": lambda: DistributedMuon(
+            group_specs, lr=args.lr, momentum=args.momentum,
+            nesterov=args.nesterov, ns_steps=args.muon_ns_steps,
+            adamw_betas=(args.beta1, args.beta2), adamw_eps=1e-8,
+            weight_decay=args.weight_decay,
+        ),
+        "manau": lambda: Manau(
+            group_specs, lr=args.lr, weight_decay=args.weight_decay,
+            matched_adamw_rms=getattr(args, 'matched_adamw_rms', 0.2),
+            momentum=args.momentum, nesterov=args.nesterov,
+            ns_steps=args.muon_ns_steps,
+            dana_momentum=getattr(args, 'dana_momentum', False),
+            delta=args.delta, kappa=args.kappa, mk4A=args.mk4A,
+            mk4B=args.mk4B, clipsnr=args.clipsnr, epsilon=1e-8,
+            weight_time=args.weight_time, wd_decaying=args.wd_decaying,
+            wd_ts=args.wd_ts,
+        ),
+        "soap": lambda: SOAP(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            shampoo_beta=args.shampoo_beta, weight_decay=args.weight_decay,
+            precondition_frequency=args.precondition_frequency,
+            max_precond_dim=args.max_precond_dim, merge_dims=args.merge_dims,
+            precondition_1d=args.precondition_1d,
+            normalize_grads=args.normalize_grads,
+            data_format=args.soap_data_format, correct_bias=args.correct_bias,
+        ),
+        "ademamix": lambda: AdEMAMix(
+            group_specs, lr=args.lr,
+            betas=(args.beta1, args.beta2, args.adema_beta3),
+            alpha=args.adema_alpha, beta3_warmup=args.adema_beta3_warmup,
+            alpha_warmup=args.adema_alpha_warmup,
+            weight_decay=args.weight_decay,
+            gamma_3_factor=args.gamma_3_factor,
+        ),
+        "ademamix-decaying-wd": lambda: AdEMAMix_DecayingWD(
+            group_specs, lr=args.lr,
+            betas=(args.beta1, args.beta2, args.adema_beta3),
+            alpha=args.adema_alpha, beta3_warmup=args.adema_beta3_warmup,
+            alpha_warmup=args.adema_alpha_warmup,
+            weight_decay=args.weight_decay,
+            gamma_3_factor=args.gamma_3_factor,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+        ),
+        "lion": lambda: Lion(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay,
+        ),
+        "sf-adamw": lambda: AdamWScheduleFree(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay, warmup_steps=args.warmup_steps,
+            r=args.schedulefree_r, weight_lr_power=args.weight_lr_power,
+        ),
+        "sf-sgd": lambda: SGDScheduleFree(
+            group_specs, lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay, warmup_steps=args.warmup_steps,
+            r=args.schedulefree_r, weight_lr_power=args.weight_lr_power,
+        ),
+        "signsgd": lambda: Signum(
+            group_specs, lr=args.lr, momentum=0.0,
+            dampening=args.dampening, weight_decay=args.weight_decay,
+            nesterov=args.nesterov, sign_update=True,
+        ),
+        "signum": lambda: Signum(
+            group_specs, lr=args.lr, momentum=args.momentum,
+            weight_decay=args.weight_decay, dampening=args.dampening,
+            nesterov=args.nesterov, sign_update=True,
+        ),
+        "prodigy": lambda: Prodigy(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            beta3=args.prodigy_beta3, weight_decay=args.weight_decay,
+            decouple=args.prodigy_decouple,
+            use_bias_correction=args.prodigy_use_bias_correction,
+            safeguard_warmup=args.prodigy_safeguard_warmup,
+            fsdp_in_use=args.prodigy_fsdp_in_use,
+        ),
+        "sophiag": lambda: SophiaG(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay, rho=args.sophia_rho,
+        ),
+        "adopt": lambda: ADOPT(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            eps=args.adopt_eps, weight_decay=args.weight_decay,
+            decouple=args.adopt_decouple,
+        ),
+        "mars": lambda: MARS(
+            group_specs, lr=args.mars_lr,
+            betas=(args.mars_beta1, args.mars_beta2),
+            weight_decay=args.weight_decay, amsgrad=False,
+            gamma=args.mars_vr_gamma, is_approx=args.mars_is_approx,
+            mars_type=args.mars_type, optimize_1d=False,
+            lr_1d=args.lr, betas_1d=(args.beta1, args.beta2),
+            weight_decay_1d=0.1,
+        ),
+        "adafactor": lambda: Adafactor(
+            group_specs, lr=args.lr,
+            decay_rate=args.adafactor_decay_rate, beta1=args.beta1,
+            clip_threshold=1.0, weight_decay=args.weight_decay,
+        ),
+        "lamb": lambda: Lamb(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay, adam=False,
+            bias_correction=args.lamb_use_bias_correction,
+        ),
+        # ADana family (no tau buffer)
+        "adana": lambda: ADana(
+            group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
+            weight_decay=args.weight_decay, clipsnr=None,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+        ),
+        "dana-mk4": lambda: ADana(
+            group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
+            weight_decay=args.weight_decay, clipsnr=args.clipsnr,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+        ),
+        # Dana-Star family (with tau buffer)
+        "dana-star": lambda: DANA_STAR_MK4(
+            group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
+            weight_decay=args.weight_decay, clipsnr=None,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+        ),
+        "dana-star-mk4": lambda: DANA_STAR_MK4(
+            group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
+            weight_decay=args.weight_decay, clipsnr=args.clipsnr,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+        ),
+        # Ablation variants
+        "adamw-decaying-wd": lambda: AdamWDecayingWD(
+            group_specs, lr=args.lr, betas=(args.beta1, args.beta2),
+            weight_decay=args.weight_decay,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+        ),
+    }
+
+    if args.opt not in OPTIMIZER_REGISTRY:
+        raise ValueError(f"Unknown optimizer: '{args.opt}'. Available: {list(OPTIMIZER_REGISTRY.keys())}")
+
+    return OPTIMIZER_REGISTRY[args.opt]()
+
+
+def _checkpoint_exists(ckpt_dir):
+    """Check if a checkpoint exists (supports both DDP main.pt and FSDP meta.pt formats)."""
+    ckpt_dir = Path(ckpt_dir)
+    return (ckpt_dir / "main.pt").exists() or (ckpt_dir / "meta.pt").exists()
 
 
 def main(args, parser):
@@ -99,7 +283,7 @@ def main(args, parser):
         # Check if we're resuming from a checkpoint (either explicitly or via auto_resume)
         is_resuming = (
             args.resume_from is not None
-            or (args.auto_resume and (exp_dir / "ckpts" / "latest" / "main.pt").exists())
+            or (args.auto_resume and _checkpoint_exists(exp_dir / "ckpts" / "latest"))
         )
         
         # Load wandb run ID only if resuming from a checkpoint
@@ -178,399 +362,7 @@ def main(args, parser):
 
     args.world_size = distributed_backend.get_world_size()
 
-    if args.opt == "adamw":
-            device_type = "cuda" if "cuda" in args.device else "cpu"
-            use_fused = (device_type == "cuda") and (
-                "fused" in inspect.signature(torch.optim.AdamW).parameters
-            )
-            print(f"using fused AdamW: {use_fused}")
-            extra_args = dict(fused=True) if use_fused else dict()
-            opt = torch.optim.AdamW(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2),
-                weight_decay=args.weight_decay,
-                **extra_args,
-            )
-    elif args.opt == "soap":
-            opt = SOAP(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2),
-                shampoo_beta=args.shampoo_beta,
-                weight_decay=args.weight_decay,
-                precondition_frequency=args.precondition_frequency,
-                max_precond_dim=args.max_precond_dim,
-                merge_dims=args.merge_dims,
-                precondition_1d=args.precondition_1d,
-                normalize_grads=args.normalize_grads,
-                data_format=args.soap_data_format,
-                correct_bias=args.correct_bias,
-            )
-    elif args.opt == "muon":
-        param_list = (
-            list(model.parameters())
-            if args.distributed_backend is None
-            else list(model.module.parameters())
-        )
-        opt = Muon(
-            muon_params=param_list,
-            lr=args.muon_lr_factor,
-            momentum=args.momentum,
-            nesterov=args.nesterov,
-            ns_steps=args.muon_ns_steps,
-            adamw_params=None,
-            adamw_lr=args.lr,
-            adamw_betas=(args.beta1, args.beta2),
-            adamw_eps=1e-8,
-            adamw_wd=args.weight_decay,
-        )
-    elif args.opt == "d-muon":
-            opt = DistributedMuon(
-                group_specs,
-                lr=args.lr,
-                momentum=args.momentum,
-                nesterov=args.nesterov,
-                ns_steps=args.muon_ns_steps,
-                adamw_betas=(args.beta1, args.beta2),
-                adamw_eps=1e-8,
-                weight_decay=args.weight_decay,
-            )
-    elif args.opt == "manau":
-            opt = Manau(
-                group_specs,
-                lr=args.lr,
-                weight_decay=args.weight_decay,
-                matched_adamw_rms=getattr(args, 'matched_adamw_rms', 0.2),
-                momentum=args.momentum,
-                nesterov=args.nesterov,
-                ns_steps=args.muon_ns_steps,
-                dana_momentum=getattr(args, 'dana_momentum', False),
-                delta=args.delta,
-                kappa=args.kappa,
-                mk4A=args.mk4A,
-                mk4B=args.mk4B,
-                clipsnr=args.clipsnr,
-                epsilon=1e-8,
-                weight_time=args.weight_time,
-                wd_decaying=args.wd_decaying,
-                wd_ts=args.wd_ts,
-            )
-    elif args.opt == "ademamix":
-            opt = AdEMAMix(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2, args.adema_beta3),
-                alpha=args.adema_alpha,
-                beta3_warmup=args.adema_beta3_warmup,
-                alpha_warmup=args.adema_alpha_warmup,
-                weight_decay=args.weight_decay,
-                gamma_3_factor=args.gamma_3_factor,
-            )
-    elif args.opt == "ademamix-decaying-wd":
-            opt = AdEMAMix_DecayingWD(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2, args.adema_beta3),
-                alpha=args.adema_alpha,
-                beta3_warmup=args.adema_beta3_warmup,
-                alpha_warmup=args.adema_alpha_warmup,
-                weight_decay=args.weight_decay,
-                gamma_3_factor=args.gamma_3_factor,
-                wd_decaying=args.wd_decaying,
-                wd_ts=args.wd_ts,
-            )
-    # elif args.opt == "ademamix-beta2-decaying-wd_decaying":
-    #         opt = AdEMAMix_DecayingBETA2_DecayingWD(
-    #             group_specs,
-    #             lr=args.lr,
-    #             betas=(args.beta1, args.beta2, args.adema_beta3), # beta_1, beta_2, beta_3 in AdEMAMix. beta_2 is unused.
-    #             alpha=args.adema_alpha,
-    #             beta3_warmup=args.adema_beta3_warmup,
-    #             alpha_warmup=args.adema_alpha_warmup,
-    #             weight_decay=args.weight_decay,
-    #             gamma_3_factor=args.gamma_3_factor,
-    #             wd_decaying=args.wd_decaying,
-    #             wd_ts=args.wd_ts,
-    #         )
-    elif args.opt == "lion":
-            opt = Lion(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2),
-                weight_decay=args.weight_decay,
-            )
-    elif args.opt == "sf-adamw":
-        opt = AdamWScheduleFree(
-            group_specs,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-            warmup_steps=args.warmup_steps,
-            r=args.schedulefree_r,
-            weight_lr_power=args.weight_lr_power,
-        )  # without foreach argument
-    elif args.opt == "sf-sgd":
-        opt = SGDScheduleFree(
-            group_specs,
-            lr=args.lr,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-            warmup_steps=args.warmup_steps,
-            r=args.schedulefree_r,
-            weight_lr_power=args.weight_lr_power,
-        )  # without foreach argument
-    elif args.opt == "signsgd":
-            opt = Signum(
-                group_specs,
-                lr=args.lr,
-                momentum=0.0,  # always use zero momentum because its signSGD
-                dampening=args.dampening,
-                weight_decay=args.weight_decay,
-                nesterov=args.nesterov,
-                sign_update=True,
-            )
-    elif args.opt == "signum":
-            opt = Signum(
-                group_specs,
-                lr=args.lr,
-                momentum=args.momentum,
-                weight_decay=args.weight_decay,
-                dampening=args.dampening,
-                nesterov=args.nesterov,
-                sign_update=True,
-            )
-    elif args.opt == "prodigy":
-        opt = Prodigy(
-            group_specs,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            beta3=args.prodigy_beta3,
-            weight_decay=args.weight_decay,
-            decouple=args.prodigy_decouple,
-            use_bias_correction=args.prodigy_use_bias_correction,
-            safeguard_warmup=args.prodigy_safeguard_warmup,
-            fsdp_in_use=args.prodigy_fsdp_in_use,
-        )
-    elif args.opt == "sophiag":
-            opt = SophiaG(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2),
-                weight_decay=args.weight_decay,
-                rho=args.sophia_rho,
-            )
-    elif args.opt == "adopt":
-            opt = ADOPT(
-                group_specs,
-                lr=args.lr,
-                betas=(args.beta1, args.beta2),
-                eps=args.adopt_eps,  # 1e-6
-                weight_decay=args.weight_decay,
-                decouple=args.adopt_decouple,
-            )
-    elif args.opt == "mars":
-        opt = MARS(
-            group_specs,
-            lr=args.mars_lr,
-            betas=(args.mars_beta1, args.mars_beta2),
-            weight_decay=args.weight_decay,
-            amsgrad=False,
-            gamma=args.mars_vr_gamma,
-            is_approx=args.mars_is_approx,
-            mars_type=args.mars_type,
-            optimize_1d=False,  # we set in order to optimize 1D parameters with AdamW
-            lr_1d=args.lr,  # AdamW's lr when optimize_1d=False
-            betas_1d=(args.beta1, args.beta2),  # AdamW's betas when optimize_1d=False
-            weight_decay_1d=0.1,  # AdamW's weight decay
-        )
-    elif args.opt == "dana-star":
-        # Map generic CLI args to DANA-STAR hyperparameters
-        opt = DANA_STAR(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            weight_time=args.weight_time,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana-star-no-tau":
-        # Map generic CLI args to DANA-STAR hyperparameters
-        opt = DANA_STAR_NO_TAU(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            weight_time=args.weight_time,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana-star-no-tau-kappa-0-8":
-        # Map generic CLI args to DANA-STAR hyperparameters
-        opt = DANA_STAR_NO_TAU_KAPPA_0_8(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=0.8,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            weight_time=args.weight_time,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana-star-no-tau-kappa-0-85":
-        # Map generic CLI args to DANA-STAR hyperparameters
-        opt = DANA_STAR_NO_TAU_KAPPA_0_85(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=0.85,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            weight_time=args.weight_time,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana-star-no-tau-kappa-0-9":
-        # Map generic CLI args to DANA-STAR hyperparameters
-        opt = DANA_STAR_NO_TAU_KAPPA_0_9(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=0.9,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            weight_time=args.weight_time,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana-star-mk4":
-        opt = DANA_STAR_MK4(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            mk4A=args.mk4A,
-            mk4B=args.mk4B,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            weight_time=args.weight_time,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana":
-        opt = DANA(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            weight_decay=args.weight_decay,
-            weight_time=args.weight_time,
-            use_v_ema=args.use_v_ema,
-            v_ema_beta=args.v_ema_beta,
-            gamma_3_factor=args.gamma_3_factor,
-            beta1=args.beta1,
-        )
-    elif args.opt == "auto-dana":
-        opt = AUTO_DANA(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            weight_decay=args.weight_decay,
-            weight_time=args.weight_time,
-            use_v_ema=args.use_v_ema,
-            v_ema_beta=args.v_ema_beta,
-            gamma_3_factor=args.gamma_3_factor,
-            beta1=args.beta1,
-        )
-    elif args.opt == "adafactor":
-            opt = Adafactor(
-                group_specs,
-                lr=args.lr,
-                decay_rate=args.adafactor_decay_rate,
-                beta1=args.beta1,
-                clip_threshold=1.0,
-                weight_decay=args.weight_decay,
-            )
-    elif args.opt == "lamb":
-        opt = Lamb(
-            group_specs,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-            adam=False,
-            bias_correction=args.lamb_use_bias_correction,
-        )
-    elif args.opt == "sign_dana":
-        opt = sign_DANA(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            weight_decay=args.weight_decay,
-            weight_time=args.weight_time,
-            gamma_3_factor=args.gamma_3_factor,
-            norm_type=args.norm_type,
-            beta1=args.beta1,
-        )
-    elif args.opt == "snoo-dana":
-        opt = snoo_DANA(
-            group_specs,
-            lr=args.lr,
-            lr_outer=args.lr_outer,
-            weight_decay=args.weight_decay,
-            beta1=args.beta1,
-            beta2=args.beta2,
-            delta=args.delta,
-            kappa=args.kappa,
-            gamma_3_factor=args.gamma_3_factor,
-            k=args.k,
-        )
-    elif args.opt == "snoo":
-        opt = snoo(
-            group_specs,
-            lr=args.lr,
-            lr_outer=args.lr_outer,
-            weight_decay=args.weight_decay,
-            beta1=args.beta1,
-            beta2=args.beta2,
-            mu=args.mu,
-            k=args.k,
-        )
-    elif args.opt == "adamw-decaying-wd":
-        opt = AdamWDecayingWD(
-            group_specs,
-            lr=args.lr,
-            betas=(args.beta1, args.beta2),
-            weight_decay=args.weight_decay,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    elif args.opt == "dana-mk4":
-        opt = DANA_MK4(
-            group_specs,
-            lr=args.lr,
-            delta=args.delta,
-            kappa=args.kappa,
-            weight_decay=args.weight_decay,
-            clipsnr=args.clipsnr,
-            wd_decaying=args.wd_decaying,
-            wd_ts=args.wd_ts,
-        )
-    else:
-        opt = torch.optim.SGD(
-            group_specs,
-            lr=args.lr,
-            momentum=args.momentum,
-            weight_decay=args.weight_decay,
-            nesterov=args.nesterov,
-        )
+    opt = build_optimizer(args, model, group_specs)
     if distributed_backend.is_master_process():
         print(f"\nOptimizer:\n{opt}")
 
@@ -646,7 +438,7 @@ def main(args, parser):
 
     # Only enforce/prepare directory when not explicitly resuming
     if args.resume_from is None:
-        if (exp_dir / "ckpts" / "latest" / "main.pt").exists():
+        if _checkpoint_exists(exp_dir / "ckpts" / "latest"):
             if not args.auto_resume:
                 raise ValueError(
                     f"The experiment dir {exp_dir} already exists. "

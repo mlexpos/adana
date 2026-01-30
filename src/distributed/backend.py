@@ -28,5 +28,12 @@ class DistributedBackend(object):
     def get_world_size(self):
         raise NotImplementedError
 
+    def all_ranks_checkpoint(self):
+        """Whether checkpoint save/load requires all ranks to participate.
+
+        Returns True for FSDP (sharded state dicts), False for DDP/single.
+        """
+        return False
+
     def finalize(self):
         pass

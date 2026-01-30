@@ -26,6 +26,10 @@ class DANA_STAR_MK4(Optimizer):
         """
         DANA-STAR MK4 optimizer.
 
+        With tau probability estimator and optional SNR clipping. Two modes:
+        - clipsnr=None: Dana-Star (tau + no SNR clipping)
+        - clipsnr=float: Dana-Star-MK4 (tau + SNR clipping)
+
         Args:
             params: Iterable of parameters to optimize.
             lr: Learning rate.
@@ -35,7 +39,7 @@ class DANA_STAR_MK4(Optimizer):
             mk4B: Must be 0.0 (kept for compatibility).
             epsilon: Small constant for numerical stability.
             weight_decay: Weight decay parameter.
-            clipsnr: SNR clipping parameter.
+            clipsnr: SNR clipping parameter. None disables clipping.
             weight_time: Must be False (kept for compatibility).
             wd_decaying: Whether to decay weight decay over time.
             wd_ts: Timescale for weight decay decay.
@@ -47,7 +51,7 @@ class DANA_STAR_MK4(Optimizer):
         assert weight_time == False, f"weight_time must be False, got {weight_time}"
 
         defaults = dict(
-            lr=lr, delta=delta, clipsnr=clipsnr, epsilon=epsilon, weight_decay=weight_decay, weighted_step_count=0)
+            lr=lr, delta=delta, epsilon=epsilon, weight_decay=weight_decay, weighted_step_count=0)
         self.lr = lr
         self.delta = delta
         self.kappa = kappa
@@ -156,10 +160,13 @@ class DANA_STAR_MK4(Optimizer):
         m_norm_term = torch.abs(m) * norm_term
         # Compute momentum factor and alpha factor
         mfac = (m_norm_term / tau_reg)
-        alpha_factor = torch.clamp(
-            (effective_time ** (1 - kappa)) * mfac,
-            max=clipsnr
-        )
+        if clipsnr is not None:
+            alpha_factor = torch.clamp(
+                (effective_time ** (1 - kappa)) * mfac,
+                max=clipsnr
+            )
+        else:
+            alpha_factor = (effective_time ** (1 - kappa)) * mfac
 
         # Compute g3 term (momentum-based update)
         g3_term = (-g3) * (torch.sign(m) * (tau_reg * alpha_factor + m_norm_term))
@@ -210,7 +217,7 @@ class DANA_STAR_MK4(Optimizer):
             delta = group['delta']
             wd = group['weight_decay']
             epsilon = group['epsilon']
-            clipsnr = group['clipsnr']
+            clipsnr = self.clipsnr
 
             # Use foreach path if enabled
             if self.use_foreach:
@@ -470,7 +477,8 @@ class DANA_STAR_MK4(Optimizer):
         # alpha_factor = clamp((effective_time^(1-kappa)) * mfac, max=clipsnr)
         eff_pow = torch._foreach_pow(effective_time, 1.0 - kappa)
         alpha_factor = torch._foreach_mul(eff_pow, mfac)
-        alpha_factor = [torch.clamp(af, max=clipsnr) for af in alpha_factor]
+        if clipsnr is not None:
+            alpha_factor = [torch.clamp(af, max=clipsnr) for af in alpha_factor]
 
         # Step 9: Compute g3 term
         # g3_term = g3 * (tau_reg * sign(m) * alpha_factor + m * norm_term)

@@ -1,0 +1,54 @@
+enoki:
+  head_dim: 64
+  n_head_formula: "heads"
+  n_layer_formula: "3 * heads // 4"
+  n_embd_formula: "heads * 64"
+  mlp_hidden_formula: "4 * n_embd"
+  non_emb_formula: "12 * n_embd**2 * n_layer"
+  total_params_formula: "non_emb + 2 * n_embd * 50304"
+  model: "enoki"
+  weight_tying: false
+  lr_formula:
+    # Batch size 32, Enoki architecture (from paper appendix)
+    # LR = a * (b + non_emb_params)^d
+    adamw:                {a: 1.28e+1, b: 1.67e+4, d: -0.515}
+    adamw-decaying-wd:    {a: 6.57e+1, b: 9.83e+3, d: -0.608}
+    adana:
+      "0.75":             {a: 1.27e+1, b: 9.55e+3, d: -0.624}
+      "0.80":             {a: 1.76e+1, b: 3.66e+4, d: -0.624}
+      "0.85":             {a: 2.25e+1, b: 1.22e+5, d: -0.618}
+      "0.90":             {a: 6.89e+1, b: 2.95e+4, d: -0.667}
+    dana-mk4:
+      "0.75":             {a: 5.60e+1, b: 5.71e+3, d: -0.708}
+      "0.85":             {a: 2.30e+1, b: 1.46e+4, d: -0.627}
+    dana-star:
+      "0.75":             {a: 4.10e+1, b: 3.03e+4, d: -0.661}
+      "0.85":             {a: 2.23e+2, b: 2.40e+6, d: -0.724}
+    dana-star-mk4:
+      "0.75":             {a: 4.10e+1, b: 3.03e+4, d: -0.661}
+      "0.85":             {a: 2.23e+2, b: 2.40e+6, d: -0.724}
+    dana-star-mk4-tau:
+      "0.85":             {a: 3.72e+3, b: 3.70e+3, d: -0.894}
+    ademamix:             {a: 4.51,    b: 6.71e+3, d: -0.503}
+    ademamix-decaying-wd: {a: 7.28,    b: 8.43e+3, d: -0.525}
+    d-muon:               {a: 2.19,    b: 5.64e+4, d: -0.417}
+
+qwen3:
+  head_dim: 128
+  n_head_formula: "heads"
+  n_layer_formula: "2 * heads"
+  n_embd_formula: "heads * 128"
+  mlp_hidden_formula: "3 * n_embd"
+  non_emb_formula: "12 * n_embd**2 * n_layer"
+  total_params_formula: "non_emb + 2 * n_embd * 50304"
+  model: "qwen3"
+  weight_tying: false
+  lr_formula:
+    # Batch size 32, Qwen3 architecture (from paper appendix)
+    adamw:                {a: 2.16e+4, b: 7.20e+4, d: -0.873}
+    dana-star-mk4:
+      "0.85":             {a: 9.39e+1, b: 1.71e+4, d: -0.701}
+    adana:
+      "0.85":             {a: 3.17,    b: 3.99e+4, d: -0.553}
+    dana-mk4:
+      "0.85":             {a: 1.20,    b: 3.44e+4, d: -0.501}

@@ -112,7 +112,19 @@ def parse_args(base_parser, args, namespace):
         choices=[
             "adamw",
             "sgd",
+            # ADana family (no tau)
+            "adana",
+            "dana-mk4",
+            # Dana-Star family (with tau)
+            "dana-star",
+            "dana-star-mk4",
+            # Ablation variants
+            "adamw-decaying-wd",
+            "ademamix-decaying-wd",
+            # Baselines
             "muon",
+            "d-muon",
+            "manau",
             "soap",
             "ademamix",
             "lion",
@@ -126,23 +138,6 @@ def parse_args(base_parser, args, namespace):
             "mars",
             "adafactor",
             "lamb",
-            "d-muon",
-            "manau",
-            "dana-star",
-            "dana",
-            "sign_dana",
-            "auto-dana",
-            "dana-star-mk4",
-            "snoo-dana",
-            "snoo",
-            "adamw-decaying-wd",
-            "dana-mk4",
-            "ademamix-decaying-wd",
-            #"ademamix-beta2-decaying-wd-decaying",
-            "dana-star-no-tau",
-            "dana-star-no-tau-kappa-0-8",
-            "dana-star-no-tau-kappa-0-85",
-            "dana-star-no-tau-kappa-0-9",
         ],
     )
     parser.add_argument("--batch_size", default=50, type=int)
@@ -268,10 +263,24 @@ def parse_args(base_parser, args, namespace):
             "base",
             "llama",
             "test",
-            "diloco",
+            "enoki",
+            "diloco",  # backward compat alias for enoki
             "qwen3",
             "qwen3next",
         ],
+    )
+    parser.add_argument(
+        "--scaling_rule",
+        default="none",
+        type=str,
+        choices=["enoki", "qwen3", "none"],
+        help="Auto-compute model dimensions and LR from --heads using scaling rules",
+    )
+    parser.add_argument(
+        "--heads",
+        default=None,
+        type=int,
+        help="Number of attention heads (used with --scaling_rule to auto-compute dimensions)",
     )
     parser.add_argument("--parallel_block", action="store_true")
     parser.add_argument(

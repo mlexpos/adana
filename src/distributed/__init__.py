@@ -1,8 +1,9 @@
-from . import ddp, single
+from . import ddp, fsdp, single
 
 BACKEND_TYPE_TO_MODULE_MAP = {
     "nccl": ddp.DataParallelDistributedBackend,  # GPU DDP
     "gloo": ddp.DataParallelDistributedBackend,  # CPU DDP
+    "fsdp": fsdp.FSDPDistributedBackend,         # GPU FSDP2
     "single": single.SinlgeNodeBackend,          # Explicit single-process backend
     None: single.SinlgeNodeBackend,               # Backward-compatible default
 }
