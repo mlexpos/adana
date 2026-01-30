@@ -32,6 +32,17 @@ enoki:
     ademamix:             {a: 4.51,    b: 6.71e+3, d: -0.503}
     ademamix-decaying-wd: {a: 7.28,    b: 8.43e+3, d: -0.525}
     d-muon:               {a: 2.19,    b: 5.64e+4, d: -0.417}
+  lr_formula_512:
+    # Batch size 512 (global_batch = 512 * 2048), Enoki architecture
+    # To be filled by running: python visualization/bighead_lr_scaling.py --scaling-rule Enoki_512 ...
+    # See appendix_batch.tex lines 78-81 for exact commands
+    adamw:                {a: null, b: null, d: null}
+    adana:
+      "0.85":             {a: null, b: null, d: null}
+    dana-mk4:
+      "0.85":             {a: null, b: null, d: null}
+    dana-star-mk4:
+      "0.85":             {a: null, b: null, d: null}
 
 qwen3:
   head_dim: 128

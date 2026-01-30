@@ -46,18 +46,31 @@ def compute_dimensions(rule_name, heads):
     }
 
 
-def compute_lr(rule_name, optimizer_name, non_emb_params, kappa=None):
+def compute_lr(rule_name, optimizer_name, non_emb_params, kappa=None, batch_size=None):
     """Compute LR from saturated power law: LR = a * (b + non_emb_params)^d
 
     For DANA variants, the formula depends on kappa. If the formula entry is a
     nested dict (keyed by kappa strings like "0.85"), the kappa parameter is used
     to look up the correct coefficients. Falls back to closest available kappa
     if exact match not found.
+
+    If batch_size is 512 (global batch), looks up lr_formula_512 first, falling
+    back to lr_formula (batch-32) if not found or if coefficients are null.
     """
     rules = _load_scaling_rules()
     rule = rules[rule_name]
 
-    lr_formulas = rule.get("lr_formula", {})
+    # Select formula key based on batch size
+    formula_key = "lr_formula"
+    if batch_size == 512:
+        formula_key = "lr_formula_512" if "lr_formula_512" in rule else "lr_formula"
+
+    lr_formulas = rule.get(formula_key, {})
+
+    # Fall back to lr_formula if optimizer not in batch-specific formulas
+    if optimizer_name not in lr_formulas and formula_key != "lr_formula":
+        lr_formulas = rule.get("lr_formula", {})
+
     if optimizer_name not in lr_formulas:
         return None
 
@@ -87,6 +100,13 @@ def compute_lr(rule_name, optimizer_name, non_emb_params, kappa=None):
                 coeffs = entry[closest]
 
     a, b, d = coeffs["a"], coeffs["b"], coeffs["d"]
+
+    # If coefficients are null (TBD placeholders), fall back to batch-32 formulas
+    if a is None or b is None or d is None:
+        if formula_key != "lr_formula":
+            return compute_lr(rule_name, optimizer_name, non_emb_params, kappa=kappa, batch_size=None)
+        return None
+
     lr = a * (b + non_emb_params) ** d
     return lr
 
@@ -125,10 +145,10 @@ def apply_scaling_rule(args):
     if lr is not None:
         args.lr = lr
 
-    # Compute Chinchilla-optimal iterations: tokens = 20 * non_emb_params
+    # Compute Chinchilla-optimal iterations: tokens = 20 * total_params
     # iterations = tokens / (batch_size * acc_steps * sequence_length * world_size)
     # We set iterations here but it can be overridden on the CLI
-    chinchilla_tokens = 20 * dims["non_emb_params"]
+    chinchilla_tokens = 20 * dims["total_params"]
     tokens_per_step = args.batch_size * args.acc_steps * args.sequence_length
     args.iterations = int(chinchilla_tokens / tokens_per_step)
 

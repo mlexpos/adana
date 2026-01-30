@@ -127,7 +127,7 @@ cos, wsd, powerlaw, cos_inf, linear, none
 - Models are registered by name string and selected via `--model` flag
 - WandB is optional (enabled with `--wandb` flag)
 - Checkpoints saved to `exps/` directory (gitignored)
-- Uses independent (decoupled) weight decay, not PyTorch's default coupled weight decay
+- DANA variants and decaying-WD optimizers use independent weight decay (paper convention): WD is multiplied by the LR schedule γ(t) but NOT by the peak LR γ*. The optimizer computes `schedule_factor = group['lr'] / self.lr` for this. AdamW and AdEMAMix (non-decaying) use the standard PyTorch coupled convention where WD is multiplied by the full lr.
 - LR scaling rules are fit as saturated power laws: `gamma(P) = a * (b + P)^d`
 
 ## Remote Test Environment

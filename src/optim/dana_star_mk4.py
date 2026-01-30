@@ -110,7 +110,7 @@ class DANA_STAR_MK4(Optimizer):
         alpha: torch.Tensor,
         g2: torch.Tensor,
         g3: torch.Tensor,
-        lr: torch.Tensor,
+        schedule_factor: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
         clipsnr: float,
@@ -121,8 +121,8 @@ class DANA_STAR_MK4(Optimizer):
         """
         Compiled function for updating a single parameter.
 
-        Note: Dynamic hyperparameters (step, alpha, g2, g3, lr, wd) are passed
-        as 0-D tensors to avoid recompilation when values change.
+        Note: Dynamic hyperparameters (step, alpha, g2, g3, schedule_factor, wd) are
+        passed as 0-D tensors to avoid recompilation when values change.
         Static hyperparameters (epsilon, clipsnr, kappa, wd_ts) remain as scalars.
 
         Returns:
@@ -180,13 +180,13 @@ class DANA_STAR_MK4(Optimizer):
         # Apply parameter update (in-place)
         p.add_(update)
 
-        # Apply decoupled weight decay (AdamW-style)
-        # Use tensor operations to avoid .item() in compiled code
+        # Apply independent weight decay (paper convention):
+        # WD is multiplied by schedule γ(t) but NOT by peak LR γ*
         # Formula: p = p + wd_factor * p = p * (1 + wd_factor)
         if wd_decaying:
-            wd_factor = -wd / (1 + step / wd_ts) * lr
+            wd_factor = -wd / (1 + step / wd_ts) * schedule_factor
         else:
-            wd_factor = -wd * lr
+            wd_factor = -wd * schedule_factor
         p.mul_(1 + wd_factor)
 
         # Compute diagnostics
@@ -211,8 +211,8 @@ class DANA_STAR_MK4(Optimizer):
             # Extract hyperparameters
             g2 = group['lr']
             g3 = group['lr']
-            lr = group['lr']
-            time_factor = group['lr'] / self.lr
+            schedule_factor = group['lr'] / self.lr  # γ(t) without peak LR
+            time_factor = schedule_factor
             group['weighted_step_count'] += time_factor
             delta = group['delta']
             wd = group['weight_decay']
@@ -225,13 +225,13 @@ class DANA_STAR_MK4(Optimizer):
                 # Use CPU tensors since they'll be broadcast to each parameter's device
                 g2_t = torch.tensor(g2, dtype=torch.float32)
                 g3_t = torch.tensor(g3, dtype=torch.float32)
-                lr_t = torch.tensor(lr, dtype=torch.float32)
+                sf_t = torch.tensor(schedule_factor, dtype=torch.float32)
                 delta_t = torch.tensor(delta, dtype=torch.float32)
                 wd_t = torch.tensor(wd, dtype=torch.float32)
 
                 # Call the foreach step (with state extraction outside compiled region)
                 self._foreach_step_group(
-                    group, g2_t, g3_t, lr_t, delta_t, wd_t, epsilon, clipsnr
+                    group, g2_t, g3_t, sf_t, delta_t, wd_t, epsilon, clipsnr
                 )
                 continue
 
@@ -263,7 +263,7 @@ class DANA_STAR_MK4(Optimizer):
                 alpha_t = torch.tensor(alpha, device=device, dtype=torch.float32)
                 g2_t = torch.tensor(g2, device=device, dtype=torch.float32)
                 g3_t = torch.tensor(g3, device=device, dtype=torch.float32)
-                lr_t = torch.tensor(lr, device=device, dtype=torch.float32)
+                sf_t = torch.tensor(schedule_factor, device=device, dtype=torch.float32)
                 wd_t = torch.tensor(wd, device=device, dtype=torch.float32)
 
                 # Get compiled function for this tensor's shape
@@ -272,7 +272,7 @@ class DANA_STAR_MK4(Optimizer):
                 # Call rank-specific compiled update function
                 m_new, v_new, tau_new, diagnostics = update_fn(
                     p, grad, m, v, tau,
-                    step_t, alpha_t, g2_t, g3_t, lr_t, wd_t,
+                    step_t, alpha_t, g2_t, g3_t, sf_t, wd_t,
                     epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
                 )
 
@@ -295,7 +295,7 @@ class DANA_STAR_MK4(Optimizer):
         group,
         g2: torch.Tensor,
         g3: torch.Tensor,
-        lr: torch.Tensor,
+        schedule_factor: torch.Tensor,
         delta: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
@@ -353,12 +353,12 @@ class DANA_STAR_MK4(Optimizer):
         if self._foreach_compute_kernel is not None:
             alpha_factors, mfacs = self._foreach_compute_kernel(
                 params, grads, ms, vs, taus, alpha_tensors, step_tensors,
-                g2, g3, lr, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
             )
         else:
             alpha_factors, mfacs = self._foreach_compute_kernel_impl(
                 params, grads, ms, vs, taus, alpha_tensors, step_tensors,
-                g2, g3, lr, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
             )
 
         # ===================================================================
@@ -382,7 +382,7 @@ class DANA_STAR_MK4(Optimizer):
         step_tensors,
         g2: torch.Tensor,
         g3: torch.Tensor,
-        lr: torch.Tensor,
+        schedule_factor: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
         clipsnr: float,
@@ -507,22 +507,17 @@ class DANA_STAR_MK4(Optimizer):
         torch._foreach_neg_(update)  # Negate in place
         torch._foreach_add_(params, update)
 
-        # Step 12: Weight decay
-        # Apply weight decay unconditionally (if wd=0, the update is zero anyway)
+        # Step 12: Independent weight decay (paper convention)
+        # WD is multiplied by schedule γ(t) but NOT by peak LR γ*
         if wd_decaying:
-            # wd_factor = -wd / (1 + step / wd_ts) * lr
-            # Use foreach operations to compute factors
             step_over_ts = torch._foreach_div(step_tensors, wd_ts)
             one_plus_ratio = torch._foreach_add(step_over_ts, 1.0)
             wd_decay = torch._foreach_reciprocal(one_plus_ratio)
-            # Compute -wd * lr as a scalar tensor operation
-            neg_wd_lr = -wd * lr
-            wd_factors = torch._foreach_mul(wd_decay, neg_wd_lr)
+            neg_wd_sf = -wd * schedule_factor
+            wd_factors = torch._foreach_mul(wd_decay, neg_wd_sf)
         else:
-            # All factors are the same
-            # Compute -wd * lr and broadcast to each parameter
-            neg_wd_lr = -wd * lr
-            wd_factors = [neg_wd_lr.to(device=p.device, dtype=p.dtype) for p in params]
+            neg_wd_sf = -wd * schedule_factor
+            wd_factors = [neg_wd_sf.to(device=p.device, dtype=p.dtype) for p in params]
 
         # Apply weight decay: p = p + p * wd_factor
         # If wd=0, this is a no-op (adds zero), but keeps graph intact

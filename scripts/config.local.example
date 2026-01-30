@@ -1,0 +1,32 @@
+# =============================================================================
+# scripts/config.local - User settings for DSTAR training
+# =============================================================================
+# Copy this file to scripts/config.local and edit for your setup.
+# This file is sourced by config.sh before every training run.
+# It is gitignored — each user maintains their own copy per cluster.
+#
+#   cp scripts/config.local.example scripts/config.local
+#   vim scripts/config.local
+#
+# All variables are optional. If unset, defaults from config.sh apply.
+# =============================================================================
+
+# --- Weights & Biases ---
+# WANDB_API_KEY="your-api-key-here"
+# WANDB_ENTITY="your-team-or-username"
+# WANDB_PROJECT="danastar"
+
+# --- Data and checkpoint paths ---
+# Where tokenized datasets live (must contain fineweb-10BT/ or fineweb-100BT/)
+# DATASETS_DIR="$HOME/links/scratch/datasets"
+# DATASETS_DIR="$HOME/scratch/datasets"
+# DATASETS_DIR="$HOME/links/projects/def-epoch-datasets"
+
+# Where checkpoints and results are saved
+# RESULTS_BASE_FOLDER="$HOME/links/projects/def-epoch-datasets/exps"
+# RESULTS_BASE_FOLDER="$HOME/scratch/exps"
+# RESULTS_BASE_FOLDER="./exps"
+
+# --- Caches ---
+# TIKTOKEN_CACHE_DIR="$HOME/tiktoken_cache"
+# HF_HOME="$HOME/hf_cache"

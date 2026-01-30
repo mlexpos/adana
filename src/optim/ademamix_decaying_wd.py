@@ -80,6 +80,7 @@ class AdEMAMix_DecayingWD(torch.optim.Optimizer):
             wd_decaying=wd_decaying,
             wd_ts=wd_ts,
         )
+        self.initial_lr = lr  # Peak LR for computing schedule factor
         super(AdEMAMix_DecayingWD, self).__init__(params, defaults)
 
     def __setstate__(self, state):
@@ -94,6 +95,7 @@ class AdEMAMix_DecayingWD(torch.optim.Optimizer):
 
         for group in self.param_groups:
             lr = group["lr"]
+            schedule_factor = group["lr"] / self.initial_lr  # γ(t) without peak LR
             wd = group["weight_decay"]
             eps = group["eps"]
             beta1, beta2, beta3_final = group["betas"]
@@ -175,10 +177,12 @@ class AdEMAMix_DecayingWD(torch.optim.Optimizer):
                     exp_avg_fast.div(bias_correction1) + alpha * exp_avg_slow * gamma_3_factor
                 ) / denom
 
+                # Independent weight decay (paper convention):
+                # WD is multiplied by schedule γ(t) but NOT by peak LR γ*
                 if wd_decaying:
-                    wd_factor = -wd / (1 + state["step"] / wd_ts) * lr
+                    wd_factor = -wd / (1 + state["step"] / wd_ts) * schedule_factor
                 else:
-                    wd_factor = -wd * lr
+                    wd_factor = -wd * schedule_factor
                 p.mul_(1 + wd_factor)
 
                 p.add_(-lr * update)

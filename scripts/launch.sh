@@ -10,7 +10,7 @@
 # This script:
 # 1. Sources config.sh for cluster/user settings
 # 2. Uses Python scaling rules to compute model dimensions, LR, iterations
-# 3. Sets optimizer-specific flags
+# 3. Sets optimizer-specific flags (WD_TS, beta values, etc.)
 # 4. Launches training via torchrun
 # =============================================================================
 
@@ -31,21 +31,21 @@ NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 ACC_STEPS="${ACC_STEPS:-1}"
 SEQ_LEN="${SEQ_LEN:-2048}"
-DATASET="${DATASET:-fineweb}"
-SCHEDULER="${SCHEDULER:-cos}"
+DATASET="${DATASET:-fineweb_100}"
+SCHEDULER="${SCHEDULER:-cos_inf}"
 KAPPA="${KAPPA:-0.85}"
 CLIPSNR="${CLIPSNR:-2.0}"
 OMEGA="${OMEGA:-4.0}"
-WD_TS="${WD_TS:-1.0}"
 DELTA="${DELTA:-8.0}"
 LR_OVERRIDE=""
 ITERATIONS_OVERRIDE=""
 WARMUP_STEPS=""
-GRAD_CLIP="${GRAD_CLIP:-2.5}"
+GRAD_CLIP="${GRAD_CLIP:-0.5}"
 INIT_SCHEME="${INIT_SCHEME:-ScaledGPT}"
 COMPILE="${COMPILE:-1}"
 WANDB_ENABLED="${WANDB_ENABLED:-1}"
-EVAL_INTERVAL="${EVAL_INTERVAL:-200}"
+EVAL_INTERVAL="${EVAL_INTERVAL:-115}"
+LOG_INTERVAL="${LOG_INTERVAL:-50}"
 LATEST_CKPT_INTERVAL="${LATEST_CKPT_INTERVAL:-1000}"
 PERMANENT_CKPT_INTERVAL="${PERMANENT_CKPT_INTERVAL:-0}"
 AUTO_RESUME="${AUTO_RESUME:-1}"
@@ -68,7 +68,6 @@ while [[ $# -gt 0 ]]; do
         --kappa)            KAPPA="$2"; shift 2 ;;
         --clipsnr)          CLIPSNR="$2"; shift 2 ;;
         --omega)            OMEGA="$2"; shift 2 ;;
-        --wd_ts)            WD_TS="$2"; shift 2 ;;
         --delta)            DELTA="$2"; shift 2 ;;
         --lr)               LR_OVERRIDE="$2"; shift 2 ;;
         --iterations)       ITERATIONS_OVERRIDE="$2"; shift 2 ;;
@@ -78,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         --no_compile)       COMPILE=0; shift ;;
         --no_wandb)         WANDB_ENABLED=0; shift ;;
         --eval_interval)    EVAL_INTERVAL="$2"; shift 2 ;;
+        --log_interval)     LOG_INTERVAL="$2"; shift 2 ;;
         --latest_ckpt_interval)   LATEST_CKPT_INTERVAL="$2"; shift 2 ;;
         --permanent_ckpt_interval) PERMANENT_CKPT_INTERVAL="$2"; shift 2 ;;
         --distributed_backend) DISTRIBUTED_BACKEND="$2"; shift 2 ;;
@@ -115,6 +115,9 @@ fi
 # =============================================================================
 # Compute model dimensions and LR via Python scaling rules
 # =============================================================================
+# Compute global batch size for LR formula selection
+GLOBAL_BATCH=$((BATCH_SIZE * ACC_STEPS * NPROC_PER_NODE))
+
 SCALING_OUTPUT=$(python3 -c "
 import importlib.util, os
 spec = importlib.util.spec_from_file_location('scaling', os.path.join('$(pwd)', 'src', 'config', 'scaling.py'))
@@ -122,7 +125,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 dims = mod.compute_dimensions('$ARCH', $HEADS)
-lr = mod.compute_lr('$ARCH', '$OPT', dims['non_emb_params'], kappa=$KAPPA)
+lr = mod.compute_lr('$ARCH', '$OPT', dims['non_emb_params'], kappa=$KAPPA, batch_size=$GLOBAL_BATCH)
 
 print(f\"N_HEAD={dims['n_head']}\")
 print(f\"N_LAYER={dims['n_layer']}\")
@@ -145,58 +148,78 @@ elif [ -z "${LR:-}" ]; then
     exit 1
 fi
 
-# Compute iterations (Chinchilla-optimal: tokens = 20 * non_emb_params)
+# Compute iterations (Chinchilla-optimal: tokens = 20 * total_params)
 TOKENS_PER_STEP=$((BATCH_SIZE * ACC_STEPS * SEQ_LEN * NPROC_PER_NODE))
 if [ -n "$ITERATIONS_OVERRIDE" ]; then
     ITERATIONS="$ITERATIONS_OVERRIDE"
 else
-    ITERATIONS=$(python3 -c "print(int(20 * $NON_EMB / $TOKENS_PER_STEP))")
+    ITERATIONS=$(python3 -c "print(int(20 * $TOTAL_PARAMS / $TOKENS_PER_STEP))")
 fi
 
-# Compute warmup steps (default: 2% of iterations, min 100)
+# Compute warmup steps (default: 2% of iterations = iterations / 50)
 if [ -z "$WARMUP_STEPS" ]; then
-    WARMUP_STEPS=$(python3 -c "print(max(100, int(0.02 * $ITERATIONS)))")
+    WARMUP_STEPS=$(python3 -c "print(int($ITERATIONS / 50))")
 fi
 
-# Compute weight decay from omega: wd = omega / (lr * wd_ts)
-WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $WD_TS))")
-
 # =============================================================================
-# Set optimizer-specific flags
+# Set optimizer-specific flags and weight decay
 # =============================================================================
+# Weight decay convention:
+#   - DANA variants & decaying-WD (independent WD, paper convention):
+#     WD_TS = ITERATIONS/10, WD = OMEGA / WD_TS
+#     The optimizer multiplies by schedule γ(t) but NOT by peak LR γ*
+#   - AdamW/Ademamix (PyTorch convention, coupled WD):
+#     WD = OMEGA / (LR * ITERATIONS)
+#     PyTorch multiplies by lr internally, so we divide by LR to compensate
 OPT_FLAGS=""
 case "$OPT" in
-    adana)
-        OPT_FLAGS="--opt adana --delta $DELTA --kappa $KAPPA --wd_decaying --wd_ts $WD_TS"
-        ;;
-    dana-mk4)
-        OPT_FLAGS="--opt dana-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
-        ;;
-    dana-star)
-        OPT_FLAGS="--opt dana-star --delta $DELTA --kappa $KAPPA --wd_decaying --wd_ts $WD_TS"
-        ;;
-    dana-star-mk4)
-        OPT_FLAGS="--opt dana-star-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+    adana|dana-mk4|dana-star|dana-star-mk4)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        case "$OPT" in
+            adana)
+                OPT_FLAGS="--opt adana --delta $DELTA --kappa $KAPPA --wd_decaying --wd_ts $WD_TS"
+                ;;
+            dana-mk4)
+                OPT_FLAGS="--opt dana-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+                ;;
+            dana-star)
+                OPT_FLAGS="--opt dana-star --delta $DELTA --kappa $KAPPA --wd_decaying --wd_ts $WD_TS"
+                ;;
+            dana-star-mk4)
+                OPT_FLAGS="--opt dana-star-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+                ;;
+        esac
         ;;
     adamw)
-        OPT_FLAGS="--opt adamw --beta1 0.9 --beta2 0.95"
-        ;;
-    adamw-decaying-wd)
-        OPT_FLAGS="--opt adamw-decaying-wd --beta1 0.9 --beta2 0.95 --wd_decaying --wd_ts $WD_TS"
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        OPT_FLAGS="--opt adamw --beta1 0.9 --beta2 0.999"
         ;;
     ademamix)
-        OPT_FLAGS="--opt ademamix --beta1 0.9 --beta2 0.95"
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        OPT_FLAGS="--opt ademamix --beta1 0.9 --beta2 0.999"
+        ;;
+    adamw-decaying-wd)
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        OPT_FLAGS="--opt adamw-decaying-wd --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
         ;;
     ademamix-decaying-wd)
-        OPT_FLAGS="--opt ademamix-decaying-wd --beta1 0.9 --beta2 0.95 --wd_decaying --wd_ts $WD_TS"
+        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        OPT_FLAGS="--opt ademamix-decaying-wd --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
         ;;
     d-muon)
-        OPT_FLAGS="--opt d-muon"
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        OPT_FLAGS="--opt d-muon --beta1 0.8 --beta2 0.999 --momentum 0.95 --nesterov True --muon_ns_steps 5"
         ;;
     manau)
-        OPT_FLAGS="--opt manau --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        WD_TS=$(python3 -c "print(int($ITERATIONS))")
+        OPT_FLAGS="--opt manau --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --momentum 0.95 --nesterov True --muon_ns_steps 5 --matched_adamw_rms 0.2 --dana_momentum False --mk4A 0.0 --mk4B 0.0 --wd_decaying --wd_ts $WD_TS"
         ;;
     *)
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         OPT_FLAGS="--opt $OPT"
         ;;
 esac
@@ -253,6 +276,12 @@ if [ -n "$WANDB_GROUP" ]; then
     PREFIX_FLAGS="--run_prefix $WANDB_GROUP"
 fi
 
+# Build scheduler flags
+SCHEDULER_FLAGS="--scheduler $SCHEDULER"
+if [ "$SCHEDULER" = "cos_inf" ]; then
+    SCHEDULER_FLAGS="$SCHEDULER_FLAGS --cos_inf_steps 0 --div_factor 1e2 --final_div_factor 1e-1"
+fi
+
 # =============================================================================
 # Print configuration
 # =============================================================================
@@ -265,12 +294,16 @@ echo "Heads:        $HEADS"
 echo "Dimensions:   n_embd=$N_EMBD, n_head=$N_HEAD, n_layer=$N_LAYER"
 echo "MLP hidden:   $MLP_HIDDEN"
 echo "QKV dim:      $QKV_DIM"
-echo "Parameters:   non_emb=${NON_EMB} ($(python3 -c "print(f'{$NON_EMB/1e6:.1f}M')"))"
+echo "Parameters:   non_emb=${NON_EMB} ($(python3 -c "print(f'{$NON_EMB/1e6:.1f}M')")), total=${TOTAL_PARAMS} ($(python3 -c "print(f'{$TOTAL_PARAMS/1e6:.1f}M')"))"
 echo "LR:           $LR"
 echo "Weight Decay: $WEIGHT_DECAY (omega=$OMEGA)"
-echo "Iterations:   $ITERATIONS"
-echo "Warmup:       $WARMUP_STEPS"
-echo "Batch:        ${BATCH_SIZE}x${ACC_STEPS}x${SEQ_LEN} (${NPROC_PER_NODE} GPUs)"
+echo "Iterations:   $ITERATIONS (from 20 * total_params / tokens_per_step)"
+echo "Warmup:       $WARMUP_STEPS (iterations/50)"
+echo "Scheduler:    $SCHEDULER"
+echo "Grad clip:    $GRAD_CLIP"
+echo "Batch:        ${BATCH_SIZE}x${ACC_STEPS}x${SEQ_LEN} (${NPROC_PER_NODE} GPUs, global=${BATCH_SIZE}*${ACC_STEPS}*${NPROC_PER_NODE}=$((BATCH_SIZE * ACC_STEPS * NPROC_PER_NODE)))"
+echo "Dataset:      $DATASET"
+echo "Backend:      $DISTRIBUTED_BACKEND"
 echo "============================================================"
 
 # =============================================================================
@@ -284,19 +317,20 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py \
     --n_embd $N_EMBD --n_head $N_HEAD --n_layer $N_LAYER \
     --qkv_dim $QKV_DIM --mlp_hidden_dim $MLP_HIDDEN \
     --batch_size $BATCH_SIZE --sequence_length $SEQ_LEN --acc_steps $ACC_STEPS \
+    --datasets_dir $DATASETS_DIR \
     --dataset $DATASET \
     --iterations $ITERATIONS \
     --lr $LR --weight_decay $WEIGHT_DECAY \
-    --scheduler $SCHEDULER \
+    $SCHEDULER_FLAGS \
     --warmup_steps $WARMUP_STEPS \
     --grad_clip $GRAD_CLIP \
     --init-scheme $INIT_SCHEME \
     --dropout 0.0 --seed 0 \
     --eval_interval $EVAL_INTERVAL \
+    --log_interval $LOG_INTERVAL \
     --latest_ckpt_interval $LATEST_CKPT_INTERVAL \
     --permanent_ckpt_interval $PERMANENT_CKPT_INTERVAL \
     --results_base_folder $RESULTS_BASE_FOLDER \
-    --datasets_dir $DATASETS_DIR \
     $ARCH_FLAGS \
     $OPT_FLAGS \
     $WANDB_FLAGS \

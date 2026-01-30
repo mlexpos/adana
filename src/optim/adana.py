@@ -85,7 +85,7 @@ class ADana(Optimizer):
         alpha: torch.Tensor,
         g2: torch.Tensor,
         g3: torch.Tensor,
-        lr: torch.Tensor,
+        schedule_factor: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
         clipsnr: float,
@@ -130,11 +130,12 @@ class ADana(Optimizer):
         # Apply parameter update (in-place)
         p.add_(update)
 
-        # Apply decoupled weight decay (AdamW-style)
+        # Apply independent weight decay (paper convention):
+        # WD is multiplied by schedule γ(t) but NOT by peak LR γ*
         if wd_decaying:
-            wd_factor = -wd / (1 + step / wd_ts) * lr
+            wd_factor = -wd / (1 + step / wd_ts) * schedule_factor
         else:
-            wd_factor = -wd * lr
+            wd_factor = -wd * schedule_factor
         p.mul_(1 + wd_factor)
 
         # Compute diagnostics
@@ -157,8 +158,8 @@ class ADana(Optimizer):
         for group in self.param_groups:
             g2 = group['lr']
             g3 = group['lr']
-            lr = group['lr']
-            time_factor = group['lr'] / self.lr
+            schedule_factor = group['lr'] / self.lr  # γ(t) without peak LR
+            time_factor = schedule_factor
             group['weighted_step_count'] += time_factor
             delta = group['delta']
             wd = group['weight_decay']
@@ -167,12 +168,12 @@ class ADana(Optimizer):
             if self.use_foreach:
                 g2_t = torch.tensor(g2, dtype=torch.float32)
                 g3_t = torch.tensor(g3, dtype=torch.float32)
-                lr_t = torch.tensor(lr, dtype=torch.float32)
+                sf_t = torch.tensor(schedule_factor, dtype=torch.float32)
                 delta_t = torch.tensor(delta, dtype=torch.float32)
                 wd_t = torch.tensor(wd, dtype=torch.float32)
 
                 self._foreach_step_group(
-                    group, g2_t, g3_t, lr_t, delta_t, wd_t, epsilon
+                    group, g2_t, g3_t, sf_t, delta_t, wd_t, epsilon
                 )
                 continue
 
@@ -199,14 +200,14 @@ class ADana(Optimizer):
                 alpha_t = torch.tensor(alpha, device=device, dtype=torch.float32)
                 g2_t = torch.tensor(g2, device=device, dtype=torch.float32)
                 g3_t = torch.tensor(g3, device=device, dtype=torch.float32)
-                lr_t = torch.tensor(lr, device=device, dtype=torch.float32)
+                sf_t = torch.tensor(schedule_factor, device=device, dtype=torch.float32)
                 wd_t = torch.tensor(wd, device=device, dtype=torch.float32)
 
                 update_fn = self._get_compiled_fn(p.shape)
 
                 m_new, v_new, diagnostics = update_fn(
                     p, grad, m, v,
-                    step_t, alpha_t, g2_t, g3_t, lr_t, wd_t,
+                    step_t, alpha_t, g2_t, g3_t, sf_t, wd_t,
                     epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
                 )
 
@@ -226,7 +227,7 @@ class ADana(Optimizer):
         group,
         g2: torch.Tensor,
         g3: torch.Tensor,
-        lr: torch.Tensor,
+        schedule_factor: torch.Tensor,
         delta: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
@@ -267,12 +268,12 @@ class ADana(Optimizer):
         if self._foreach_compute_kernel is not None:
             alpha_factors, mfacs = self._foreach_compute_kernel(
                 params, grads, ms, vs, alpha_tensors, step_tensors,
-                g2, g3, lr, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
             )
         else:
             alpha_factors, mfacs = self._foreach_compute_kernel_impl(
                 params, grads, ms, vs, alpha_tensors, step_tensors,
-                g2, g3, lr, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
             )
 
         for state, a_factor, g, m_tensor, m_fac in zip(states, alpha_factors, grads, ms, mfacs):
@@ -292,7 +293,7 @@ class ADana(Optimizer):
         step_tensors,
         g2: torch.Tensor,
         g3: torch.Tensor,
-        lr: torch.Tensor,
+        schedule_factor: torch.Tensor,
         wd: torch.Tensor,
         epsilon: float,
         clipsnr: float,
@@ -345,16 +346,17 @@ class ADana(Optimizer):
         torch._foreach_neg_(update)
         torch._foreach_add_(params, update)
 
-        # Step 10: Weight decay
+        # Step 10: Independent weight decay (paper convention)
+        # WD is multiplied by schedule γ(t) but NOT by peak LR γ*
         if wd_decaying:
             step_over_ts = torch._foreach_div(step_tensors, wd_ts)
             one_plus_ratio = torch._foreach_add(step_over_ts, 1.0)
             wd_decay = torch._foreach_reciprocal(one_plus_ratio)
-            neg_wd_lr = -wd * lr
-            wd_factors = torch._foreach_mul(wd_decay, neg_wd_lr)
+            neg_wd_sf = -wd * schedule_factor
+            wd_factors = torch._foreach_mul(wd_decay, neg_wd_sf)
         else:
-            neg_wd_lr = -wd * lr
-            wd_factors = [neg_wd_lr.to(device=p.device, dtype=p.dtype) for p in params]
+            neg_wd_sf = -wd * schedule_factor
+            wd_factors = [neg_wd_sf.to(device=p.device, dtype=p.dtype) for p in params]
 
         wd_updates = torch._foreach_mul(params, wd_factors)
         torch._foreach_add_(params, wd_updates)

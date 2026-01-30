@@ -212,4 +212,7 @@ exps/
 wandb/
 src/data/datasets/
 
+# User-specific config (credentials, paths)
+scripts/config.local
+
 

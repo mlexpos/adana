@@ -1,33 +1,40 @@
 #!/bin/bash
 # =============================================================================
-# config.sh - User and cluster settings for DSTAR training
+# config.sh - Cluster and user settings for DSTAR training
 # =============================================================================
 # Source this file from launch.sh and restart scripts.
-# Override any variable before sourcing, or set via environment.
 #
-# NOTE: WANDB_RUN_GROUP is per-experiment and belongs in launch.sh, not here.
+# This file handles two things:
+#   1. Cluster detection + module loads (same for all users on a cluster)
+#   2. User config via scripts/config.local (per-user paths, credentials, etc.)
+#
+# Users should create scripts/config.local with their settings.
+# See scripts/config.local.example for a template.
 # =============================================================================
 
-# --- WANDB Configuration ---
-# Set these in your environment or override before sourcing.
+# =============================================================================
+# 1. User config file (scripts/config.local)
+# =============================================================================
+# Source user config first so it can set DATASETS_DIR, WANDB_API_KEY, etc.
+# before the defaults below kick in.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/config.local" ]; then
+    source "$SCRIPT_DIR/config.local"
+fi
+
+# --- Defaults (overridden by scripts/config.local or environment) ---
 export WANDB_API_KEY="${WANDB_API_KEY:-}"
 export WANDB_ENTITY="${WANDB_ENTITY:-}"
 export WANDB_PROJECT="${WANDB_PROJECT:-danastar}"
-
-# --- Data Paths ---
 export DATASETS_DIR="${DATASETS_DIR:-./src/data/datasets/}"
 export RESULTS_BASE_FOLDER="${RESULTS_BASE_FOLDER:-./exps}"
-
-# --- Caches ---
 export TIKTOKEN_CACHE_DIR="${TIKTOKEN_CACHE_DIR:-$HOME/tiktoken_cache}"
 export HF_HOME="${HF_HOME:-${SLURM_TMPDIR:-/tmp}/hf}"
-
-# --- PyTorch Memory ---
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-# --- Cluster-Specific Module Loads and Venv ---
-# Detect cluster from hostname and load appropriate modules.
-# Override DSTAR_CLUSTER to force a specific configuration.
+# =============================================================================
+# 2. Cluster detection and module loads
+# =============================================================================
 DSTAR_CLUSTER="${DSTAR_CLUSTER:-auto}"
 
 if [ "$DSTAR_CLUSTER" = "auto" ]; then
@@ -41,6 +48,9 @@ if [ "$DSTAR_CLUSTER" = "auto" ]; then
             ;;
         fir*|cedar*)
             DSTAR_CLUSTER="fir"
+            ;;
+        rorqual*|rg*)
+            DSTAR_CLUSTER="rorqual"
             ;;
         math*|slurm*)
             DSTAR_CLUSTER="math-slurm"
@@ -56,7 +66,6 @@ case "$DSTAR_CLUSTER" in
         module load arrow/21.0.0 2>/dev/null || true
         module load python/3.13 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
-        export DATASETS_DIR="${DATASETS_DIR:-$HOME/scratch/datasets}"
         ;;
     tamia)
         module load python/3.12 2>/dev/null || true
@@ -64,6 +73,12 @@ case "$DSTAR_CLUSTER" in
         ;;
     fir)
         module load python/3.12 2>/dev/null || true
+        source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
+        ;;
+    rorqual)
+        module load gcc 2>/dev/null || true
+        module load arrow/21.0.0 2>/dev/null || true
+        module load python/3.13 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     math-slurm)

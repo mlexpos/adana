@@ -26,6 +26,7 @@ class AdamWDecayingWD(Optimizer):
             wd_ts: Timescale for weight decay decay.
         """
         defaults = dict(lr=lr, betas=betas, epsilon=epsilon, weight_decay=weight_decay)
+        self.initial_lr = lr  # Peak LR for computing schedule factor
         self.wd_decaying = wd_decaying
         self.wd_ts = wd_ts
         super(AdamWDecayingWD, self).__init__(params, defaults)
@@ -39,6 +40,7 @@ class AdamWDecayingWD(Optimizer):
 
         for group in self.param_groups:
             lr = group['lr']
+            schedule_factor = group['lr'] / self.initial_lr  # γ(t) without peak LR
             beta1, beta2 = group['betas']
             epsilon = group['epsilon']
             weight_decay = group['weight_decay']
@@ -72,11 +74,13 @@ class AdamWDecayingWD(Optimizer):
                 denom = (exp_avg_sq.sqrt() / bias_correction2_sqrt).add_(epsilon)
                 p.addcdiv_(exp_avg, denom, value=-step_size)
 
+                # Independent weight decay (paper convention):
+                # WD is multiplied by schedule γ(t) but NOT by peak LR γ*
                 if weight_decay != 0:
                     if self.wd_decaying:
-                        wd_factor = -weight_decay / (1 + step / self.wd_ts) * lr
+                        wd_factor = -weight_decay / (1 + step / self.wd_ts) * schedule_factor
                     else:
-                        wd_factor = -weight_decay * lr
+                        wd_factor = -weight_decay * schedule_factor
                     p.mul_(1 + wd_factor)
 
         return loss
