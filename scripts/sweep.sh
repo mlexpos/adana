@@ -52,6 +52,9 @@ NO_AUTO_RESUME=1               # 1 = fresh start, 0 = resume from checkpoint
 ITERATIONS_OVERRIDE=""         # override auto-computed iterations (leave empty for Chinchilla-optimal)
 ITERATIONS_TO_RUN=""           # max iterations per SLURM job (for auto-restart, leave empty to disable)
 
+# --- WandB ---
+WANDB_OFFLINE=0                # 1 = offline mode (for nodes without internet), sync later
+
 # --- Other ---
 EXTRA_ARGS=""                  # any additional args passed to launch.sh
                                # e.g. "--no_wandb" "--no_compile" "--eval_interval 100"
@@ -66,6 +69,11 @@ if [[ "${1:-}" == "--dry" ]]; then
     DRY_RUN=1
     echo "=== DRY RUN (no jobs will be submitted) ==="
     echo ""
+fi
+
+# Set WandB offline mode if requested
+if [ "$WANDB_OFFLINE" -eq 1 ]; then
+    export WANDB_MODE=offline
 fi
 
 # Use restart script based on architecture
@@ -92,6 +100,7 @@ echo "Heads:         ${HEADS_LIST[*]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[*]}"
 echo "Batch:         ${BATCH_SIZE} x ${ACC_STEPS} x ${NPROC} GPUs = ${GLOBAL_BATCH} global"
 echo "SLURM:         ${NPROC} GPUs, ${TIME}, mem=${MEM}"
+echo "WandB:         $([ "$WANDB_OFFLINE" -eq 1 ] && echo "offline" || echo "online")"
 echo "Total jobs:    $TOTAL_JOBS"
 echo "============================================================"
 echo ""
