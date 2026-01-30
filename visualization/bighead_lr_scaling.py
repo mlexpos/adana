@@ -110,6 +110,11 @@ SCALING_RULE_CONFIG = {
         'group': 'Qwen3_Hoyer',
         'extrapolation_sizes': [4, 6, 8, 10, 12, 14, 16],
         'size_step': 2,  # Show multiples of 2
+    },
+    'Enoki_512': {
+        'group': 'enoki_512',
+        'extrapolation_sizes': [8, 12, 16, 20, 24, 28, 32, 36, 40],  # Only multiples of 4
+        'size_step': 4,  # Only show multiples of 4
     }
 }
 
@@ -125,7 +130,7 @@ rcParams['figure.figsize'] = (1 * 10.0, 1 * 8.0)
 # =============================================================================
 
 parser = argparse.ArgumentParser(description='Fit power law for optimal LR across different model scaling rules')
-parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
+parser.add_argument('--scaling-rule', type=str, required=True, choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_std', 'Eryngii', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer', 'Enoki_512'],
                     help='Model scaling rule: BigHead (depth-based), EggHead (quadratic depth), Enoki (DiLoco), Enoki_std (standard init), Enoki_Scaled (ScaledGPT init), Enoki_Scaled_noqk (ScaledGPT init without QK norm), Eryngii (increased head dim and depth), Eryngii_Scaled (ScaledGPT init), Qwen3_Scaled (ScaledGPT init), or Qwen3_Hoyer (ScaledGPT init with Hoyer loss)')
 parser.add_argument('--optimizer', type=str, required=True, choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85', 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1'],
                     help='Optimizer type: adamw, mk4 (dana-star-mk4), dana, ademamix, d-muon, manau, adamw-decaying-wd, dana-mk4, ademamix-decaying-wd, dana-star-no-tau, dana-star, dana-star-no-tau-kappa-0-8/85/9, dana-mk4-kappa-0-85, dana-star-no-tau-beta1, dana-star-no-tau-dana-constant, dana-star-no-tau-beta2-constant, dana-star-no-tau-dana-constant-beta2-constant, dana-star-no-tau-dana-constant-beta1 or dana-star-no-tau-dana-constant-beta2-constant-beta1')
@@ -247,8 +252,8 @@ def compute_non_embedding_params(size, scaling_rule):
         # Non-emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd^2 + 2 * n_embd * mlp + 8 * n_embd) + 2 * n_embd
         non_emb = n_layer * (3 * head_dim * n_embd * n_head + n_embd * n_embd + 2 * n_embd * mlp_hidden + 8 * n_embd) + 2 * n_embd
 
-    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_std' or scaling_rule == 'Enoki_Scaled' or scaling_rule == 'Enoki_Scaled_noqk':
-        # Enoki, Enoki_std, Enoki_Scaled, and Enoki_Scaled_noqk: heads-based DiLoco scaling
+    elif scaling_rule in ('Enoki', 'Enoki_std', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Enoki_512'):
+        # Enoki variants: heads-based DiLoco scaling
         heads = size
         head_dim = 64  # Fixed for Enoki
         n_embd = heads * 64
@@ -306,7 +311,7 @@ def compute_total_params(size, scaling_rule):
     elif scaling_rule == 'EggHead':
         n_embd = 16 * size * size
         vocab_size = 50304
-    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_std' or scaling_rule == 'Enoki_Scaled' or scaling_rule == 'Enoki_Scaled_noqk':
+    elif scaling_rule in ('Enoki', 'Enoki_std', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Enoki_512'):
         n_embd = size * 64
         vocab_size = 50304
     elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
@@ -582,8 +587,8 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
             # EggHead uses n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
-        elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_std' or scaling_rule == 'Enoki_Scaled' or scaling_rule == 'Enoki_Scaled_noqk':
-            # Enoki, Enoki_std, Enoki_Scaled, and Enoki_Scaled_noqk use n_head as heads
+        elif scaling_rule in ('Enoki', 'Enoki_std', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Enoki_512'):
+            # Enoki variants use n_head as heads
             size = config.get('n_head')
             size_name = 'heads'
         elif scaling_rule == 'Eryngii' or scaling_rule == 'Eryngii_Scaled':
@@ -604,7 +609,7 @@ def load_wandb_data_simple(project_name, group_name, entity, optimizer_type, sca
         # Filter by smallest_head if specified
         if smallest_head is not None:
             # For head-based scaling rules, check n_head directly
-            if scaling_rule in ['EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer']:
+            if scaling_rule in ['EggHead', 'Enoki', 'Enoki_std', 'Enoki_Scaled', 'Enoki_Scaled_noqk', 'Enoki_512', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer']:
                 if size < smallest_head:
                     skipped_smallest_head += 1
                     continue
@@ -1606,6 +1611,7 @@ if __name__ == '__main__':
             'Enoki_Scaled': 'Enoki',
             'Enoki_std': 'Enoki',
             'Enoki_Scaled_noqk': 'Enoki',
+            'Enoki_512': 'Enoki_512',
             'Qwen3_Scaled': 'Qwen3',
             'Qwen3_Hoyer': 'Qwen3',
             'BigHead': 'BigHead',
@@ -1646,6 +1652,7 @@ if __name__ == '__main__':
             'Enoki_Scaled': 'Enoki',
             'Enoki_std': 'Enoki',
             'Enoki_Scaled_noqk': 'Enoki',
+            'Enoki_512': 'Enoki_512',
             'Qwen3_Scaled': 'Qwen3',
             'Qwen3_Hoyer': 'Qwen3',
             'BigHead': 'BigHead',
