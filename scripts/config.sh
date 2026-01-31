@@ -36,9 +36,9 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 # 2. Cluster detection and module loads
 # =============================================================================
 DSTAR_CLUSTER="${DSTAR_CLUSTER:-auto}"
+HOSTNAME_SHORT=$(hostname -s 2>/dev/null || echo "unknown")
 
 if [ "$DSTAR_CLUSTER" = "auto" ]; then
-    HOSTNAME_SHORT=$(hostname -s 2>/dev/null || echo "unknown")
     case "$HOSTNAME_SHORT" in
         nar*|narval*|blg*|beluga*|cedar*)
             DSTAR_CLUSTER="narval"
@@ -89,4 +89,4 @@ case "$DSTAR_CLUSTER" in
         ;;
 esac
 
-echo "[config.sh] Cluster: $DSTAR_CLUSTER"
+echo "[config.sh] Host: $HOSTNAME_SHORT, Cluster: $DSTAR_CLUSTER"
