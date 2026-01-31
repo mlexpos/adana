@@ -21,6 +21,7 @@ class DANA_STAR_MK4(Optimizer):
         weight_time: bool = False,
         wd_decaying: bool = False,
         wd_ts: float = 1.0,
+        gamma_3_factor: float = 1.0,
         use_foreach: bool = False,
         ):
         """
@@ -43,6 +44,7 @@ class DANA_STAR_MK4(Optimizer):
             weight_time: Must be False (kept for compatibility).
             wd_decaying: Whether to decay weight decay over time.
             wd_ts: Timescale for weight decay decay.
+            gamma_3_factor: Scaling factor for the g3 (long-momentum) term (default: 1.0).
             use_foreach: Whether to use fused foreach operations (default: False).
         """
         # Enforce mk4A, mk4B, and weight_time constraints
@@ -63,6 +65,7 @@ class DANA_STAR_MK4(Optimizer):
         self.weight_time = False  # Hardcoded
         self.wd_decaying = wd_decaying
         self.wd_ts = wd_ts
+        self.gamma_3_factor = gamma_3_factor
         self.use_foreach = use_foreach
 
         super(DANA_STAR_MK4, self).__init__(params, defaults)
@@ -117,13 +120,14 @@ class DANA_STAR_MK4(Optimizer):
         kappa: float,
         wd_decaying: bool,
         wd_ts: float,
+        gamma_3_factor: float,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict]:
         """
         Compiled function for updating a single parameter.
 
         Note: Dynamic hyperparameters (step, alpha, g2, g3, schedule_factor, wd) are
         passed as 0-D tensors to avoid recompilation when values change.
-        Static hyperparameters (epsilon, clipsnr, kappa, wd_ts) remain as scalars.
+        Static hyperparameters (epsilon, clipsnr, kappa, wd_ts, gamma_3_factor) remain as scalars.
 
         Returns:
             Updated (m, v, tau) and diagnostics dict
@@ -169,8 +173,8 @@ class DANA_STAR_MK4(Optimizer):
         else:
             alpha_factor = (effective_time ** (1 - kappa)) * mfac
 
-        # Compute g3 term (momentum-based update)
-        g3_term = (-g3) * (torch.sign(m) * (tau_reg * alpha_factor + m_norm_term))
+        # Compute g3 term (momentum-based update), scaled by gamma_3_factor
+        g3_term = (-g3) * gamma_3_factor * (torch.sign(m) * (tau_reg * alpha_factor + m_norm_term))
 
         # Compute g2 term (gradient-based update)
         g2_term = (-g2) * grad * norm_term
@@ -274,7 +278,7 @@ class DANA_STAR_MK4(Optimizer):
                 m_new, v_new, tau_new, diagnostics = update_fn(
                     p, grad, m, v, tau,
                     step_t, alpha_t, g2_t, g3_t, sf_t, wd_t,
-                    epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                    epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts, self.gamma_3_factor
                 )
 
                 # Update state tensors in-place
@@ -354,12 +358,12 @@ class DANA_STAR_MK4(Optimizer):
         if self._foreach_compute_kernel is not None:
             alpha_factors, mfacs = self._foreach_compute_kernel(
                 params, grads, ms, vs, taus, alpha_tensors, step_tensors,
-                g2, g3, schedule_factor, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts, self.gamma_3_factor
             )
         else:
             alpha_factors, mfacs = self._foreach_compute_kernel_impl(
                 params, grads, ms, vs, taus, alpha_tensors, step_tensors,
-                g2, g3, schedule_factor, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, clipsnr, self.kappa, self.wd_decaying, self.wd_ts, self.gamma_3_factor
             )
 
         # ===================================================================
@@ -390,6 +394,7 @@ class DANA_STAR_MK4(Optimizer):
         kappa: float,
         wd_decaying: bool,
         wd_ts: float,
+        gamma_3_factor: float,
     ):
         """
         Pure computation kernel (compilable) - no access to self.state or group.
@@ -481,8 +486,8 @@ class DANA_STAR_MK4(Optimizer):
         if clipsnr is not None:
             alpha_factor = [torch.clamp(af, max=clipsnr) for af in alpha_factor]
 
-        # Step 9: Compute g3 term
-        # g3_term = g3 * (tau_reg * sign(m) * alpha_factor + m * norm_term)
+        # Step 9: Compute g3 term, scaled by gamma_3_factor
+        # g3_term = g3 * gamma_3_factor * (tau_reg * sign(m) * alpha_factor + m * norm_term)
         sign_m = torch._foreach_sign(ms)
 
         # First part: tau_reg * sign(m) * alpha_factor
@@ -495,6 +500,8 @@ class DANA_STAR_MK4(Optimizer):
 
         # Combine: tau_sign_alpha + m_norm_term
         g3_inner = torch._foreach_add(tau_sign_alpha, m_norm_term)
+        # Scale by gamma_3_factor
+        torch._foreach_mul_(g3_inner, gamma_3_factor)
         g3_term = torch._foreach_mul(g3_inner, g3)
 
         # Step 10: Compute g2 term

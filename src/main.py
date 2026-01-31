@@ -218,22 +218,26 @@ def build_optimizer(args, model, group_specs):
             group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
             weight_decay=args.weight_decay, clipsnr=None,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+            gamma_3_factor=args.gamma_3_factor,
         ),
         "dana-mk4": lambda: ADana(
             group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
             weight_decay=args.weight_decay, clipsnr=args.clipsnr,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+            gamma_3_factor=args.gamma_3_factor,
         ),
         # Dana-Star family (with tau buffer)
         "dana-star": lambda: DANA_STAR_MK4(
             group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
             weight_decay=args.weight_decay, clipsnr=None,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+            gamma_3_factor=args.gamma_3_factor,
         ),
         "dana-star-mk4": lambda: DANA_STAR_MK4(
             group_specs, lr=args.lr, delta=args.delta, kappa=args.kappa,
             weight_decay=args.weight_decay, clipsnr=args.clipsnr,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+            gamma_3_factor=args.gamma_3_factor,
         ),
         # Ablation variants
         "adamw-decaying-wd": lambda: AdamWDecayingWD(

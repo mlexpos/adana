@@ -25,6 +25,7 @@ class ADana(Optimizer):
         clipsnr: SNR clipping parameter. None disables clipping (default: None).
         wd_decaying: Whether to decay weight decay over time (default: False).
         wd_ts: Timescale for weight decay decay (default: 1.0).
+        gamma_3_factor: Scaling factor for the g3 (long-momentum) term (default: 1.0).
         use_foreach: Whether to use fused foreach operations (default: False).
     """
 
@@ -39,6 +40,7 @@ class ADana(Optimizer):
         clipsnr: float = None,
         wd_decaying: bool = False,
         wd_ts: float = 1.0,
+        gamma_3_factor: float = 1.0,
         use_foreach: bool = False,
     ):
         defaults = dict(
@@ -51,6 +53,7 @@ class ADana(Optimizer):
         self.clipsnr = clipsnr
         self.wd_decaying = wd_decaying
         self.wd_ts = wd_ts
+        self.gamma_3_factor = gamma_3_factor
         self.use_foreach = use_foreach
 
         super(ADana, self).__init__(params, defaults)
@@ -92,6 +95,7 @@ class ADana(Optimizer):
         kappa: float,
         wd_decaying: bool,
         wd_ts: float,
+        gamma_3_factor: float,
     ) -> tuple[torch.Tensor, torch.Tensor, dict]:
         # Update first moment (EMA of gradient)
         m.lerp_(grad, alpha)
@@ -118,8 +122,8 @@ class ADana(Optimizer):
         else:
             alpha_factor = (effective_time ** (1 - kappa)) * mfac
 
-        # Compute g3 term (momentum-based update, no tau_reg)
-        g3_term = (-g3) * (torch.sign(m) * alpha_factor + m * norm_term)
+        # Compute g3 term (momentum-based update, no tau_reg), scaled by gamma_3_factor
+        g3_term = (-g3) * gamma_3_factor * (torch.sign(m) * alpha_factor + m * norm_term)
 
         # Compute g2 term (gradient-based update)
         g2_term = (-g2) * grad * norm_term
@@ -208,7 +212,7 @@ class ADana(Optimizer):
                 m_new, v_new, diagnostics = update_fn(
                     p, grad, m, v,
                     step_t, alpha_t, g2_t, g3_t, sf_t, wd_t,
-                    epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                    epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts, self.gamma_3_factor
                 )
 
                 m.copy_(m_new)
@@ -268,12 +272,12 @@ class ADana(Optimizer):
         if self._foreach_compute_kernel is not None:
             alpha_factors, mfacs = self._foreach_compute_kernel(
                 params, grads, ms, vs, alpha_tensors, step_tensors,
-                g2, g3, schedule_factor, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts, self.gamma_3_factor
             )
         else:
             alpha_factors, mfacs = self._foreach_compute_kernel_impl(
                 params, grads, ms, vs, alpha_tensors, step_tensors,
-                g2, g3, schedule_factor, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts
+                g2, g3, schedule_factor, wd, epsilon, self.clipsnr, self.kappa, self.wd_decaying, self.wd_ts, self.gamma_3_factor
             )
 
         for state, a_factor, g, m_tensor, m_fac in zip(states, alpha_factors, grads, ms, mfacs):
@@ -300,6 +304,7 @@ class ADana(Optimizer):
         kappa: float,
         wd_decaying: bool,
         wd_ts: float,
+        gamma_3_factor: float,
     ):
         # Step 1: Update first moment using lerp
         torch._foreach_lerp_(ms, grads, alpha_tensors)
@@ -330,11 +335,12 @@ class ADana(Optimizer):
         if clipsnr is not None:
             alpha_factor = [torch.clamp(af, max=clipsnr) for af in alpha_factor]
 
-        # Step 7: Compute g3 term (no tau_reg)
+        # Step 7: Compute g3 term (no tau_reg), scaled by gamma_3_factor
         sign_m = torch._foreach_sign(ms)
         sign_alpha = torch._foreach_mul(sign_m, alpha_factor)
         m_norm_term = torch._foreach_mul(ms, norm_term)
         g3_inner = torch._foreach_add(sign_alpha, m_norm_term)
+        torch._foreach_mul_(g3_inner, gamma_3_factor)
         g3_term = torch._foreach_mul(g3_inner, g3)
 
         # Step 8: Compute g2 term
