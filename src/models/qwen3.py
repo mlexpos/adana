@@ -376,7 +376,7 @@ class Qwen3(GPTBase):
             else:
                 loss, z_loss = chunked_cross_entropy(
                     x, self.lm_head.weight, targets,
-                    z_loss_fn=self.compute_z_loss,
+                    compute_z_loss=True,
                     z_loss_coeff=self.config.z_loss_coeff,
                 )
                 logits = None
