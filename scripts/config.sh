@@ -46,7 +46,7 @@ if [ "$DSTAR_CLUSTER" = "auto" ]; then
         tamia*|tam*)
             DSTAR_CLUSTER="tamia"
             ;;
-        fir*|cedar*)
+        fir*|cedar*|login3*)
             DSTAR_CLUSTER="fir"
             ;;
         rorqual*|rg*)
@@ -72,7 +72,7 @@ case "$DSTAR_CLUSTER" in
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     fir)
-        module load python/3.12 2>/dev/null || true
+        module load python/3.13 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     rorqual)
