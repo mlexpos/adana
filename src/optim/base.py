@@ -123,6 +123,7 @@ def train(
                         exp_dir.mkdir(parents=True, exist_ok=True)
                         with open(wandb_id_file, "w") as f:
                             f.write(wandb.run.id)
+                # All ranks save their own worker state (RNG + dataloader position)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
@@ -142,6 +143,7 @@ def train(
                         exp_dir.mkdir(parents=True, exist_ok=True)
                         with open(wandb_id_file, "w") as f:
                             f.write(wandb.run.id)
+                # All ranks save their own worker state (RNG + dataloader position)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
                 if distributed_backend.is_master_process():
                     print(f"[Checkpoint] END   latest    iter={curr_iter} -> {ckpt_dir}")

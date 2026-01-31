@@ -347,12 +347,10 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device, distributed_backen
 
 
 def save_worker_state(ckpt_dir: Path, train_reader=None):
-    # If using SLURM_TMPDIR, redirect to local path (same as save_checkpoint)
-    slurm_tmpdir = os.environ.get("SLURM_TMPDIR")
-    project_ckpt_dir = ckpt_dir
-    if slurm_tmpdir:
-        local_base = Path(slurm_tmpdir) / "ckpts"
-        ckpt_dir = local_base / ckpt_dir.name
+    # NOTE: Unlike save_checkpoint, we do NOT redirect to SLURM_TMPDIR here.
+    # Worker state files are tiny (a few KB per rank) so the NVMe optimization
+    # is unnecessary, and the lack of rsync back to the project directory was
+    # causing worker_*.pt files to be lost when SLURM jobs ended.
 
     # Dataloader, rng states
     worker_state = {
@@ -404,13 +402,6 @@ def save_worker_state(ckpt_dir: Path, train_reader=None):
 
 def load_worker_state(ckpt_dir: Path, train_reader=None):
     rank = 0 if not dist.is_initialized() else dist.get_rank()
-
-    # Check if checkpoint exists in SLURM_TMPDIR first (faster local NVMe)
-    slurm_tmpdir = os.environ.get("SLURM_TMPDIR")
-    if slurm_tmpdir:
-        local_dir = Path(slurm_tmpdir) / "ckpts" / ckpt_dir.name
-        if (local_dir / f"worker_{rank}.pt").exists():
-            ckpt_dir = local_dir
 
     # PyTorch 2.6 defaults to weights_only=True; worker state includes numpy/python RNG states
     # Try safe default first, then fall back to weights_only=False if needed
