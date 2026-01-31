@@ -67,6 +67,8 @@ ITERATIONS_TO_RUN=""           # max iterations per SLURM job (for auto-restart,
 WANDB_OFFLINE=0                # 1 = offline mode (for nodes without internet), sync later
 
 # --- Other ---
+EVAL_BATCHES=4                 # number of eval batches (default 64 in codebase can OOM at large batch sizes)
+
 EXTRA_ARGS=""                  # any additional args passed to launch.sh
                                # e.g. "--no_wandb" "--no_compile" "--eval_interval 100"
                                #      "--latest_ckpt_interval 0"  disable checkpointing entirely
@@ -165,6 +167,8 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
             --distributed_backend "$DISTRIBUTED_BACKEND"
             --wandb_group "$WANDB_GROUP"
         )
+
+        LAUNCH_ARGS+=(--eval_batches "$EVAL_BATCHES")
 
         if [ "$TP_SIZE" -gt 1 ]; then
             LAUNCH_ARGS+=(--tp_size "$TP_SIZE")
