@@ -45,6 +45,17 @@ MEM="0"                        # memory (0 = allocate as needed on Alliance)
 
 # --- Distributed backend ---
 DISTRIBUTED_BACKEND="fsdp"     # nccl (DDP) or fsdp
+TP_SIZE=1                      # tensor parallelism degree (1 = disabled)
+                               # splits each layer's weights across TP_SIZE GPUs
+                               # requires DISTRIBUTED_BACKEND="fsdp" and NPROC >= TP_SIZE
+                               # useful when a single GPU can't hold the full model activations
+
+# --- Loss computation ---
+LIGER_LOSS=0                   # 1 = use Liger fused linear cross-entropy kernel
+                               # fuses lm_head projection + CE loss into a single Triton kernel,
+                               # never materializing the full (B,T,vocab) logits tensor
+                               # saves ~6 GiB at batch 16 on 2.1B Enoki (46.8 vs 52.6 GiB)
+                               # requires: pip install liger-kernel
 
 # --- Training options ---
 SCHEDULER="cos_inf"            # cos_inf (decays to 10% of peak LR), cos, wsd, linear
@@ -154,6 +165,14 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
             --distributed_backend "$DISTRIBUTED_BACKEND"
             --wandb_group "$WANDB_GROUP"
         )
+
+        if [ "$TP_SIZE" -gt 1 ]; then
+            LAUNCH_ARGS+=(--tp_size "$TP_SIZE")
+        fi
+
+        if [ "$LIGER_LOSS" -eq 1 ]; then
+            LAUNCH_ARGS+=(--liger_loss)
+        fi
 
         if [ "$NO_AUTO_RESUME" -eq 1 ]; then
             LAUNCH_ARGS+=(--no_auto_resume)
