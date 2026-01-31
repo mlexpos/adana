@@ -12,7 +12,7 @@ from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 from models.base import CausalSelfAttention, GPTBase
-from models.chunked_loss import chunked_cross_entropy
+from models.chunked_loss import chunked_cross_entropy, liger_cross_entropy
 from models.moe import MoE
 
 
@@ -106,16 +106,18 @@ class LlamaAttention(CausalSelfAttention):
         ) = x.size()
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        # (B, T, nh, hs)
-        k = k.view(B, T, self.n_head, C // self.n_head)
-        q = q.view(B, T, self.n_head, C // self.n_head)
+        # Use chunk(3) for tensor parallelism compatibility (c_attn output is locally sharded with TP)
+        head_dim = C // self.n_head
+        q, k, v = self.c_attn(x).chunk(3, dim=-1)
+        # (B, T, nh_local, hs) — nh_local == n_head when tp_size=1
+        k = k.view(B, T, -1, head_dim)
+        q = q.view(B, T, -1, head_dim)
         q, k = apply_rotary_emb(q, k, freqs_cis)
-        # (B, nh, T, hs)
+        # (B, nh_local, T, hs)
         q, k = q.transpose(1, 2), k.transpose(1, 2)
 
-        # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        # (B, nh_local, T, hs)
+        v = v.view(B, T, -1, head_dim).transpose(1, 2)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -131,7 +133,7 @@ class LlamaAttention(CausalSelfAttention):
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
+            y.transpose(1, 2).contiguous().view(B, T, -1)
         )  # re-assemble all head outputs side by side
 
         # output projection
@@ -197,6 +199,21 @@ class Llama(GPTBase):
                     p, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer)
                 )
 
+    @staticmethod
+    def get_tp_plan():
+        """Return tensor parallelism plan for Llama blocks.
+
+        Llama uses combined QKV (c_attn) and SwiGLU MLP (w1, w2, c_proj).
+        """
+        from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+        return {
+            "attn.c_attn": ColwiseParallel(),
+            "attn.c_proj": RowwiseParallel(),
+            "mlp.w1": ColwiseParallel(),
+            "mlp.w2": ColwiseParallel(),
+            "mlp.c_proj": RowwiseParallel(),
+        }
+
     def get_num_params(self, non_embedding=True):
         """
         Return the number of parameters in the model.
@@ -207,7 +224,7 @@ class Llama(GPTBase):
         n_params = sum(p.numel() for p in self.parameters())
         return n_params
 
-    def forward(self, idx, targets=None, get_logits=False, moe=False):
+    def forward(self, idx, targets=None, get_logits=False, moe=False, compute_accuracy=False):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -228,8 +245,9 @@ class Llama(GPTBase):
         experts = []
 
         _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
-        for block in self.transformer.h:
-            if _use_ckpt:
+        _ckpt_every_n = getattr(self.config, 'checkpoint_every_n', 1)
+        for i, block in enumerate(self.transformer.h):
+            if _use_ckpt and (i % _ckpt_every_n == 0):
                 x, logits_and_experts = _torch_checkpoint(block, x, freqs_cis, use_reentrant=False)
             else:
                 x, logits_and_experts = block(x, freqs_cis=freqs_cis)
@@ -240,6 +258,7 @@ class Llama(GPTBase):
 
         # aux_losses is a dict with keys for different auxiliary losses
         aux_losses = {}
+        accuracy = None
         if targets is not None:
             # if we are given some desired targets also calculate the loss
             if get_logits:
@@ -248,7 +267,11 @@ class Llama(GPTBase):
                     logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
                 )
             else:
-                loss, _ = chunked_cross_entropy(x, self.lm_head.weight, targets)
+                _ce_fn = liger_cross_entropy if getattr(self.config, 'liger_loss', False) else chunked_cross_entropy
+                loss, _, accuracy = _ce_fn(
+                    x, self.lm_head.weight, targets,
+                    compute_accuracy=compute_accuracy,
+                )
                 logits = None
             if moe and self.config.moe_routing == "standard_gating":
                 # calculate the router losses per layer
@@ -282,4 +305,5 @@ class Llama(GPTBase):
             "loss": loss,
             "aux_losses": aux_losses,
             "router_logits": router_logits,
+            "accuracy": accuracy,
         }

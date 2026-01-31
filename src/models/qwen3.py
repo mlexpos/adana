@@ -13,7 +13,7 @@ from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 from models.base import GPTBase, LayerNorm
-from models.chunked_loss import chunked_cross_entropy
+from models.chunked_loss import chunked_cross_entropy, liger_cross_entropy
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -175,22 +175,23 @@ class Qwen3Attention(nn.Module):
         value_states = self.v_proj(x)
 
         # Handle elementwise gating if enabled
+        # Use -1 for the head dimension to support tensor parallelism (local n_head = n_head / tp_size)
         if self.elementwise_attn_output_gate:
             # Split query projection into queries and gate scores
-            query_states = query_states.view(B, T, self.n_head, -1)
+            query_states = query_states.view(B, T, -1, 2 * self.qkv_dim)
             query_states, gate_score = torch.split(
                 query_states,
                 [self.qkv_dim, self.qkv_dim],
                 dim=-1
             )
-            # gate_score shape: (B, T, n_head, qkv_dim)
+            # gate_score shape: (B, T, n_head_local, qkv_dim)
         else:
-            query_states = query_states.view(B, T, self.n_head, self.qkv_dim)
+            query_states = query_states.view(B, T, -1, self.qkv_dim)
             gate_score = None
 
         # Reshape keys and values
-        key_states = key_states.view(B, T, self.n_head, self.qkv_dim)
-        value_states = value_states.view(B, T, self.n_head, self.qkv_dim)
+        key_states = key_states.view(B, T, -1, self.qkv_dim)
+        value_states = value_states.view(B, T, -1, self.qkv_dim)
 
         # Apply QK normalization (if enabled)
         if self.use_qknorm:
@@ -200,7 +201,7 @@ class Qwen3Attention(nn.Module):
         # Apply RoPE after normalization
         query_states, key_states = apply_rotary_emb(query_states, key_states, freqs_cis)
 
-        # Transpose to (B, n_head, T, qkv_dim) for attention
+        # Transpose to (B, n_head_local, T, qkv_dim) for attention
         query_states = query_states.transpose(1, 2)
         key_states = key_states.transpose(1, 2)
         value_states = value_states.transpose(1, 2)
@@ -220,17 +221,17 @@ class Qwen3Attention(nn.Module):
             attn_weights = attn_weights.masked_fill(self.bias[:, :, :T, :T] == 0, float("-inf"))
             attn_weights = F.softmax(attn_weights, dim=-1)
             attn_weights = self.attn_dropout(attn_weights)
-            attn_output = attn_weights @ value_states  # (B, n_head, T, qkv_dim)
+            attn_output = attn_weights @ value_states  # (B, n_head_local, T, qkv_dim)
 
-        # Transpose back to (B, T, n_head, qkv_dim)
+        # Transpose back to (B, T, n_head_local, qkv_dim)
         attn_output = attn_output.transpose(1, 2).contiguous()
 
         # Apply elementwise gating if enabled
         if self.elementwise_attn_output_gate:
             attn_output = attn_output * torch.sigmoid(gate_score)
 
-        # Reshape and project output
-        attn_output = attn_output.view(B, T, self.total_qkv_dim)
+        # Reshape and project output (use -1 for TP compatibility)
+        attn_output = attn_output.view(B, T, -1)
         attn_output = self.o_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
 
@@ -308,6 +309,23 @@ class Qwen3(GPTBase):
                     std = 1.0 / math.sqrt(2 * fan_in * config.n_layer)
                     torch.nn.init.normal_(p, mean=0.0, std=std)
 
+    @staticmethod
+    def get_tp_plan():
+        """Return tensor parallelism plan for Qwen3 blocks.
+
+        Qwen3 uses separate Q/K/V projections and SwiGLU MLP.
+        """
+        from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+        return {
+            "attn.q_proj": ColwiseParallel(),
+            "attn.k_proj": ColwiseParallel(),
+            "attn.v_proj": ColwiseParallel(),
+            "attn.o_proj": RowwiseParallel(),
+            "mlp.gate_proj": ColwiseParallel(),
+            "mlp.up_proj": ColwiseParallel(),
+            "mlp.down_proj": RowwiseParallel(),
+        }
+
     def compute_z_loss(self, logits):
         """
         Compute z-loss as described in DiLoCo paper.
@@ -331,11 +349,13 @@ class Qwen3(GPTBase):
         n_params = sum(p.numel() for p in self.parameters())
         if exclude_embeddings:
             n_params -= self.transformer.wte.weight.numel()  # Token embeddings
-            n_params -= self.lm_head.weight.numel()  # LM head
+            # Only subtract lm_head separately when it's not tied to wte
+            if not self.config.weight_tying:
+                n_params -= self.lm_head.weight.numel()
         # Note: No positional embeddings to subtract since we use RoPE
         return n_params
 
-    def forward(self, idx, targets=None, get_logits=False, moe=False):
+    def forward(self, idx, targets=None, get_logits=False, moe=False, compute_accuracy=False):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -357,8 +377,9 @@ class Qwen3(GPTBase):
 
         # forward pass through all the transformer blocks
         _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
-        for block in self.transformer.h:
-            if _use_ckpt:
+        _ckpt_every_n = getattr(self.config, 'checkpoint_every_n', 1)
+        for i, block in enumerate(self.transformer.h):
+            if _use_ckpt and (i % _ckpt_every_n == 0):
                 x, logits_and_experts = _torch_checkpoint(block, x, freqs_cis, use_reentrant=False)
             else:
                 x, logits_and_experts = block(x, freqs_cis)
@@ -369,6 +390,7 @@ class Qwen3(GPTBase):
 
         # aux_losses is a dict with keys for different auxiliary losses
         aux_losses = {}
+        accuracy = None
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -379,10 +401,12 @@ class Qwen3(GPTBase):
                 )
                 z_loss = self.compute_z_loss(logits.view(-1, logits.size(-1)))
             else:
-                loss, z_loss = chunked_cross_entropy(
+                _ce_fn = liger_cross_entropy if getattr(self.config, 'liger_loss', False) else chunked_cross_entropy
+                loss, z_loss, accuracy = _ce_fn(
                     x, self.lm_head.weight, targets,
                     compute_z_loss=True,
                     z_loss_coeff=self.config.z_loss_coeff,
+                    compute_accuracy=compute_accuracy,
                 )
                 logits = None
             aux_losses["z_loss"] = z_loss
@@ -425,4 +449,5 @@ class Qwen3(GPTBase):
             "loss": loss,
             "aux_losses": aux_losses,
             "router_logits": router_logits,
+            "accuracy": accuracy,
         }

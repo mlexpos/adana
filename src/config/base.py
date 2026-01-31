@@ -38,6 +38,12 @@ def parse_args(base_parser, args, namespace):
         required=False,
         choices=distributed.registered_backends(),
     )
+    parser.add_argument(
+        "--tp_size",
+        default=1,
+        type=int,
+        help="Tensor parallelism degree (default: 1 = disabled). Requires --distributed_backend fsdp.",
+    )
     parser.add_argument("--log_interval", default=50, type=int)
 
     # Checkpointing
@@ -336,6 +342,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--compile", action="store_true")
     parser.add_argument("--activation_checkpointing", action="store_true",
                        help="Enable per-block activation checkpointing to reduce memory usage")
+    parser.add_argument("--checkpoint_every_n", default=1, type=int,
+                       help="Checkpoint every N-th block (default=1 means all blocks). Only used with --activation_checkpointing.")
     parser.add_argument("--mlp_dim_exp_factor", default=1.0, type=float)
     parser.add_argument("--moe", action="store_true")
     parser.add_argument(
@@ -376,6 +384,9 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--plot_router_logits", action="store_true")
     parser.add_argument("--z_loss_coeff", default=1e-4, type=float)
     parser.add_argument("--hoyer_loss_coeff", default=0.0, type=float)
+    parser.add_argument("--liger_loss", action="store_true",
+                       help="Use Liger fused linear cross-entropy kernel (requires liger-kernel package)")
+
 
     # Qwen3Next specific parameters
     parser.add_argument(

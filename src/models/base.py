@@ -15,7 +15,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
-from models.chunked_loss import chunked_cross_entropy
+from models.chunked_loss import chunked_cross_entropy, liger_cross_entropy
 
 from models.moe import (ExpertChoiceMoE, MoE, entropy_reg, load_balancing_loss,
                         router_z_loss)
@@ -70,13 +70,16 @@ class CausalSelfAttention(nn.Module):
         ) = x.size()
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
-        q, k, v = self.c_attn(x).split(self.n_embd, dim=2)
-        # (B, T, nh, hs)
-        k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
-        q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        # Use chunk(3) instead of split(n_embd) for tensor parallelism compatibility:
+        # with TP, c_attn output is locally sharded so chunk(3) correctly splits the local tensor.
+        head_dim = C // self.n_head
+        q, k, v = self.c_attn(x).chunk(3, dim=-1)
+        # (B, T, nh_local, hs) — nh_local == n_head when tp_size=1
+        k = k.view(B, T, -1, head_dim).transpose(1, 2)
+        q = q.view(B, T, -1, head_dim).transpose(1, 2)
 
-        # (B, nh, T, hs)
-        v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)
+        # (B, nh_local, T, hs)
+        v = v.view(B, T, -1, head_dim).transpose(1, 2)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -92,7 +95,7 @@ class CausalSelfAttention(nn.Module):
             att = self.attn_dropout(att)
             y = att @ v  # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = (
-            y.transpose(1, 2).contiguous().view(B, T, C)
+            y.transpose(1, 2).contiguous().view(B, T, -1)
         )  # re-assemble all head outputs side by side
 
         # output projection
@@ -206,6 +209,21 @@ class GPTBase(nn.Module):
                     p.div_(p.sum(dim=dim, keepdim=True))
                     p.mul_(std / p.std())
 
+    @staticmethod
+    def get_tp_plan():
+        """Return tensor parallelism plan mapping block-relative submodule paths
+        to ColwiseParallel / RowwiseParallel strategies.
+
+        GPTBase uses combined QKV (c_attn) and GELU MLP (c_fc / c_proj).
+        """
+        from torch.distributed.tensor.parallel import ColwiseParallel, RowwiseParallel
+        return {
+            "attn.c_attn": ColwiseParallel(),
+            "attn.c_proj": RowwiseParallel(),
+            "mlp.c_fc": ColwiseParallel(),
+            "mlp.c_proj": RowwiseParallel(),
+        }
+
     def get_router_losses(self, logits, selected_experts, eval=False):
         # logits: (b * seq_len, n_experts)
         # selected_experts: (b * seq_len, topk)
@@ -268,7 +286,9 @@ class GPTBase(nn.Module):
             n_params -= self.transformer.wpe.weight.numel()
         if exclude_embeddings:
             n_params -= self.transformer.wte.weight.numel()  # Token embeddings
-            n_params -= self.lm_head.weight.numel()  # LM head
+            # Only subtract lm_head separately when it's not tied to wte
+            if not self.config.weight_tying:
+                n_params -= self.lm_head.weight.numel()
         return n_params
 
     def _init_weights(self, module):
@@ -294,7 +314,7 @@ class GPTBase(nn.Module):
             else:  # KarpathyGPT2
                 torch.nn.init.normal_(module.weight, mean=0.0, std=self.config.init_std)
 
-    def forward(self, idx, targets=None, get_logits=False, moe=False):
+    def forward(self, idx, targets=None, get_logits=False, moe=False, compute_accuracy=False):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -317,8 +337,9 @@ class GPTBase(nn.Module):
 
         # forward pass through all the transformer blocks
         _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
-        for block in self.transformer.h:
-            if _use_ckpt:
+        _ckpt_every_n = getattr(self.config, 'checkpoint_every_n', 1)
+        for i, block in enumerate(self.transformer.h):
+            if _use_ckpt and (i % _ckpt_every_n == 0):
                 x, logits_and_experts = _torch_checkpoint(block, x, use_reentrant=False)
             else:
                 x, logits_and_experts = block(x)
@@ -329,6 +350,7 @@ class GPTBase(nn.Module):
 
         # aux_losses is a dict with keys for different auxiliary losses
         aux_losses = {}
+        accuracy = None
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -338,7 +360,11 @@ class GPTBase(nn.Module):
                     logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
                 )
             else:
-                loss, _ = chunked_cross_entropy(x, self.lm_head.weight, targets)
+                _ce_fn = liger_cross_entropy if getattr(self.config, 'liger_loss', False) else chunked_cross_entropy
+                loss, _, accuracy = _ce_fn(
+                    x, self.lm_head.weight, targets,
+                    compute_accuracy=compute_accuracy,
+                )
                 logits = None
             if moe and self.config.moe_routing == "standard_gating":
                 # calculate the router losses per layer
@@ -370,6 +396,7 @@ class GPTBase(nn.Module):
             "loss": loss,
             "aux_losses": aux_losses,
             "router_logits": router_logits,
+            "accuracy": accuracy,
         }
 
     def crop_sequence_length(self, sequence_length):

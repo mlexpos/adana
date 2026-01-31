@@ -11,7 +11,7 @@ from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 from models.base import GPTBase, CausalSelfAttention, LayerNorm, Block, MLP
-from models.chunked_loss import chunked_cross_entropy
+from models.chunked_loss import chunked_cross_entropy, liger_cross_entropy
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -258,11 +258,13 @@ class DiLoCo(GPTBase):
         n_params = sum(p.numel() for p in self.parameters())
         if exclude_embeddings:
             n_params -= self.transformer.wte.weight.numel()  # Token embeddings
-            n_params -= self.lm_head.weight.numel()  # LM head
+            # Only subtract lm_head separately when it's not tied to wte
+            if not self.config.weight_tying:
+                n_params -= self.lm_head.weight.numel()
         # Note: No positional embeddings to subtract since we use RoPE
         return n_params
 
-    def forward(self, idx, targets=None, get_logits=False, moe=False):
+    def forward(self, idx, targets=None, get_logits=False, moe=False, compute_accuracy=False):
         device = idx.device
         b, t = idx.size()
         assert (
@@ -284,8 +286,9 @@ class DiLoCo(GPTBase):
 
         # forward pass through all the transformer blocks
         _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
-        for block in self.transformer.h:
-            if _use_ckpt:
+        _ckpt_every_n = getattr(self.config, 'checkpoint_every_n', 1)
+        for i, block in enumerate(self.transformer.h):
+            if _use_ckpt and (i % _ckpt_every_n == 0):
                 x, logits_and_experts = _torch_checkpoint(block, x, freqs_cis, use_reentrant=False)
             else:
                 x, logits_and_experts = block(x, freqs_cis)
@@ -296,6 +299,7 @@ class DiLoCo(GPTBase):
 
         # aux_losses is a dict with keys for different auxiliary losses
         aux_losses = {}
+        accuracy = None
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
@@ -306,10 +310,12 @@ class DiLoCo(GPTBase):
                 )
                 z_loss = self.compute_z_loss(logits.view(-1, logits.size(-1)))
             else:
-                loss, z_loss = chunked_cross_entropy(
+                _ce_fn = liger_cross_entropy if getattr(self.config, 'liger_loss', False) else chunked_cross_entropy
+                loss, z_loss, accuracy = _ce_fn(
                     x, self.lm_head.weight, targets,
                     compute_z_loss=True,
                     z_loss_coeff=self.config.z_loss_coeff,
+                    compute_accuracy=compute_accuracy,
                 )
                 logits = None
             aux_losses["z_loss"] = z_loss
@@ -352,4 +358,5 @@ class DiLoCo(GPTBase):
             "loss": loss,
             "aux_losses": aux_losses,
             "router_logits": router_logits,
+            "accuracy": accuracy,
         }
