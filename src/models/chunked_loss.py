@@ -2,6 +2,7 @@ import torch
 from torch.nn import functional as F
 
 
+@torch.compiler.disable
 def chunked_cross_entropy(hidden_states, weight, targets, chunk_size=256,
                           z_loss_fn=None, z_loss_coeff=0.0):
     """Compute lm_head projection + cross-entropy in chunks along seq dim.
