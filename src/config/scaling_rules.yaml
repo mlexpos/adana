@@ -34,15 +34,14 @@ enoki:
     d-muon:               {a: 2.19,    b: 5.64e+4, d: -0.417}
   lr_formula_512:
     # Batch size 512 (global_batch = 512 * 2048), Enoki architecture
-    # To be filled by running: python visualization/bighead_lr_scaling.py --scaling-rule Enoki_512 ...
-    # See appendix_batch.tex lines 78-81 for exact commands
-    adamw:                {a: null, b: null, d: null}
+    # Fitted with: python finalfigs/bighead_lr_scaling.py --scaling-rule Enoki_512 --top-k 5 --largest-head 24
+    adamw:                {a: 1.67e+1, b: 1.58e+7, d: -0.464}
     adana:
-      "0.85":             {a: null, b: null, d: null}
+      "0.85":             {a: 8.53e+1, b: 3.04e+4, d: -0.654}
     dana-mk4:
-      "0.85":             {a: null, b: null, d: null}
+      "0.85":             {a: 2.47e+3, b: 2.24e+7, d: -0.826}
     dana-star-mk4:
-      "0.85":             {a: null, b: null, d: null}
+      "0.85":             {a: 3.10e+2, b: 1.40e+4, d: -0.701}
 
 qwen3:
   head_dim: 128
