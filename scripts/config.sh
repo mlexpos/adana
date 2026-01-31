@@ -68,10 +68,12 @@ case "$DSTAR_CLUSTER" in
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     tamia)
-        module load python/3.12 2>/dev/null || true
+        module load arrow/21.0.0 2>/dev/null || true
+        module load python/3.13 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     fir)
+        module load arrow/21.0.0 2>/dev/null || true
         module load python/3.13 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
