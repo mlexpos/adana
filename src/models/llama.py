@@ -11,6 +11,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from models.base import CausalSelfAttention, GPTBase
+from models.chunked_loss import chunked_cross_entropy
 from models.moe import MoE
 
 
@@ -236,10 +237,14 @@ class Llama(GPTBase):
         aux_losses = {}
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
-            )
+            if get_logits:
+                logits = self.lm_head(x)
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+                )
+            else:
+                loss, _ = chunked_cross_entropy(x, self.lm_head.weight, targets)
+                logits = None
             if moe and self.config.moe_routing == "standard_gating":
                 # calculate the router losses per layer
                 for logit, expert_choice in zip(router_logits, experts):

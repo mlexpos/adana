@@ -12,6 +12,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from models.base import GPTBase, LayerNorm
+from models.chunked_loss import chunked_cross_entropy
 
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
@@ -366,15 +367,22 @@ class Qwen3(GPTBase):
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
-            logits = self.lm_head(x)
-            loss = F.cross_entropy(
-                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
-            )
-
-            # Add z-loss with coefficient 1e-4 as mentioned in the paper
-            z_loss = self.compute_z_loss(logits.view(-1, logits.size(-1)))
+            if get_logits:
+                logits = self.lm_head(x)
+                loss = F.cross_entropy(
+                    logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+                )
+                z_loss = self.compute_z_loss(logits.view(-1, logits.size(-1)))
+            else:
+                loss, z_loss = chunked_cross_entropy(
+                    x, self.lm_head.weight, targets,
+                    z_loss_fn=self.compute_z_loss,
+                    z_loss_coeff=self.config.z_loss_coeff,
+                )
+                logits = None
             aux_losses["z_loss"] = z_loss
-            loss += self.config.z_loss_coeff * z_loss
+            if get_logits:
+                loss += self.config.z_loss_coeff * z_loss
 
             # Add Hoyer loss for embedding sparsity
             hoyer_loss = self.compute_hoyer_loss(tok_emb)

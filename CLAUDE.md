@@ -141,6 +141,32 @@ cos, wsd, powerlaw, cos_inf, linear, none
 - **SSH ControlMaster:** configured, persistent for 4h after initial auth
 - **Sync command:** `rsync --exclude '.git' --exclude 'exps' --exclude 'wandb' --exclude 'fineweb-*' --exclude 'logs' --exclude '__pycache__' --exclude '*.pyc' -avz /Users/paquette.30/Documents/DSTAR/danastar/ math-slurm:~/danastar/`
 
+## DanaStar Test Cluster
+
+- **Host:** `danastar` (8x A100-40GB, direct SSH)
+- **Remote repo path:** `~/Dana_hummingbird/danastar`
+- **Python venv:** `source ~/Dana_hummingbird/venv/bin/activate` (Python 3.10, PyTorch 2.x)
+- **Data available:** `~/Dana_hummingbird/danastar/datasets/fineweb-100BT/` (val.bin + train_0000.bin, train_0001.bin, train_0002.bin — 3 tokenized shards)
+- **Dataset flag:** `--datasets_dir ./datasets --dataset fineweb_100` (the loader auto-detects pre-tokenized .bin files)
+- **Sync command:** `rsync --exclude '.git' --exclude 'exps' --exclude 'wandb' --exclude 'fineweb-*' --exclude 'logs' --exclude '__pycache__' --exclude '*.pyc' --exclude 'datasets' -avz /Users/elliotpaquette/Documents/DSTAR/dstar2/ danastar:~/Dana_hummingbird/danastar/`
+- **Example launch (8 GPUs, FSDP):**
+  ```bash
+  ssh danastar 'cd ~/Dana_hummingbird/danastar && source ~/Dana_hummingbird/venv/bin/activate && \
+    torchrun --standalone --nproc_per_node=8 src/main.py \
+    --model base --n_head 8 --n_layer 6 --n_embd 512 \
+    --datasets_dir ./datasets --dataset fineweb_100 \
+    --opt adana --lr 7.14e-04 --kappa 0.85 \
+    --batch_size 8 --acc_steps 16 --iterations 671 --warmup_steps 34 \
+    --eval_interval 50 --log_interval 10 --scheduler cos_inf \
+    --distributed_backend fsdp --sequence_length 2048'
+  ```
+- **Known issues:**
+  - No `--no_compile` flag on refactor branch; torch.compile runs by default
+  - No `--no_wandb` flag; wandb is opt-in via `--wandb` flag
+  - Default warmup_steps is 3000; must set `--warmup_steps` explicitly for short runs
+  - WandB with `WANDB_MODE=offline` can cause apparent hangs due to sync overhead; omit `--wandb` for test runs
+  - When using `--wandb` on a machine with no internet, set `WANDB_MODE=offline` in the environment
+
 ## Current Branch
 
 `refactor/cleanup` - Large-scale refactoring and code cleanup

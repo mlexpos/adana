@@ -148,7 +148,8 @@ class DANA_STAR_MK4(Optimizer):
         clipped_tau = torch.clamp(tau, max=0.5)
         p_estimate = clipped_tau / (1.0 - clipped_tau)
         min_p = 1.0 / (1.0 + step)
-        tau_reg = torch.clamp(p_estimate, min=min_p)
+        # Use relu-based max to avoid DTensor/tensor mixing issues with FSDP
+        tau_reg = min_p + torch.relu(p_estimate - min_p)
 
         # Compute effective time (clamping is not needed since tau_reg is already clamped)
         effective_time = torch.clamp(tau * step, min=1.0)

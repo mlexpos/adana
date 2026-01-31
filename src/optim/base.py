@@ -236,7 +236,9 @@ def train(
             grad_norm = torch.nn.utils.clip_grad_norm_(
                 raw_model.parameters(), cfg.grad_clip
             )
-            grad_norms.append(grad_norm)
+            # Convert DTensor to float immediately; calling .item() on a DTensor
+            # inside a rank-0-only block would deadlock FSDP (implicit collective).
+            grad_norms.append(grad_norm.item())
 
         if cfg.opt == "sf-sgd" or cfg.opt == "sf-adamw":
             opt.train()
@@ -309,16 +311,16 @@ def train(
                     "train/perplexity": 2.71828**train_loss,
                     "lr": current_lrs[0],
                     "iter_dt": dt,
-                    "max_grad_norm": max(grad_norms).item() if grad_norms else 0,
+                    "max_grad_norm": max(grad_norms) if grad_norms else 0,
                     "mean_grad_norm": (
-                        torch.tensor(grad_norms).mean().item() if grad_norms else 0
+                        sum(grad_norms) / len(grad_norms) if grad_norms else 0
                     ),
                     **train_aux_losses,
                 }
 
                 if cfg.opt == "prodigy":
                     wandb_logs["effective_lr"] = prodigy_efective_lrs[0]
-                
+
                 # Add optimizer schedule logs to wandb
                 if optimizer_schedule_logs:
                     wandb_logs.update(optimizer_schedule_logs)
