@@ -141,31 +141,71 @@ cos, wsd, powerlaw, cos_inf, linear, none
 - **SSH ControlMaster:** configured, persistent for 4h after initial auth
 - **Sync command:** `rsync --exclude '.git' --exclude 'exps' --exclude 'wandb' --exclude 'fineweb-*' --exclude 'logs' --exclude '__pycache__' --exclude '*.pyc' -avz /Users/paquette.30/Documents/DSTAR/danastar/ math-slurm:~/danastar/`
 
+## TP Benchmarking Results (24-head Enoki, 550M params, seq=2048, 2x A100-80GB)
+
+| Config | Global Batch | iter_dt | Tokens/s | Peak Mem |
+|--------|-------------|---------|----------|----------|
+| DDP | 64 (16×4 acc) | 938ms | ~140K | 48.33 GiB |
+| FSDP | 64 (16×4 acc) | 961ms | ~136K | 44.87 GiB |
+| FSDP+TP2 (no ckpt) | 32 (32×1) | 666ms | ~98K | 57.73 GiB |
+| FSDP+TP2+ckpt | 64 (64×1) | 1610ms | ~81K | 32.28 GiB |
+| FSDP+TP2+ckpt | 128 (128×1) | 3160ms | ~83K | 61.44 GiB |
+
+**Key findings:** TP2 without ckpt at batch 64 OOMs (~1 GiB short at 76 GiB). Activation checkpointing adds ~2.4x overhead. TP communication + no fused Adam costs ~40% vs DDP. TP's main value is enabling larger batches that wouldn't fit otherwise, not raw throughput on 2 GPUs.
+
+### 40-head Enoki (2.1B params, seq=2048, 2x A100-80GB, FSDP+TP2, no checkpointing)
+
+| Batch | Acc Steps | Global Batch | iter_dt | Peak Mem |
+|-------|-----------|-------------|---------|----------|
+| 4 | 1 | 4 | 422ms | 26.9 GiB |
+| 8 | 4 | 32 | 2.08s | 46.2 GiB |
+| 16 | 2 | 32 | OOM | ~76 GiB |
+
+With activation checkpointing, batch 4 runs at 580ms (27% slower) and batch 32 at 2.44s. Checkpointing enables larger batches but hurts throughput. The no-ckpt limit is batch 8-ish for this model size.
+
 ## DanaStar Test Cluster
 
-- **Host:** `danastar` (8x A100-40GB, direct SSH)
+- **Host:** `danastar` (2x H100-80GB HBM3, direct SSH)
 - **Remote repo path:** `~/Dana_hummingbird/danastar`
-- **Python venv:** `source ~/Dana_hummingbird/venv/bin/activate` (Python 3.10, PyTorch 2.x)
-- **Data available:** `~/Dana_hummingbird/danastar/datasets/fineweb-100BT/` (val.bin + train_0000.bin, train_0001.bin, train_0002.bin — 3 tokenized shards)
+- **Python venv:** `source /home/ubuntu/Danastar/danastarenv/bin/activate` (Python 3.10, PyTorch 2.8.0+cu128)
+- **Data available:** `~/Dana_hummingbird/danastar/datasets/fineweb-100BT/` (symlinked to `/home/ubuntu/Danastar/datasets`; val.bin + train shards)
 - **Dataset flag:** `--datasets_dir ./datasets --dataset fineweb_100` (the loader auto-detects pre-tokenized .bin files)
-- **Sync command:** `rsync --exclude '.git' --exclude 'exps' --exclude 'wandb' --exclude 'fineweb-*' --exclude 'logs' --exclude '__pycache__' --exclude '*.pyc' --exclude 'datasets' -avz /Users/elliotpaquette/Documents/DSTAR/dstar2/ danastar:~/Dana_hummingbird/danastar/`
-- **Example launch (8 GPUs, FSDP):**
+- **Sync command:** `rsync --exclude '.git' --exclude 'exps' --exclude 'wandb' --exclude 'fineweb-*' --exclude 'logs' --exclude '__pycache__' --exclude '*.pyc' --exclude 'datasets' -avz /Users/elliotpaquette/Documents/DSTAR/DSTAR2/ danastar:~/Dana_hummingbird/danastar/`
+- **Example launch (2 GPUs, FSDP):**
   ```bash
-  ssh danastar 'cd ~/Dana_hummingbird/danastar && source ~/Dana_hummingbird/venv/bin/activate && \
-    torchrun --standalone --nproc_per_node=8 src/main.py \
-    --model base --n_head 8 --n_layer 6 --n_embd 512 \
+  ssh danastar 'cd ~/Dana_hummingbird/danastar && source /home/ubuntu/Danastar/danastarenv/bin/activate && \
+    torchrun --standalone --nproc_per_node=2 src/main.py \
+    --model enoki --n_head 40 --n_layer 30 --n_embd 2560 \
     --datasets_dir ./datasets --dataset fineweb_100 \
-    --opt adana --lr 7.14e-04 --kappa 0.85 \
-    --batch_size 8 --acc_steps 16 --iterations 671 --warmup_steps 34 \
-    --eval_interval 50 --log_interval 10 --scheduler cos_inf \
+    --opt adamw --lr 1e-4 \
+    --batch_size 16 --acc_steps 1 --iterations 10 --warmup_steps 3 \
+    --eval_interval 9999 --log_interval 1 --scheduler cos \
     --distributed_backend fsdp --sequence_length 2048'
   ```
 - **Known issues:**
   - No `--no_compile` flag on refactor branch; torch.compile runs by default
   - No `--no_wandb` flag; wandb is opt-in via `--wandb` flag
   - Default warmup_steps is 3000; must set `--warmup_steps` explicitly for short runs
+  - Cosine scheduler with `--warmup_steps 1` and very few iterations causes ZeroDivisionError; use `--warmup_steps 3` minimum
   - WandB with `WANDB_MODE=offline` can cause apparent hangs due to sync overhead; omit `--wandb` for test runs
   - When using `--wandb` on a machine with no internet, set `WANDB_MODE=offline` in the environment
+
+### Activation Checkpointing Benchmark (40-head Enoki, 2.1B params, seq=2048, 2x H100-80GB, FSDP+TP2)
+
+All tests use `--tp_size 2` (tensor parallelism across both GPUs), `--distributed_backend fsdp`, global batch 256, 15 iterations.
+
+| Config | batch_size | acc_steps | Peak Mem (GPU 0) | iter_dt (steady) | Status |
+|--------|-----------|-----------|-----------------|-------------------|--------|
+| No checkpointing | 8 | 32 | 46.17 GiB | ~16.3s | OK |
+| `--activation_checkpointing --checkpoint_every_n 2` | 16 | 16 | 52.60 GiB | ~17.5s | OK |
+| `--activation_checkpointing --checkpoint_every_n 2` | 32 | 8 | ~76.9 GiB | -- | OOM |
+| `--activation_checkpointing --checkpoint_every_n 5` | 32 | 8 | ~76.9 GiB | -- | OOM |
+| `--activation_checkpointing --checkpoint_every_n 2` | 64 | 4 | ~75.9 GiB | -- | OOM |
+| `--activation_checkpointing --checkpoint_every_n 2` | 128 | 2 | ~75.8 GiB | -- | OOM |
+| `--activation_checkpointing --checkpoint_every_n 2` | 256 | 1 | ~74.1 GiB | -- | OOM |
+| No checkpointing | 16 | 16 | ~75.9 GiB | -- | OOM (no TP2 also OOM) |
+
+**Key findings:** With FSDP+TP2, the no-checkpointing limit is batch_size=8. Activation checkpointing (every 2nd block) allows batch_size=16 (52.6 GiB, ~7% slower). Batch sizes 32+ all OOM at ~76 GiB regardless of checkpointing frequency (every-2 and every-5 give identical memory at batch 32). The compiled chunked cross-entropy kernel (`_compiled_chunk_ce_zloss`) and torch.compile overhead dominate memory at these sizes, not transformer block activations. The near-constant memory across batch 32-256 confirms the bottleneck is model/optimizer/compile state, not activation storage. Disabling torch.compile may be needed to unlock larger batch sizes.
 
 ## Current Branch
 

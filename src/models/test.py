@@ -209,8 +209,9 @@ class Test(GPTBase):
         freqs_cis = self.freqs_cis.to(x.device)[pos]
 
         _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
-        for block in self.transformer.h:
-            if _use_ckpt:
+        _ckpt_every_n = getattr(self.config, 'checkpoint_every_n', 1)
+        for i, block in enumerate(self.transformer.h):
+            if _use_ckpt and (i % _ckpt_every_n == 0):
                 x = _torch_checkpoint(block, x, freqs_cis, use_reentrant=False)
             else:
                 x = block(x, freqs_cis=freqs_cis)

@@ -51,6 +51,18 @@ def get_args():
     from config.scaling import apply_scaling_rule
     apply_scaling_rule(args)
 
+    # Validate tensor parallelism settings
+    if args.tp_size > 1:
+        if args.distributed_backend != "fsdp":
+            raise ValueError(
+                f"--tp_size > 1 requires --distributed_backend fsdp, "
+                f"got '{args.distributed_backend}'"
+            )
+        if args.moe:
+            raise ValueError(
+                "--tp_size > 1 is not supported with --moe (MoE + TP not yet implemented)"
+            )
+
     # Use provided beta3 if given, otherwise compute it
     if args.adema_beta3 is None:
         args.adema_beta3 = 1 - args.delta / args.iterations
@@ -63,9 +75,10 @@ def build_optimizer(args, model, group_specs):
     """Build optimizer from args using a registry pattern."""
     def _adamw():
         device_type = "cuda" if "cuda" in args.device else "cpu"
+        # Fused Adam can't handle mixed-mesh DTensors from TP+FSDP composition.
         use_fused = (device_type == "cuda") and (
             "fused" in inspect.signature(torch.optim.AdamW).parameters
-        )
+        ) and getattr(args, "tp_size", 1) <= 1
         print(f"using fused AdamW: {use_fused}")
         extra_args = dict(fused=True) if use_fused else dict()
         return torch.optim.AdamW(

@@ -1,5 +1,7 @@
 from typing import List
 
+import torch
+
 
 class DistributedBackend(object):
     def __init__(self, args):
@@ -27,6 +29,10 @@ class DistributedBackend(object):
 
     def get_world_size(self):
         raise NotImplementedError
+
+    def clip_grad_norm_(self, parameters, max_norm):
+        """Clip gradient norm.  Override in subclasses for custom DTensor handling."""
+        return torch.nn.utils.clip_grad_norm_(parameters, max_norm)
 
     def all_ranks_checkpoint(self):
         """Whether checkpoint save/load requires all ranks to participate.

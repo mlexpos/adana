@@ -249,7 +249,7 @@ def train(
 
         if cfg.grad_clip != 0.0:
             raw_model = distributed_backend.get_raw_model(model)
-            grad_norm = torch.nn.utils.clip_grad_norm_(
+            grad_norm = distributed_backend.clip_grad_norm_(
                 raw_model.parameters(), cfg.grad_clip
             )
             # Convert DTensor to float immediately; calling .item() on a DTensor

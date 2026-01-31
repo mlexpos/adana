@@ -102,11 +102,11 @@ def eval(
     for idx in range(max_num_batches):
         x, y = get_batch(reader, device=device)
         with ctx:
-            outputs = model(x, targets=y, get_logits=True, moe=moe)
+            outputs = model(x, targets=y, get_logits=False, moe=moe, compute_accuracy=True)
         val_loss = outputs["loss"]
 
         loss_list_val.append(val_loss)
-        acc_list.append((outputs["logits"].argmax(-1) == y).float().mean())
+        acc_list.append(outputs["accuracy"])
 
         # auxiliary losses are optional
         for k, v in outputs["aux_losses"].items():

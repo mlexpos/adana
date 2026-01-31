@@ -29,4 +29,5 @@
 
 # --- Caches ---
 # TIKTOKEN_CACHE_DIR="$HOME/tiktoken_cache"
-# HF_HOME="$HOME/hf_cache"
+# HF_HOME="$SLURM_TMPDIR/hf"
+
