@@ -58,6 +58,7 @@ WANDB_OFFLINE=0                # 1 = offline mode (for nodes without internet), 
 # --- Other ---
 EXTRA_ARGS=""                  # any additional args passed to launch.sh
                                # e.g. "--no_wandb" "--no_compile" "--eval_interval 100"
+                               #"--latest_ckpt_interval 0"  to disable checkpointing 
 
 # =============================================================================
 # ===== END OF CONFIGURATION =================================================

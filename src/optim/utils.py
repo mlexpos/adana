@@ -237,17 +237,35 @@ def _is_fsdp_backend(distributed_backend):
     return distributed_backend is not None and getattr(distributed_backend, '_is_fsdp', False)
 
 
+def _get_local_ckpt_dir(ckpt_dir: Path):
+    """If SLURM_TMPDIR is set, return a local NVMe path for fast writes.
+    Otherwise return ckpt_dir unchanged. Also returns the project dir."""
+    slurm_tmpdir = os.environ.get("SLURM_TMPDIR")
+    project_ckpt_dir = ckpt_dir
+    if slurm_tmpdir:
+        local_base = Path(slurm_tmpdir) / "ckpts"
+        ckpt_dir = local_base / ckpt_dir.name
+    return ckpt_dir, project_ckpt_dir, slurm_tmpdir is not None
+
+
+def rsync_if_slurm(ckpt_dir: Path):
+    """If SLURM_TMPDIR is set, kick off a background rsync of the local
+    checkpoint dir to the project directory. Returns immediately.
+    Should be called by rank 0 only, AFTER all ranks have finished writing."""
+    local_dir, project_dir, is_slurm = _get_local_ckpt_dir(ckpt_dir)
+    if is_slurm:
+        _background_rsync(local_dir, project_dir)
+
+
 def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, distributed_backend=None):
     # Determine if we should write to SLURM_TMPDIR first for speed + reliability.
-    slurm_tmpdir = os.environ.get("SLURM_TMPDIR")
-    project_ckpt_dir = ckpt_dir  # the original target (on project/scratch filesystem)
+    local_dir, project_ckpt_dir, is_slurm = _get_local_ckpt_dir(ckpt_dir)
+    ckpt_dir = local_dir
 
-    if slurm_tmpdir:
-        # Write to fast local NVMe, then background rsync to project dir.
-        # Derive a local path that mirrors the project path structure.
-        local_base = Path(slurm_tmpdir) / "ckpts"
-        # Use last two components of ckpt_dir as the local subpath (e.g. "latest" or "1000")
-        ckpt_dir = local_base / ckpt_dir.name
+    if is_slurm:
+        # Wait for any in-flight rsync of the previous checkpoint to finish
+        # before we overwrite the local dir with new data.
+        wait_for_rsync()
         rank = 0 if not dist.is_initialized() else dist.get_rank()
         if rank == 0:
             print(f"[Checkpoint] Writing to local: {ckpt_dir} (will rsync to {project_ckpt_dir})")
@@ -291,11 +309,8 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, distributed_back
         }
         torch.save(checkpoint, ckpt_dir / "main.pt")
 
-    # Background rsync to project directory if using SLURM_TMPDIR
-    if slurm_tmpdir:
-        rank = 0 if not dist.is_initialized() else dist.get_rank()
-        if rank == 0:
-            _background_rsync(ckpt_dir, project_ckpt_dir)
+    # NOTE: rsync is NOT done here. The caller (base.py) must call
+    # rsync_if_slurm() after all ranks finish save_worker_state too.
 
 
 def load_checkpoint(model, opt, scheduler, ckpt_path, device, distributed_backend=None):
@@ -347,10 +362,10 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device, distributed_backen
 
 
 def save_worker_state(ckpt_dir: Path, train_reader=None):
-    # NOTE: Unlike save_checkpoint, we do NOT redirect to SLURM_TMPDIR here.
-    # Worker state files are tiny (a few KB per rank) so the NVMe optimization
-    # is unnecessary, and the lack of rsync back to the project directory was
-    # causing worker_*.pt files to be lost when SLURM jobs ended.
+    # Write to SLURM_TMPDIR if available (same dir as save_checkpoint),
+    # so the rsync in rsync_if_slurm() picks up everything atomically.
+    local_dir, _, _ = _get_local_ckpt_dir(ckpt_dir)
+    ckpt_dir = local_dir
 
     # Dataloader, rng states
     worker_state = {

@@ -12,8 +12,8 @@ from logger.logger import DynamicsLogger
 
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
                     load_worker_state, log_prodigy_lr, log_optimizer_schedules,
-                    save_checkpoint, save_worker_state, visualize_routing,
-                    wait_for_rsync)
+                    save_checkpoint, save_worker_state, rsync_if_slurm,
+                    visualize_routing, wait_for_rsync)
 from .tau_stats_collector import TauStatsCollector
 
 
@@ -125,7 +125,11 @@ def train(
                             f.write(wandb.run.id)
                 # All ranks save their own worker state (RNG + dataloader position)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
+                # Barrier ensures all ranks finish writing before rank 0 rsyncs
+                if dist.is_initialized():
+                    dist.barrier()
                 if distributed_backend.is_master_process():
+                    rsync_if_slurm(ckpt_dir)
                     print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
 
         # Save temporary checkpoint for resuming training
@@ -145,7 +149,11 @@ def train(
                             f.write(wandb.run.id)
                 # All ranks save their own worker state (RNG + dataloader position)
                 save_worker_state(ckpt_dir, train_reader=train_reader)
+                # Barrier ensures all ranks finish writing before rank 0 rsyncs
+                if dist.is_initialized():
+                    dist.barrier()
                 if distributed_backend.is_master_process():
+                    rsync_if_slurm(ckpt_dir)
                     print(f"[Checkpoint] END   latest    iter={curr_iter} -> {ckpt_dir}")
 
         ws = distributed_backend.get_world_size()
@@ -191,7 +199,10 @@ def train(
                     with open(wandb_id_file, "w") as f:
                         f.write(wandb.run.id)
             save_worker_state(ckpt_dir, train_reader=train_reader)
+            if dist.is_initialized():
+                dist.barrier()
             if distributed_backend.is_master_process():
+                rsync_if_slurm(ckpt_dir)
                 print(f"[Checkpoint] END   latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
             # Also save permanent checkpoint if interval is set
             if cfg.permanent_ckpt_interval > 0:
@@ -209,7 +220,10 @@ def train(
                             with open(wandb_id_file, "w") as f:
                                 f.write(wandb.run.id)
                     save_worker_state(ckpt_dir, train_reader=train_reader)
+                    if dist.is_initialized():
+                        dist.barrier()
                     if distributed_backend.is_master_process():
+                        rsync_if_slurm(ckpt_dir)
                         print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
             break
 
