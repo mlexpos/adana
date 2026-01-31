@@ -51,6 +51,7 @@ PERMANENT_CKPT_INTERVAL="${PERMANENT_CKPT_INTERVAL:-0}"
 AUTO_RESUME="${AUTO_RESUME:-1}"
 ITERATIONS_TO_RUN=""
 DISTRIBUTED_BACKEND="${DISTRIBUTED_BACKEND:-nccl}"
+WANDB_OFFLINE="${WANDB_OFFLINE:-0}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -76,6 +77,7 @@ while [[ $# -gt 0 ]]; do
         --init_scheme)      INIT_SCHEME="$2"; shift 2 ;;
         --no_compile)       COMPILE=0; shift ;;
         --no_wandb)         WANDB_ENABLED=0; shift ;;
+        --wandb_offline)    WANDB_OFFLINE=1; shift ;;
         --eval_interval)    EVAL_INTERVAL="$2"; shift 2 ;;
         --log_interval)     LOG_INTERVAL="$2"; shift 2 ;;
         --latest_ckpt_interval)   LATEST_CKPT_INTERVAL="$2"; shift 2 ;;
@@ -309,6 +311,12 @@ echo "============================================================"
 # =============================================================================
 # Launch training
 # =============================================================================
+
+# Set wandb offline mode (must be env var so torchrun children inherit it)
+if [ "$WANDB_OFFLINE" -eq 1 ]; then
+    export WANDB_MODE=offline
+fi
+
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py \
     --config_format base \
     --model $MODEL_NAME \

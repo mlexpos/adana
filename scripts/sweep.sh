@@ -71,11 +71,6 @@ if [[ "${1:-}" == "--dry" ]]; then
     echo ""
 fi
 
-# Set WandB offline mode if requested
-if [ "$WANDB_OFFLINE" -eq 1 ]; then
-    export WANDB_MODE=offline
-fi
-
 # Use restart script based on architecture
 case "$ARCH" in
     enoki)  RESTART_SCRIPT="scripts/restart_enoki.sh" ;;
@@ -166,6 +161,10 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
 
         if [ -n "$ITERATIONS_TO_RUN" ]; then
             LAUNCH_ARGS+=(--iterations_to_run "$ITERATIONS_TO_RUN")
+        fi
+
+        if [ "$WANDB_OFFLINE" -eq 1 ]; then
+            LAUNCH_ARGS+=(--wandb_offline)
         fi
 
         if [ -n "$EXTRA_ARGS" ]; then
