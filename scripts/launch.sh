@@ -118,7 +118,9 @@ fi
 # Compute model dimensions and LR via Python scaling rules
 # =============================================================================
 # Compute global batch size for LR formula selection
-GLOBAL_BATCH=$((BATCH_SIZE * ACC_STEPS * NPROC_PER_NODE))
+# NOTE: batch_size * acc_steps is the global effective batch; the distributed
+# backend divides this across GPUs internally (see get_adjusted_args_for_process).
+GLOBAL_BATCH=$((BATCH_SIZE * ACC_STEPS))
 
 SCALING_OUTPUT=$(python3 -c "
 import importlib.util, os
@@ -151,7 +153,7 @@ elif [ -z "${LR:-}" ]; then
 fi
 
 # Compute iterations (Chinchilla-optimal: tokens = 20 * total_params)
-TOKENS_PER_STEP=$((BATCH_SIZE * ACC_STEPS * SEQ_LEN * NPROC_PER_NODE))
+TOKENS_PER_STEP=$((BATCH_SIZE * ACC_STEPS * SEQ_LEN))
 if [ -n "$ITERATIONS_OVERRIDE" ]; then
     ITERATIONS="$ITERATIONS_OVERRIDE"
 else
@@ -303,7 +305,7 @@ echo "Iterations:   $ITERATIONS (from 20 * total_params / tokens_per_step)"
 echo "Warmup:       $WARMUP_STEPS (iterations/50)"
 echo "Scheduler:    $SCHEDULER"
 echo "Grad clip:    $GRAD_CLIP"
-echo "Batch:        ${BATCH_SIZE}x${ACC_STEPS}x${SEQ_LEN} (${NPROC_PER_NODE} GPUs, global=${BATCH_SIZE}*${ACC_STEPS}*${NPROC_PER_NODE}=$((BATCH_SIZE * ACC_STEPS * NPROC_PER_NODE)))"
+echo "Batch:        ${BATCH_SIZE}x${ACC_STEPS}x${SEQ_LEN} (${NPROC_PER_NODE} GPUs, global=${BATCH_SIZE}*${ACC_STEPS}=$((BATCH_SIZE * ACC_STEPS)))"
 echo "Dataset:      $DATASET"
 echo "Backend:      $DISTRIBUTED_BACKEND"
 echo "============================================================"

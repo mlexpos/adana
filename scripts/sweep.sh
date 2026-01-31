@@ -83,7 +83,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Print sweep summary
 TOTAL_JOBS=$(( ${#HEADS_LIST[@]} * ${#LR_MULTIPLIERS[@]} ))
-GLOBAL_BATCH=$(( BATCH_SIZE * ACC_STEPS * NPROC ))
+# NOTE: batch_size * acc_steps is the global effective batch; the distributed
+# backend divides this across GPUs internally (see get_adjusted_args_for_process).
+GLOBAL_BATCH=$(( BATCH_SIZE * ACC_STEPS ))
 
 echo "============================================================"
 echo "Sweep: $WANDB_GROUP"
@@ -93,7 +95,7 @@ echo "Optimizer:     $OPT (kappa=$KAPPA)"
 echo "Backend:       $DISTRIBUTED_BACKEND"
 echo "Heads:         ${HEADS_LIST[*]}"
 echo "LR multipliers: ${LR_MULTIPLIERS[*]}"
-echo "Batch:         ${BATCH_SIZE} x ${ACC_STEPS} x ${NPROC} GPUs = ${GLOBAL_BATCH} global"
+echo "Batch:         ${BATCH_SIZE} x ${ACC_STEPS} = ${GLOBAL_BATCH} global (split across ${NPROC} GPUs)"
 echo "SLURM:         ${NPROC} GPUs, ${TIME}, mem=${MEM}"
 echo "WandB:         $([ "$WANDB_OFFLINE" -eq 1 ] && echo "offline" || echo "online")"
 echo "Total jobs:    $TOTAL_JOBS"
