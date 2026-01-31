@@ -40,13 +40,13 @@ HOSTNAME_SHORT=$(hostname -s 2>/dev/null || echo "unknown")
 
 if [ "$DSTAR_CLUSTER" = "auto" ]; then
     case "$HOSTNAME_SHORT" in
-        nar*|narval*|blg*|beluga*|cedar*)
+        nar*|narval*|blg*|beluga*|cedar*|ng*)
             DSTAR_CLUSTER="narval"
             ;;
-        tamia*|tam*)
+        tamia*|tam*|tg*)
             DSTAR_CLUSTER="tamia"
             ;;
-        fir*|cedar*|login3*)
+        fir*|cedar*|login3*|fc*)
             DSTAR_CLUSTER="fir"
             ;;
         rorqual*|rg*)
