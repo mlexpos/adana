@@ -8,6 +8,7 @@ import math
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 from models.base import GPTBase, CausalSelfAttention, LayerNorm, Block, MLP
 from models.chunked_loss import chunked_cross_entropy
@@ -282,8 +283,12 @@ class DiLoCo(GPTBase):
         experts = []
 
         # forward pass through all the transformer blocks
+        _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
         for block in self.transformer.h:
-            x, logits_and_experts = block(x, freqs_cis)
+            if _use_ckpt:
+                x, logits_and_experts = _torch_checkpoint(block, x, freqs_cis, use_reentrant=False)
+            else:
+                x, logits_and_experts = block(x, freqs_cis)
             if len(logits_and_experts) > 0:
                 router_logits.append(logits_and_experts["router_logits"])
                 experts.append(logits_and_experts["selected_experts"])

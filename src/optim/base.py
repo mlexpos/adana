@@ -293,6 +293,12 @@ def train(
         curr_iter += 1
         iterations_in_run += 1
 
+        # Report peak GPU memory after first full iteration
+        if curr_iter == 1 and distributed_backend.is_master_process():
+            peak_mem = torch.cuda.max_memory_allocated() / 1024**3
+            reserved_mem = torch.cuda.max_memory_reserved() / 1024**3
+            print(f"[Memory] GPU 0: peak_allocated={peak_mem:.2f} GiB, peak_reserved={reserved_mem:.2f} GiB")
+
         if (
             cfg.log_interval
             and curr_iter % cfg.log_interval == 0

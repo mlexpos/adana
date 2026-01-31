@@ -9,6 +9,7 @@ import tiktoken
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as _torch_checkpoint
 
 from models.base import CausalSelfAttention, GPTBase
 
@@ -207,8 +208,12 @@ class Test(GPTBase):
         x = self.transformer.drop(tok_emb)  # + pos_emb)
         freqs_cis = self.freqs_cis.to(x.device)[pos]
 
+        _use_ckpt = getattr(self.config, 'activation_checkpointing', False)
         for block in self.transformer.h:
-            x = block(x, freqs_cis=freqs_cis)
+            if _use_ckpt:
+                x = _torch_checkpoint(block, x, freqs_cis, use_reentrant=False)
+            else:
+                x = block(x, freqs_cis=freqs_cis)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
