@@ -27,6 +27,7 @@ OPT="adana"                    # adana, dana-star-mk4, adamw, ademamix, d-muon, 
 KAPPA="0.85"                   # kappa for DANA variants
 CLIPSNR="0.25"                  # SNR clipping for MK4 variants (dana-mk4, dana-star-mk4)
                                # ignored by adana and dana-star (they hardcode clipsnr=None)
+GAMMA_3_FACTOR="1.0"           # tilde-alpha: scaling factor for slow EMA in ademamix variants
 
 # --- Model sizes to sweep (number of attention heads) ---
 HEADS_LIST=( 8 )
@@ -165,6 +166,7 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
             --acc_steps "$ACC_STEPS"
             --kappa "$KAPPA"
             --clipsnr "$CLIPSNR"
+            --gamma_3_factor "$GAMMA_3_FACTOR"
             --lr "$LR"
             --scheduler "$SCHEDULER"
             --distributed_backend "$DISTRIBUTED_BACKEND"
