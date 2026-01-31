@@ -25,6 +25,8 @@ ACCOUNT="rrg-bengioy-ad"
 ARCH="enoki"                    # enoki or qwen3
 OPT="adana"                    # adana, dana-star-mk4, adamw, ademamix, d-muon, ...
 KAPPA="0.85"                   # kappa for DANA variants
+CLIPSNR="0.25"                  # SNR clipping for MK4 variants (dana-mk4, dana-star-mk4)
+                               # ignored by adana and dana-star (they hardcode clipsnr=None)
 
 # --- Model sizes to sweep (number of attention heads) ---
 HEADS_LIST=( 8 )
@@ -162,6 +164,7 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
             --batch_size "$BATCH_SIZE"
             --acc_steps "$ACC_STEPS"
             --kappa "$KAPPA"
+            --clipsnr "$CLIPSNR"
             --lr "$LR"
             --scheduler "$SCHEDULER"
             --distributed_backend "$DISTRIBUTED_BACKEND"
