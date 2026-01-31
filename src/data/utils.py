@@ -237,60 +237,25 @@ class MultiFileDataReader:
         self.async_loader.start_loading(next_file_path)
 
     def _switch_to_next_file(self):
-        """Switch current file to next file and start loading the new next file"""
+        """Switch current file to next file and start loading the new next file.
+
+        No NCCL collectives are used here — each rank loads independently.
+        This avoids collective mismatches with FSDP/DDP backends.
+        """
         next_idx = (self.current_file_idx + 1) % len(self.file_paths)
         file_path = self.file_paths[next_idx]
-        
-        # Coordinate file loading across all workers to prevent desynchronization
-        if self.auto_shard and dist.is_initialized():
-            # Step 1: Check if this worker's async load is ready
-            loaded_file = self.async_loader.get_loaded_file(timeout=5.0)
-            async_ready = loaded_file is not None
-            
-            # Step 2: All workers report their async status to master (use GPU tensors for NCCL)
-            async_status = torch.tensor([1 if async_ready else 0], dtype=torch.int32, device='cuda')
+
+        # Try async-loaded file first, fall back to synchronous load
+        loaded_file = self.async_loader.get_loaded_file(timeout=5.0)
+        if loaded_file is not None:
+            _, data = loaded_file
             if self.rank == 0:
-                # Master collects status from all workers
-                all_status = [torch.tensor([0], dtype=torch.int32, device='cuda') for _ in range(self.world_size)]
-                dist.all_gather(all_status, async_status)
-                all_ready = all(status.item() == 1 for status in all_status)
-                
-                if all_ready:
-                    print(f"All workers ready - switching to pre-loaded file: {file_path}")
-                else:
-                    print(f"Some workers not ready - all workers will load synchronously: {file_path}")
-                
-                # Broadcast decision to all workers
-                use_async = torch.tensor([1 if all_ready else 0], dtype=torch.int32, device='cuda')
-                dist.broadcast(use_async, src=0)
-            else:
-                # Workers gather their status and receive decision
-                all_status = [torch.tensor([0], dtype=torch.int32, device='cuda') for _ in range(self.world_size)]
-                dist.all_gather(all_status, async_status)
-                
-                use_async = torch.tensor([0], dtype=torch.int32, device='cuda')
-                dist.broadcast(use_async, src=0)
-            
-            # Step 3: All workers use the same loading method
-            if use_async.item() == 1 and async_ready:
-                # Use pre-loaded file
-                _, data = loaded_file
-                self.next_data = data
-            else:
-                # All workers load synchronously together
-                print(f"Loading next file synchronously (coordinated): {file_path}")
-                self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
-                
-        else:
-            # Non-distributed case - use original logic
-            loaded_file = self.async_loader.get_loaded_file(timeout=5.0)
-            if loaded_file is not None:
-                file_path, data = loaded_file
                 print(f"Switching to pre-loaded file: {file_path}")
-                self.next_data = data
-            else:
+            self.next_data = data
+        else:
+            if self.rank == 0:
                 print(f"Loading next file synchronously (async not ready): {file_path}")
-                self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
+            self.next_data = np.array(np.memmap(file_path, dtype=np.uint16, mode="r"))
         
         # Switch files
         self.current_file_idx = next_idx
@@ -346,42 +311,24 @@ class MultiFileDataReader:
         """Sample a batch from current file, switching files when current file is exhausted"""
         if self.current_reader is None:
             raise RuntimeError("No data loaded")
-        
+
         # For single file, just use the current reader
         if self.is_single_file:
             self.step += 1
             return self.current_reader.sample_batch()
-        
+
         # For multiple files, check if current file can provide a full batch
-        # If not, switch to next file with master-worker coordination
-        should_switch = False
-        
-        if self.auto_shard and dist.is_initialized():
-            # Master-worker coordination for file switching
-            if self.rank == 0:  # Master worker
-                # Check if current file is exhausted (can't provide full batch)
-                # Use current_file_num_batches() to get batches for current file only
-                local_batches_available = self.current_file_num_batches()
-                local_batches_consumed = self.step  # Counts number of local batches consumed by this worker
-                should_switch = (local_batches_consumed >= local_batches_available)
-                if should_switch:
-                    print(f"Triggering switch to next file after exhausting current file ({self.step} local batches consumed, {local_batches_available} available per worker)")
-                # Broadcast decision to all workers (use GPU tensor for NCCL)
-                switch_tensor = torch.tensor([1 if should_switch else 0], dtype=torch.int32, device='cuda')
-                dist.broadcast(switch_tensor, src=0)
-            else:  # Worker processes
-                # Receive decision from master (use GPU tensor for NCCL)
-                switch_tensor = torch.tensor([0], dtype=torch.int32, device='cuda')
-                dist.broadcast(switch_tensor, src=0)
-                should_switch = bool(switch_tensor.item())
-        else:
-            # Fallback for non-distributed case
-            local_batches_available = self.current_file_num_batches()
-            should_switch = (self.step >= local_batches_available)
+        # Each rank decides independently based on its own step count and file size.
+        # This avoids NCCL broadcasts that can collide with FSDP collectives.
+        # All ranks see the same file sizes and maintain the same step counter,
+        # so they will switch files at the same iteration.
+        local_batches_available = self.current_file_num_batches()
+        should_switch = (self.step >= local_batches_available)
         
         # All workers switch together if current file is exhausted
         if should_switch:
-            print(f"Switching files after exhausting current file ({self.step} batches)")
+            if self.rank == 0:
+                print(f"Switching files after exhausting current file ({self.step} batches)")
             self._switch_to_next_file()
             # Reset step counter for new file
             self.step = 0
