@@ -74,15 +74,20 @@ if [ $TRAINING_EXIT_CODE -eq 0 ] && [ -n "${SLURM_JOB_ID:-}" ]; then
             SLURM_ARGS+=(--gpus-per-node="$SLURM_GPUS_PER_NODE")
         fi
 
-        # Preserve memory allocation
-        MEM_INFO=$(echo "$SLURM_INFO" | grep -oP 'MinMemoryNode=\K[^ ]+' || echo "")
-        if [ -n "$MEM_INFO" ] && [ "$MEM_INFO" != "0" ]; then
-            SLURM_ARGS+=(--mem="${MEM_INFO}")
-        fi
+        # Preserve memory allocation (--mem=0 means "all memory", must be preserved)
+        MEM_INFO=$(echo "$SLURM_INFO" | grep -oP 'MinMemoryNode=\K[^ ]+' || echo "0")
+        SLURM_ARGS+=(--mem="${MEM_INFO}")
+
+        # Preserve job name from current job
+        JOB_NAME=$(echo "$SLURM_INFO" | grep -oP 'JobName=\K[^ ]+' || echo "qwen3_restart")
+        SLURM_ARGS+=(--job-name="${JOB_NAME}")
+
+        # Use the original script path (not $0 which resolves to SLURM spool copy)
+        SCRIPT_PATH="$SLURM_SUBMIT_DIR/scripts/restart_qwen3.sh"
 
         sbatch --export=ALL,RESTART_COUNT=$NEW_RESTART_COUNT \
             "${SLURM_ARGS[@]}" \
-            "$0" "$@"
+            "$SCRIPT_PATH" "$@"
 
         echo "Requeue submitted."
     fi
