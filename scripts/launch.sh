@@ -274,10 +274,10 @@ if [ -n "$ITERATIONS_TO_RUN" ]; then
     ITR_FLAGS="--iterations_to_run $ITERATIONS_TO_RUN"
 fi
 
-# Build run prefix for wandb group
+# Build wandb group and run prefix flags
 PREFIX_FLAGS=""
 if [ -n "$WANDB_GROUP" ]; then
-    PREFIX_FLAGS="--run_prefix $WANDB_GROUP"
+    PREFIX_FLAGS="--wandb_group $WANDB_GROUP --run_prefix $WANDB_GROUP"
 fi
 
 # Build scheduler flags
