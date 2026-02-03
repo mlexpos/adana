@@ -52,6 +52,7 @@ AUTO_RESUME="${AUTO_RESUME:-1}"
 ITERATIONS_TO_RUN=""
 DISTRIBUTED_BACKEND="${DISTRIBUTED_BACKEND:-nccl}"
 WANDB_OFFLINE="${WANDB_OFFLINE:-0}"
+Z_LOSS_COEFF="${Z_LOSS_COEFF:-1e-4}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -85,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --distributed_backend) DISTRIBUTED_BACKEND="$2"; shift 2 ;;
         --no_auto_resume)   AUTO_RESUME=0; shift ;;
         --iterations_to_run) ITERATIONS_TO_RUN="$2"; shift 2 ;;
+        --z_loss_coeff)     Z_LOSS_COEFF="$2"; shift 2 ;;
         *)                  EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
@@ -336,6 +338,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE ./src/main.py \
     --grad_clip $GRAD_CLIP \
     --init-scheme $INIT_SCHEME \
     --dropout 0.0 --seed 0 \
+    --z_loss_coeff $Z_LOSS_COEFF \
     --eval_interval $EVAL_INTERVAL \
     --log_interval $LOG_INTERVAL \
     --latest_ckpt_interval $LATEST_CKPT_INTERVAL \

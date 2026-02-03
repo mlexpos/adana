@@ -59,6 +59,7 @@ LIGER_LOSS=0                   # 1 = use Liger fused linear cross-entropy kernel
                                # never materializing the full (B,T,vocab) logits tensor
                                # saves ~6 GiB at batch 16 on 2.1B Enoki (46.8 vs 52.6 GiB)
                                # requires: pip install liger-kernel
+Z_LOSS_COEFF="1e-4"            # z-loss coefficient for logit regularization (default 1e-4)
 
 # --- Training options ---
 SCHEDULER="cos_inf"            # cos_inf (decays to 10% of peak LR), cos, wsd, linear
@@ -182,6 +183,8 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
         if [ "$LIGER_LOSS" -eq 1 ]; then
             LAUNCH_ARGS+=(--liger_loss)
         fi
+
+        LAUNCH_ARGS+=(--z_loss_coeff "$Z_LOSS_COEFF")
 
         if [ "$NO_AUTO_RESUME" -eq 1 ]; then
             LAUNCH_ARGS+=(--no_auto_resume)
