@@ -209,6 +209,10 @@ parser.add_argument('--broken-axis-upper', type=float, default=0.9,
                     help='Upper bound of gap to remove in broken axis (default: 0.9)')
 parser.add_argument('--all-size-labels', action='store_true',
                     help='Show all size labels on top axis (disable filtering that skips every other label for large sizes)')
+parser.add_argument('--legend-bottom', action='store_true',
+                    help='Place legend at bottom center instead of upper center')
+parser.add_argument('--legend-absolute-bottom', action='store_true',
+                    help='Place legend at absolute bottom of figure, just above x-axis')
 args = parser.parse_args()
 
 # Parse legend suffixes into a dictionary
@@ -1656,7 +1660,7 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
 
     return fig
 
-def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, baseline_optimizer, use_affine_by_part=False, show_title=True, simple_title=False, title_fontsize=20, no_loss=False, mark_outliers=None, compute_formula='default', seq_length=2048, efficiency_ymin=None, broken_axis=False, broken_axis_lower=0.1, broken_axis_upper=0.9, all_size_labels=False):
+def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, baseline_optimizer, use_affine_by_part=False, show_title=True, simple_title=False, title_fontsize=20, no_loss=False, mark_outliers=None, compute_formula='default', seq_length=2048, efficiency_ymin=None, broken_axis=False, broken_axis_lower=0.1, broken_axis_upper=0.9, all_size_labels=False, legend_bottom=False, legend_absolute_bottom=False):
     """
     Plot compute gain percentage relative to specified baseline optimizer.
     Same as plot_comparison_multi_optimizer but with added right y-axis for compute gain.
@@ -2093,12 +2097,7 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                         point = df[df['size'] == size]
                         if len(point) > 0:
                             point = point.iloc[0]
-                            # Draw red star on loss panel
-                            if not no_loss:
-                                ax.scatter([point[fit_metric]], [point['val_loss']],
-                                          s=400, marker='*', c='red', edgecolors='black', linewidths=1.5,
-                                          zorder=20, alpha=1.0)
-                            # Also mark on compute gain panel if applicable
+                            # Mark on compute gain panel if applicable
                             if opt_short != baseline_optimizer and rule in baseline_affine_funcs:
                                 baseline_metric = baseline_affine_funcs[rule]['metric']
                                 baseline_loss = baseline_affine_funcs[rule]['loss']
@@ -2300,8 +2299,19 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
     if len(legend_handles) > 0:
         # Use ax_gain for legend when no_loss, otherwise use ax
         legend_ax = ax_gain if no_loss else ax
-        legend_ax.legend(legend_handles, legend_labels, fontsize=16, loc='upper center', framealpha=0.95, ncol=2,
-                  edgecolor='#333333', fancybox=True, shadow=True)
+        if legend_absolute_bottom:
+            # Position legend at absolute bottom of plot area, just above x-axis, left-aligned
+            legend_ax.legend(legend_handles, legend_labels, fontsize=24, loc='lower center',
+                      bbox_to_anchor=(0.32, -0.03), framealpha=0.95, ncol=2,
+                      edgecolor='#333333', fancybox=True, shadow=True)
+        elif legend_bottom:
+            # Position legend at bottom left, raised slightly to avoid obscuring data
+            legend_ax.legend(legend_handles, legend_labels, fontsize=24, loc='lower center',
+                      bbox_to_anchor=(0.35, 0.08), framealpha=0.95, ncol=2,
+                      edgecolor='#333333', fancybox=True, shadow=True)
+        else:
+            legend_ax.legend(legend_handles, legend_labels, fontsize=16, loc='upper center',
+                      framealpha=0.95, ncol=2, edgecolor='#333333', fancybox=True, shadow=True)
     ax.grid(True, alpha=0.3, linestyle='--', which='both')
     if no_loss:
         ax_gain.grid(True, alpha=0.3, linestyle='--', which='both')
@@ -2347,20 +2357,17 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
             # Show all size labels without filtering
             selected_sizes = all_sizes_sorted
         else:
-            # Filter: show all sizes <= 24, skip 26, then show every other starting from 28
-            selected_sizes = []
-            skip_next = False
-            for size in all_sizes_sorted:
-                if size <= 24:
-                    selected_sizes.append(size)
-                elif size == 26:
-                    # Skip 26
-                    continue
-                else:
-                    # For sizes >= 28, show every other
-                    if not skip_next:
-                        selected_sizes.append(size)
-                    skip_next = not skip_next
+            # Filter sizes to ensure minimum spacing of 4 heads between labels
+            # Work from largest to smallest to prioritize showing larger models
+            min_gap = 4
+            all_sizes_reversed = list(reversed(all_sizes_sorted))
+            selected_sizes_reversed = []
+            last_selected = None
+            for size in all_sizes_reversed:
+                if last_selected is None or (last_selected - size) >= min_gap:
+                    selected_sizes_reversed.append(size)
+                    last_selected = size
+            selected_sizes = list(reversed(selected_sizes_reversed))
 
         ax2.set_xticks([size_to_metric[size] for size in selected_sizes])
         # Show formatted parameter counts instead of head numbers
@@ -2550,7 +2557,9 @@ if __name__ == '__main__':
             broken_axis=args.broken_axis,
             broken_axis_lower=args.broken_axis_lower,
             broken_axis_upper=args.broken_axis_upper,
-            all_size_labels=args.all_size_labels
+            all_size_labels=args.all_size_labels,
+            legend_bottom=args.legend_bottom,
+            legend_absolute_bottom=args.legend_absolute_bottom
         )
     elif args.fit_relative_to_adamw:
         # Create relative plot with AdamW as baseline
