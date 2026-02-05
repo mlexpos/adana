@@ -75,6 +75,12 @@ SCALING_RULE_CONFIG = {
         'marker': 'D',
         'linestyle': '-',
     },
+    'Enoki_512': {
+        'group': 'Enoki_512',
+        'color': 'tab:olive',
+        'marker': 'D',
+        'linestyle': '-',
+    },
     'Eryngii': {
         'group': 'eryngii_sweeps',
         'color': 'tab:purple',
@@ -124,10 +130,10 @@ rcParams['legend.edgecolor'] = '#333333'
 
 parser = argparse.ArgumentParser(description='Compare scaling rules performance')
 parser.add_argument('--scaling-rules', type=str, nargs='+', required=True,
-                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
+                    choices=['BigHead', 'EggHead', 'Enoki', 'Enoki_Scaled', 'Enoki_512', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer'],
                     help='Scaling rules to compare (can specify multiple)')
 parser.add_argument('--optimizers', type=str, nargs='+', required=True,
-                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-75', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85', 'dana-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-85', 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1', 'dana-star-no-tau-kappa-1-0', 'adana-kappa-0-85'],
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-75', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85', 'dana-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-85', 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1', 'dana-star-no-tau-kappa-1-0', 'adana-kappa-0-85', 'adana'],
                     help='Optimizer types to analyze (can specify multiple, e.g., --optimizers adamw mk4)')
 parser.add_argument('--project', type=str, default='danastar',
                     help='WandB project name (default: danastar)')
@@ -155,12 +161,20 @@ parser.add_argument('--compute-weight', action='store_true',
 parser.add_argument('--fit-relative-to-adamw', action='store_true',
                     help='Plot relative to AdamW baseline (AdamW appears as horizontal line at 0)')
 parser.add_argument('--plot-compute-gain', type=str, default=None,
-                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-75', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85', 'dana-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-85', 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1', 'adana-kappa-0-85'],
+                    choices=['adamw', 'mk4', 'dana', 'ademamix', 'd-muon', 'manau', 'manau-hard', 'adamw-decaying-wd', 'dana-mk4', 'ademamix-decaying-wd', 'dana-star-no-tau', 'dana-star', 'dana-star-no-tau-kappa-0-75', 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85', 'dana-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-85', 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1', 'adana-kappa-0-85', 'adana'],
                     help='Plot compute gain relative to specified baseline optimizer (will be included in fitting even if not in --optimizers)')
 parser.add_argument('--affine-by-part', action='store_true',
                     help='Use piecewise affine interpolation of baseline data instead of fitted curve for compute gain calculation (requires --plot-compute-gain)')
 parser.add_argument('--head-min', type=int, default=None,
                     help='Minimum head/depth size to include in fitting (still plots all points)')
+parser.add_argument('--head-max', '--largest-head', type=int, default=None, dest='head_max',
+                    help='Maximum head/depth size to include (filters out larger sizes)')
+parser.add_argument('--target-gamma-3-factor', type=float, default=None,
+                    help='Filter runs to only include those with this gamma_3_factor value')
+parser.add_argument('--simple-title', action='store_true',
+                    help='Use simplified title format')
+parser.add_argument('--title-fontsize', type=int, default=20,
+                    help='Title font size (default: 20)')
 parser.add_argument('--no-title', action='store_true',
                     help='Do not show title on plot')
 parser.add_argument('--no-loss', action='store_true',
@@ -193,6 +207,8 @@ parser.add_argument('--broken-axis-lower', type=float, default=0.1,
                     help='Lower bound of gap to remove in broken axis (default: 0.1)')
 parser.add_argument('--broken-axis-upper', type=float, default=0.9,
                     help='Upper bound of gap to remove in broken axis (default: 0.9)')
+parser.add_argument('--all-size-labels', action='store_true',
+                    help='Show all size labels on top axis (disable filtering that skips every other label for large sizes)')
 args = parser.parse_args()
 
 # Parse legend suffixes into a dictionary
@@ -206,7 +222,7 @@ for suffix_spec in args.legend_suffix:
 
 # Map optimizer names
 optimizer_map = {'adamw': 'adamw', 'mk4': 'dana-star-mk4', 'dana': 'dana', 'ademamix': 'ademamix',
-                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd', 'dana-star-no-tau': 'dana-star-no-tau', 'dana-star': 'dana-star', 'dana-star-no-tau-kappa-0-75': 'dana-star-no-tau-kappa-0-75', 'dana-star-no-tau-kappa-0-8': 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85': 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9': 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85': 'dana-mk4-kappa-0-85', 'dana-star-mk4-kappa-0-75': 'dana-star-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-85': 'dana-star-mk4-kappa-0-85', 'dana-star-no-tau-dana-constant': 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant': 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-beta1': 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant-beta2-constant': 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1': 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1': 'dana-star-no-tau-dana-constant-beta2-constant-beta1', 'dana-star-no-tau-kappa-1-0': 'dana-star-no-tau-kappa-1-0', 'adana-kappa-0-85': 'adana-kappa-0-85', 'dana-mk4-kappa-0-75': 'dana-mk4-kappa-0-75', 'dana-mk4-kappa-0-85': 'dana-mk4-kappa-0-85'}
+                 'd-muon': 'd-muon', 'manau': 'manau', 'manau-hard': 'manau-hard', 'adamw-decaying-wd': 'adamw-decaying-wd', 'dana-mk4': 'dana-mk4', 'ademamix-decaying-wd': 'ademamix-decaying-wd', 'dana-star-no-tau': 'dana-star-no-tau', 'dana-star': 'dana-star', 'dana-star-no-tau-kappa-0-75': 'dana-star-no-tau-kappa-0-75', 'dana-star-no-tau-kappa-0-8': 'dana-star-no-tau-kappa-0-8', 'dana-star-no-tau-kappa-0-85': 'dana-star-no-tau-kappa-0-85', 'dana-star-no-tau-kappa-0-9': 'dana-star-no-tau-kappa-0-9', 'dana-mk4-kappa-0-85': 'dana-mk4-kappa-0-85', 'dana-star-mk4-kappa-0-75': 'dana-star-mk4-kappa-0-75', 'dana-star-mk4-kappa-0-85': 'dana-star-mk4-kappa-0-85', 'dana-star-no-tau-dana-constant': 'dana-star-no-tau-dana-constant', 'dana-star-no-tau-beta2-constant': 'dana-star-no-tau-beta2-constant', 'dana-star-no-tau-beta1': 'dana-star-no-tau-beta1', 'dana-star-no-tau-dana-constant-beta2-constant': 'dana-star-no-tau-dana-constant-beta2-constant', 'dana-star-no-tau-dana-constant-beta1': 'dana-star-no-tau-dana-constant-beta1', 'dana-star-no-tau-dana-constant-beta2-constant-beta1': 'dana-star-no-tau-dana-constant-beta2-constant-beta1', 'dana-star-no-tau-kappa-1-0': 'dana-star-no-tau-kappa-1-0', 'adana-kappa-0-85': 'adana-kappa-0-85', 'dana-mk4-kappa-0-75': 'dana-mk4-kappa-0-75', 'dana-mk4-kappa-0-85': 'dana-mk4-kappa-0-85', 'adana': 'adana'}
 optimizer_types = [optimizer_map[opt] for opt in args.optimizers]
 
 # =============================================================================
@@ -264,8 +280,8 @@ def compute_params(size, scaling_rule, compute_formula='default', seq_length=204
         vocab_size = 50304
         total_params = float(non_emb + 2 * n_embd * vocab_size)
 
-    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_Scaled':
-        # Enoki and Enoki_Scaled: DiLoco scaling
+    elif scaling_rule == 'Enoki' or scaling_rule == 'Enoki_Scaled' or scaling_rule == 'Enoki_512':
+        # Enoki, Enoki_Scaled, and Enoki_512: DiLoco scaling
         heads = size
         head_dim = 64  # Fixed
         n_embd = heads * 64
@@ -376,6 +392,7 @@ def get_cache_path(cache_dir, scaling_rule, optimizer_type, project, entity, com
     return os.path.join(cache_dir, filename)
 
 def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_compute=None, head_min=None,
+                           head_max=None, target_gamma_3_factor=None,
                            cache_dir=None, use_cache=True, compute_formula='default', seq_length=2048):
     """Load data for a scaling rule and get best loss for each size.
 
@@ -386,6 +403,8 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
         optimizer_type: Type of optimizer to filter for
         min_compute: Minimum compute threshold in PFH (optional)
         head_min: Minimum head/depth size to include in fitting (optional)
+        head_max: Maximum head/depth size to include (optional)
+        target_gamma_3_factor: Filter by gamma_3_factor config value (optional)
         cache_dir: Directory for caching (optional)
         use_cache: Whether to use cached data if available (default: True)
         compute_formula: Compute formula to use (default, 6N1, 6N2, M)
@@ -402,11 +421,14 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
             df = cached_data['df']
             print(f"  Loaded {len(df)} {scaling_rule} runs from cache")
 
-            # Apply filters (min_compute and head_min) to cached data
+            # Apply filters (min_compute, head_min, head_max) to cached data
             if len(df) > 0:
                 if min_compute is not None:
                     df = df[df['compute'] >= min_compute].copy()
                     print(f"  Filtered to {len(df)} data points with compute >= {min_compute:.4e} PFH")
+                if head_max is not None:
+                    df = df[df['size'] <= head_max].copy()
+                    print(f"  Filtered to {len(df)} data points with head/depth <= {head_max}")
                 if head_min is not None:
                     df['use_for_fit'] = df['size'] >= head_min
                     n_fit = df['use_for_fit'].sum()
@@ -520,9 +542,21 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
                     continue
             if run_kappa is not None and run_kappa != target_kappa:
                 continue
+        elif optimizer_type == 'adana':
+            # ADANA: runs with opt='adana' (relabeled from dana-mk4 with clipsnr=1000)
+            if opt != 'adana':
+                continue
         else:
             # Standard filtering - exact match
             if opt != optimizer_type:
+                continue
+
+        # Filter by gamma_3_factor if specified
+        # Skip this filter for optimizers that don't use gamma_3_factor (e.g., adamw, d-muon)
+        optimizers_without_gamma3 = ['adamw', 'adamw-decaying-wd', 'd-muon', 'muon']
+        if target_gamma_3_factor is not None and optimizer_type not in optimizers_without_gamma3:
+            run_gamma_3_factor = run_config.get('gamma_3_factor', run_config.get('gamma3_factor', None))
+            if run_gamma_3_factor is None or abs(run_gamma_3_factor - target_gamma_3_factor) > 0.01:
                 continue
 
         # Check completion
@@ -598,6 +632,9 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
 
     if min_compute is not None and len(result_df) > 0:
         print(f"  Filtered to {len(result_df)} data points with compute >= {min_compute:.4e} PFH")
+    if head_max is not None and len(result_df) > 0:
+        result_df = result_df[result_df['size'] <= head_max].copy()
+        print(f"  Filtered to {len(result_df)} data points with head/depth <= {head_max}")
     if head_min is not None and len(result_df) > 0 and 'use_for_fit' in result_df.columns:
         n_fit = result_df['use_for_fit'].sum()
         print(f"  Using {n_fit}/{len(result_df)} data points for fitting (head/depth >= {head_min})")
@@ -1112,7 +1149,18 @@ def _display_rule(rule):
     """Convert rule name to display name for plots."""
     return rule.replace('Enoki_Scaled', '').replace('_Scaled', '').strip()
 
-def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, show_title=True, compute_formula='default', seq_length=2048):
+def _make_legend_label(opt_short, rule, scaling_rules, suffix=''):
+    """Create legend label, omitting rule name if there's only one scaling rule."""
+    opt_name = _display_name(opt_short)
+    if len(scaling_rules) == 1:
+        # When there's only one scaling rule, just show optimizer name
+        return f'{opt_name}{suffix}' if suffix else opt_name
+    else:
+        # Multiple scaling rules - include rule name
+        rule_name = _display_rule(rule)
+        return f'{opt_name} {rule_name}{suffix}' if suffix else f'{opt_name} {rule_name}'
+
+def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, show_title=True, simple_title=False, title_fontsize=20, compute_formula='default', seq_length=2048):
     """
     Plot comparison of multiple optimizers and scaling rules on a single plot.
 
@@ -1178,7 +1226,7 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
             if len(df) == 0:
                 continue
 
-            marker = rule_markers.get(rule, 'x')
+            marker = 'o'  # Always use filled circles for data points
             linestyle = rule_linestyles.get(rule, '-')
 
             # Separate points used for fitting vs. only for display
@@ -1196,8 +1244,8 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
                           zorder=10, alpha=0.85)
 
                 obs_key = (rule, opt_short)
-                obs_handles[obs_key] = (scatter, f'{_display_name(opt_short)} {_display_rule(rule)}')
-            
+                obs_handles[obs_key] = (scatter, _make_legend_label(opt_short, rule, scaling_rules))
+
             # Plot observed data NOT used for fitting (hollow/faded)
             if len(df_no_fit) > 0:
                 ax.scatter(df_no_fit[fit_metric], df_no_fit['val_loss'],
@@ -1223,7 +1271,7 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
                 fit_key = (rule, opt_short)
                 # Print fit formula to output
                 print(f"  Fit: {_display_name(opt_short)} {_display_rule(rule)}: {a:.3f}+{b:.2e}{metric_symbol}^{{-{c:.3f}}}+{e:.2e}{metric_symbol}^{{-{f:.3f}}} (R²={r2:.3f})")
-                fit_handles[fit_key] = (line, f'{_display_name(opt_short)} {_display_rule(rule)}')
+                fit_handles[fit_key] = (line, _make_legend_label(opt_short, rule, scaling_rules))
 
     # Create custom ordered legend
     # Order: For each scaling rule, show fit curves (or observed if no fit)
@@ -1247,7 +1295,7 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
 
     # Get metric info
     if fit_metric == 'compute':
-        xlabel = 'Compute (PetaFlop-Hours)'
+        xlabel = 'Compute (PFH)'
     else:  # non_emb
         xlabel = 'Non-embedding Parameters'
 
@@ -1266,23 +1314,26 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
     if show_title:
         opts_str = ', '.join([_display_name(opt) for opt in optimizer_shorts])
         rules_str = ' vs '.join(scaling_rules)
-        ax.set_title(f'Scaling Laws Comparison: {rules_str}\nOptimizers: {opts_str} (Shared saturation a = {fit_results["a"]:.4f})',
-                    fontsize=20, fontweight='bold', pad=20)
+        if simple_title:
+            title = f'{rules_str} Scaling Comparison'
+        else:
+            title = f'Scaling Laws Comparison: {rules_str}\nOptimizers: {opts_str} (Shared saturation a = {fit_results["a"]:.4f})'
+        ax.set_title(title, fontsize=title_fontsize, fontweight='bold', pad=20)
 
-    ax.legend(legend_handles, legend_labels, fontsize=16, loc='best', framealpha=0.95, ncol=2, 
+    ax.legend(legend_handles, legend_labels, fontsize=16, loc='best', framealpha=0.95, ncol=2,
               edgecolor='#333333', fancybox=True, shadow=True)
     ax.grid(True, alpha=0.3, linestyle='--', which='both')
-    
+
     # Add vertical line at 24 heads
     # Calculate metric value for 24 heads from any available scaling rule
     metric_24_heads = None
     for rule in scaling_rules:
-        if rule in ['Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer']:
+        if rule in ['Enoki', 'Enoki_Scaled', 'Enoki_512', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer']:
             # For head-based scaling rules, compute metric for 24 heads
             params_24 = compute_params(24, rule, compute_formula, seq_length)
             metric_24_heads = params_24[fit_metric]
             break
-    
+
     if metric_24_heads is not None:
         ax.axvline(x=metric_24_heads, color='gray', linestyle='-', linewidth=2.0, alpha=0.5, zorder=1)
 
@@ -1338,7 +1389,7 @@ def plot_comparison_multi_optimizer(data_dict, fit_results, scaling_rules, optim
 
     return fig
 
-def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, show_title=True, compute_formula='default', seq_length=2048):
+def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, show_title=True, simple_title=False, title_fontsize=20, compute_formula='default', seq_length=2048):
     """
     Plot comparison with AdamW normalized to horizontal line (slope 0 in log-log space).
 
@@ -1427,7 +1478,7 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
             if len(df) == 0:
                 continue
 
-            marker = rule_markers.get(rule, 'x')
+            marker = 'o'  # Always use filled circles for data points
             linestyle = rule_linestyles.get(rule, '-')
 
             # Get AdamW fit for this scaling rule
@@ -1462,8 +1513,8 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
                           zorder=10, alpha=0.85)
 
                 obs_key = (rule, opt_short)
-                obs_handles[obs_key] = (scatter, f'{_display_name(opt_short)} {_display_rule(rule)}')
-            
+                obs_handles[obs_key] = (scatter, _make_legend_label(opt_short, rule, scaling_rules))
+
             # Calculate normalized observed losses for non-fitting points (hollow/faded)
             if len(df_no_fit) > 0:
                 metric_vals_no_fit = df_no_fit[fit_metric].values
@@ -1495,14 +1546,14 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
                        zorder=9, alpha=0.9)
 
                 fit_key = (rule, opt_short)
-                
+
                 # For AdamW, it will be a constant at 1.0 (log scale makes this a horizontal line)
                 if opt_short == 'adamw':
                     print(f"  Fit: {_display_name(opt_short)} {_display_rule(rule)}: baseline (ratio=1)")
-                    fit_handles[fit_key] = (line, f'{_display_name(opt_short)} {_display_rule(rule)}')
+                    fit_handles[fit_key] = (line, _make_legend_label(opt_short, rule, scaling_rules))
                 else:
                     print(f"  Fit: {_display_name(opt_short)} {_display_rule(rule)}: broken power law / adamw (R²={r2:.3f})")
-                    fit_handles[fit_key] = (line, f'{_display_name(opt_short)} {_display_rule(rule)}')
+                    fit_handles[fit_key] = (line, _make_legend_label(opt_short, rule, scaling_rules))
 
     # Create custom ordered legend
     legend_handles = []
@@ -1525,7 +1576,7 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
 
     # Get metric info
     if fit_metric == 'compute':
-        xlabel = 'Compute (PetaFlop-Hours)'
+        xlabel = 'Compute (PFH)'
     else:  # non_emb
         xlabel = 'Non-embedding Parameters'
 
@@ -1547,23 +1598,26 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
     if show_title:
         opts_str = ', '.join([_display_name(opt) for opt in optimizer_shorts])
         rules_str = ' vs '.join(scaling_rules)
-        ax.set_title(f'Scaling Laws Comparison (Relative to AdamW, Log-Log): {rules_str}\nOptimizers: {opts_str}',
-                    fontsize=20, fontweight='bold', pad=20)
+        if simple_title:
+            title = f'{rules_str} Relative Scaling Comparison'
+        else:
+            title = f'Scaling Laws Comparison (Relative to AdamW, Log-Log): {rules_str}\nOptimizers: {opts_str}'
+        ax.set_title(title, fontsize=title_fontsize, fontweight='bold', pad=20)
 
     ax.legend(legend_handles, legend_labels, fontsize=16, loc='best', framealpha=0.95, ncol=2,
               edgecolor='#333333', fancybox=True, shadow=True)
     ax.grid(True, alpha=0.3, linestyle='--', which='both')
-    
+
     # Add vertical line at 24 heads
     # Calculate metric value for 24 heads from any available scaling rule
     metric_24_heads = None
     for rule in scaling_rules:
-        if rule in ['Enoki', 'Enoki_Scaled', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer']:
+        if rule in ['Enoki', 'Enoki_Scaled', 'Enoki_512', 'Eryngii', 'Eryngii_Scaled', 'Qwen3_Scaled', 'Qwen3_Hoyer']:
             # For head-based scaling rules, compute metric for 24 heads
             params_24 = compute_params(24, rule, compute_formula, seq_length)
             metric_24_heads = params_24[fit_metric]
             break
-    
+
     if metric_24_heads is not None:
         ax.axvline(x=metric_24_heads, color='gray', linestyle='-', linewidth=2.0, alpha=0.5, zorder=1)
 
@@ -1571,7 +1625,7 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
     ax2 = ax.twiny()
     ax2.set_xscale('log')
     ax2.set_xlim(ax.get_xlim())
-    
+
     # Collect all sizes from data
     all_sizes = set()
     size_to_metric = {}
@@ -1602,7 +1656,7 @@ def plot_comparison_relative_to_adamw(data_dict, fit_results, scaling_rules, opt
 
     return fig
 
-def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, baseline_optimizer, use_affine_by_part=False, show_title=True, no_loss=False, mark_outliers=None, compute_formula='default', seq_length=2048, efficiency_ymin=None, broken_axis=False, broken_axis_lower=0.1, broken_axis_upper=0.9):
+def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, optimizer_types, fit_metric, baseline_optimizer, use_affine_by_part=False, show_title=True, simple_title=False, title_fontsize=20, no_loss=False, mark_outliers=None, compute_formula='default', seq_length=2048, efficiency_ymin=None, broken_axis=False, broken_axis_lower=0.1, broken_axis_upper=0.9, all_size_labels=False):
     """
     Plot compute gain percentage relative to specified baseline optimizer.
     Same as plot_comparison_multi_optimizer but with added right y-axis for compute gain.
@@ -1751,7 +1805,7 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
             if len(df) == 0:
                 continue
             
-            marker = rule_markers.get(rule, 'x')
+            marker = 'o'  # Always use filled circles for data points
             linestyle = rule_linestyles.get(rule, '-')
             
             # Separate points used for fitting vs. only for display
@@ -1762,24 +1816,26 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                 df_fit = df
                 df_no_fit = pd.DataFrame()
             
+            # Define curve_name for later use
+            curve_name = f'{opt_short}_{rule}'
+
             # Plot observed data used for fitting - improved styling
             if not no_loss:
                 if len(df_fit) > 0:
                     scatter = ax.scatter(df_fit[fit_metric], df_fit['val_loss'],
                               s=150, marker=marker, c=color, edgecolors='white', linewidths=2.0,
-                              zorder=10, alpha=0.5)
-                    
+                              zorder=10, alpha=1.0)
+
                     obs_key = (rule, opt_short)
-                    obs_handles[obs_key] = (scatter, f'{_display_name(opt_short)} {_display_rule(rule)}')
-                
+                    obs_handles[obs_key] = (scatter, _make_legend_label(opt_short, rule, scaling_rules))
+
                 # Plot observed data NOT used for fitting (hollow/faded)
                 if len(df_no_fit) > 0:
                     ax.scatter(df_no_fit[fit_metric], df_no_fit['val_loss'],
                               s=150, marker=marker, facecolors='none', edgecolors=color, linewidths=2.0,
                               zorder=10, alpha=0.5)
-                
+
                 # Plot fitted curve if available
-                curve_name = f'{opt_short}_{rule}'
                 if curve_name in fit_results['curves'] and plot_range is not None:
                     b = fit_results['curves'][curve_name]['b']
                     c = fit_results['curves'][curve_name]['c']
@@ -1789,14 +1845,14 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                     
                     # Broken power law: loss = a + b*C^{-c} + e*C^{-f}
                     loss_fit = a + b * np.power(plot_range, -c) + e * np.power(plot_range, -f)
-                    
-                    line, = ax.plot(plot_range, loss_fit, linestyle=linestyle, color=color, linewidth=7.0,
-                           zorder=9, alpha=0.5)
+
+                    line, = ax.plot(plot_range, loss_fit, linestyle=(0, (4, 2)), color=color, linewidth=2.5,
+                           zorder=9, alpha=0.7)
                     
                     fit_key = (rule, opt_short)
                     # Print fit formula to output
                     print(f"  Fit: {_display_name(opt_short)} {_display_rule(rule)}: {a:.3f}+{b:.2e}{metric_symbol}^{{-{c:.3f}}}+{e:.2e}{metric_symbol}^{{-{f:.3f}}} (R²={r2:.3f})")
-                    fit_handles[fit_key] = (line, f'{_display_name(opt_short)} {_display_rule(rule)}')
+                    fit_handles[fit_key] = (line, _make_legend_label(opt_short, rule, scaling_rules))
             
             # Plot compute gain on right axis (skip baseline itself)
             if opt_short != baseline_optimizer:
@@ -1887,18 +1943,17 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                             
                             if len(compute_gains) > 0:
                                 # Plot the gains as scatter points connected by lines
-                                # Make them more prominent when no_loss is True
+                                # Use squares for compute multiplier data points
                                 scatter_size = 150 if no_loss else 100
                                 line_alpha = 1.0 if no_loss else 1.0
-                                line_width = 7.0 if no_loss else 6.0
-                                # Use optimizer-specific linestyle if available, otherwise use default based on no_loss
-                                default_line_style = '-' if no_loss else ':'
-                                line_style = OPT_LINESTYLES.get(opt_short, default_line_style)
-                                
+                                line_width = 5.0 if no_loss else 4.0  # Thicker for data lines
+                                # Use solid lines for compute multiplier
+                                line_style = '-'
+
                                 # Transform y-values for broken axis
                                 plot_gains = transform_y(compute_gains)
                                 scatter_gain = ax_gain.scatter(valid_opt_metrics, plot_gains,
-                                              s=scatter_size, marker=marker, c=gain_color, edgecolors='white',
+                                              s=scatter_size, marker='s', c=gain_color, edgecolors='white',
                                               linewidths=1.5, zorder=11, alpha=1.0)
 
                                 # Also plot connecting lines for visualization
@@ -1911,7 +1966,7 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                                 # Store handle for legend when no_loss
                                 if no_loss:
                                     gain_key = (rule, opt_short, 'affine')
-                                    gain_handles[gain_key] = (line_gain, f'{_display_name(opt_short)} {_display_rule(rule)} (affine)')
+                                    gain_handles[gain_key] = (line_gain, _make_legend_label(opt_short, rule, scaling_rules))
                     
                     # Plot fitted curve compute gain (if available)
                     if rule in baseline_fits and curve_name in fit_results['curves']:
@@ -1959,7 +2014,7 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                             valid_plot_range_fit = np.array(valid_plot_range_fit)
 
                             # Fitted curve: use dashed line with lower opacity
-                            line_alpha_fit = 1.0 if no_loss else 1.0
+                            line_alpha_fit = 0.6 if no_loss else 0.6
                             line_width_fit = 6.0 if no_loss else 5.0
                             line_style_fit = '--'  # Always dashed for fitted curves
 
@@ -1971,15 +2026,44 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                             # Store handle for legend when no_loss
                             if no_loss:
                                 gain_key = (rule, opt_short, 'fit')
-                                gain_handles[gain_key] = (line_gain_fit, f'{_display_name(opt_short)} {_display_rule(rule)} (fit)')
+                                gain_handles[gain_key] = (line_gain_fit, _make_legend_label(opt_short, rule, scaling_rules, ' (fit)'))
     
-    # Add baseline line at 1.0 (ratio = 1 means same efficiency) on gain axis
-    # Skip this line when using affine-by-part to focus on other optimizers
-    if not use_affine_by_part:
-        baseline_color = OPT_COLORS.get(baseline_optimizer, '#00CED1')
-        # Transform y=1.0 for broken axis
-        baseline_y = transform_y(np.array([1.0]))[0]
-        ax_gain.axhline(y=baseline_y, color=baseline_color, linestyle='--', linewidth=1.5, alpha=0.6, zorder=7)
+    # Add AdamW baseline data points at y=1.0 (ratio = 1 means same efficiency) on gain axis
+    # Draw as squares connected by solid line (same style as other compute multiplier data)
+    adamw_baseline_color = OPT_COLORS.get('adamw', '#1f77b4')
+    # Transform y=1.0 for broken axis
+    baseline_y = transform_y(np.array([1.0]))[0]
+
+    # Get AdamW data points for x-positions from baseline_affine_funcs
+    adamw_x_positions = []
+    for rule in scaling_rules:
+        if rule in baseline_affine_funcs:
+            adamw_metrics = baseline_affine_funcs[rule]['metric']
+            adamw_x_positions.extend(adamw_metrics)
+
+    if len(adamw_x_positions) > 0:
+        adamw_x_positions = np.array(adamw_x_positions)
+        adamw_y_values = np.ones(len(adamw_x_positions)) * baseline_y  # All at y=1.0 (transformed)
+
+        # Draw squares at each AdamW data point (same style as other optimizers)
+        scatter_size = 150 if no_loss else 100
+        ax_gain.scatter(adamw_x_positions, adamw_y_values,
+                       s=scatter_size, marker='s', c=adamw_baseline_color,
+                       edgecolors='white', linewidths=1.5, zorder=11, alpha=1.0)
+
+        # Connect with solid line
+        sorted_idx = np.argsort(adamw_x_positions)
+        line_width = 5.0 if no_loss else 4.0  # Thicker for data lines
+        ax_gain.plot(adamw_x_positions[sorted_idx], adamw_y_values[sorted_idx],
+                    linestyle='-', color=adamw_baseline_color, linewidth=line_width, alpha=1.0, zorder=8)
+
+        # Add dashed horizontal "fit" line spanning the full range (styled like other fit curves)
+        line_width_fit = 6.0 if no_loss else 5.0
+        ax_gain.axhline(y=baseline_y, color=adamw_baseline_color, linestyle='--', linewidth=line_width_fit, alpha=0.6, zorder=7)
+    else:
+        # Fallback: draw horizontal line if no data points available
+        ax_gain.axhline(y=baseline_y, color=adamw_baseline_color, linestyle='-', linewidth=2.5, alpha=0.8, zorder=5)
+        ax_gain.axhline(y=baseline_y, color=adamw_baseline_color, linestyle='--', linewidth=5.0, alpha=1.0, zorder=7)
     
     # Add vertical line at 24 heads
     # Calculate metric value for 24 heads from any available scaling rule
@@ -2073,7 +2157,7 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
     
     # Get metric info
     if fit_metric == 'compute':
-        xlabel = 'Compute (PetaFlop-Hours)'
+        xlabel = 'Compute (PFH)'
     else:
         xlabel = 'Non-embedding Parameters'
     
@@ -2085,17 +2169,22 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
         ax.tick_params(axis='y', which='both', left=False, labelleft=False)
     else:
         # Validation loss axis has transparency (gray color)
-        ax.set_ylabel('Validation Loss', fontsize=28, fontweight='bold', color='#666666')
+        ax.set_ylabel('Validation Loss', fontsize=34, fontweight='bold', color='#666666')
         ax.set_yscale('log')
-    
+        # Format validation loss axis to show simple integers (3, 4) instead of scientific notation
+        from matplotlib.ticker import FixedLocator, FixedFormatter
+        ax.yaxis.set_major_locator(FixedLocator([3, 4]))
+        ax.yaxis.set_major_formatter(FixedFormatter(['3', '4']))
+        ax.yaxis.set_minor_locator(FixedLocator([]))  # No minor ticks
+
     ax.set_xscale('log')
-    
+
     # Improve tick labels - much larger
     ax.tick_params(axis='x', which='major', labelsize=32, width=2.5, length=12)
     ax.tick_params(axis='x', which='minor', width=2.0, length=8)
-    ax.tick_params(axis='y', which='major', labelsize=36, width=2.5, length=12)
+    ax.tick_params(axis='y', which='major', labelsize=42, width=2.5, length=12, labelcolor='#666666')
     ax.tick_params(axis='y', which='minor', width=2.0, length=8)
-    
+
     # Swap axes: compute efficiency on LEFT, validation loss on RIGHT
     # Move ax (validation loss) to right side
     ax.yaxis.set_label_position('right')
@@ -2112,7 +2201,10 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
     ax.grid(True, which='minor', linestyle=':', alpha=0.2, color='gray', axis='x')
 
     if no_loss:
-        ax_gain.set_ylabel(f'Compute Efficiency vs {_display_name(baseline_optimizer)}', fontsize=35, fontweight='bold', color='#000000')
+        ax_gain.set_ylabel('Compute Multiplier wrt AdamW', fontsize=32, fontweight='bold', color='#000000', labelpad=55)
+        # Add smaller "(bigger better)" between the main label and the axis tick numbers
+        ax_gain.text(-0.08, 0.5, '(bigger better)', fontsize=24, color='#666666', rotation=90,
+                    va='center', ha='center', transform=ax_gain.transAxes)
         ax_gain.tick_params(axis='y', labelcolor='#000000', labelsize=36)
         ax_gain.set_yscale('log')
         # Format y-axis to avoid scientific notation
@@ -2121,12 +2213,16 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
         formatter.set_scientific(False)
         ax_gain.yaxis.set_major_formatter(formatter)
 
-        # Add horizontal dashed grey line at compute gain 1.0 (without affecting y-axis limits)
+        # Add horizontal solid line at compute gain 1.0 in AdamW's color (without affecting y-axis limits)
         y_1_trans = transform_y(np.array([1.0]))[0]
-        ax_gain.axhline(y=y_1_trans, color='grey', linestyle='--', linewidth=1.5, alpha=0.7, zorder=1)
+        adamw_color = OPT_COLORS.get('adamw', '#1f77b4')
+        ax_gain.axhline(y=y_1_trans, color=adamw_color, linestyle='-', linewidth=2.5, alpha=0.9, zorder=1)
     else:
         # Compute efficiency axis is fully opaque (black)
-        ax_gain.set_ylabel(f'Compute Efficiency vs {_display_name(baseline_optimizer)}', fontsize=28, fontweight='bold', color='#000000')
+        ax_gain.set_ylabel('Compute Multiplier wrt AdamW', fontsize=28, fontweight='bold', color='#000000', labelpad=55)
+        # Add smaller "(bigger better)" between the main label and the axis tick numbers
+        ax_gain.text(-0.08, 0.5, '(bigger better)', fontsize=22, color='#666666', rotation=90,
+                    va='center', ha='center', transform=ax_gain.transAxes)
         ax_gain.tick_params(axis='y', labelcolor='#000000', labelsize=36)
         # Format y-axis to avoid scientific notation
         from matplotlib.ticker import ScalarFormatter
@@ -2193,30 +2289,43 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
     if show_title:
         opts_str = ', '.join([_display_name(opt) for opt in optimizer_shorts])
         rules_str = ' vs '.join(scaling_rules)
-        if no_loss:
-            ax.set_title(f'Compute Gain Comparison: {rules_str}\nOptimizers: {opts_str} (relative to {_display_name(baseline_optimizer)})\nSolid lines = affine-by-part, Dashed lines = fitted curves',
-                        fontsize=20, fontweight='bold', pad=20)
+        if simple_title:
+            title = f'{rules_str} Compute Gain'
+        elif no_loss:
+            title = f'Compute Gain Comparison: {rules_str}\nOptimizers: {opts_str} (relative to {_display_name(baseline_optimizer)})\nSolid lines = affine-by-part, Dashed lines = fitted curves'
         else:
-            ax.set_title(f'Scaling Laws Comparison: {rules_str}\nOptimizers: {opts_str} (Shared saturation a = {fit_results["a"]:.4f})',
-                        fontsize=20, fontweight='bold', pad=20)
+            title = f'Scaling Laws Comparison: {rules_str}\nOptimizers: {opts_str} (Shared saturation a = {fit_results["a"]:.4f})'
+        ax.set_title(title, fontsize=title_fontsize, fontweight='bold', pad=20)
     
     if len(legend_handles) > 0:
         # Use ax_gain for legend when no_loss, otherwise use ax
         legend_ax = ax_gain if no_loss else ax
-        legend_ax.legend(legend_handles, legend_labels, fontsize=16, loc='best', framealpha=0.95, ncol=2, 
+        legend_ax.legend(legend_handles, legend_labels, fontsize=16, loc='upper center', framealpha=0.95, ncol=2,
                   edgecolor='#333333', fancybox=True, shadow=True)
     ax.grid(True, alpha=0.3, linestyle='--', which='both')
     if no_loss:
         ax_gain.grid(True, alpha=0.3, linestyle='--', which='both')
     
-    # Add second x-axis showing size (heads or depth) on top
+    # Add second x-axis showing model size (total parameters) on top
     ax2 = ax.twiny()
     ax2.set_xscale('log')
     ax2.set_xlim(ax.get_xlim())
-    
-    # Collect all sizes from data
+
+    # Helper function to format parameters nicely (e.g., 0.3B, 1.0B, 70M)
+    def format_params(params):
+        if params >= 300e6:  # 300M and above: use B format
+            val = params / 1e9
+            return f'{val:.1f}B'
+        elif params >= 1e6:  # Below 300M: use M format
+            val = params / 1e6
+            return f'{val:.0f}M'
+        else:
+            return f'{params/1e3:.0f}K'
+
+    # Collect all sizes from data and compute their parameters
     all_sizes = set()
     size_to_metric = {}
+    size_to_params = {}
     for opt_type in optimizer_types:
         for rule in scaling_rules:
             df = data_dict[opt_type][rule]
@@ -2227,35 +2336,39 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                     all_sizes.add(size)
                     if size not in size_to_metric:
                         size_to_metric[size] = metric_val
-    
+                        # Compute total parameters for this size
+                        params_info = compute_params(size, rule, compute_formula, seq_length)
+                        size_to_params[size] = params_info['total_params']
+
     if len(all_sizes) > 0:
         all_sizes_sorted = sorted(all_sizes)
 
-        # Filter: show all sizes <= 24, skip 26, then show every other starting from 28
-        selected_sizes = []
-        skip_next = False
-        for size in all_sizes_sorted:
-            if size <= 24:
-                selected_sizes.append(size)
-            elif size == 26:
-                # Skip 26
-                continue
-            else:
-                # For sizes >= 28, show every other
-                if not skip_next:
+        if all_size_labels:
+            # Show all size labels without filtering
+            selected_sizes = all_sizes_sorted
+        else:
+            # Filter: show all sizes <= 24, skip 26, then show every other starting from 28
+            selected_sizes = []
+            skip_next = False
+            for size in all_sizes_sorted:
+                if size <= 24:
                     selected_sizes.append(size)
-                skip_next = not skip_next
+                elif size == 26:
+                    # Skip 26
+                    continue
+                else:
+                    # For sizes >= 28, show every other
+                    if not skip_next:
+                        selected_sizes.append(size)
+                    skip_next = not skip_next
 
         ax2.set_xticks([size_to_metric[size] for size in selected_sizes])
-        ax2.set_xticklabels([str(int(size)) for size in selected_sizes], fontsize=28, fontweight='bold')
-        ax2.tick_params(axis='x', which='major', labelsize=28, width=2.5, length=10, pad=8)
+        # Show formatted parameter counts instead of head numbers
+        ax2.set_xticklabels([format_params(size_to_params[size]) for size in selected_sizes], fontsize=24, fontweight='bold')
+        ax2.tick_params(axis='x', which='major', labelsize=24, width=2.5, length=10, pad=8)
 
-        # Determine label based on scaling rules
-        if 'BigHead' in scaling_rules and len(scaling_rules) == 1:
-            size_label = 'Depth'
-        else:
-            size_label = 'Heads'
-        ax2.set_xlabel(size_label, fontsize=32, fontweight='bold', labelpad=10)
+        # No label on top axis - just the parameter values
+        ax2.set_xlabel('', fontsize=0)
     
     plt.tight_layout()
     
@@ -2322,6 +2435,8 @@ if __name__ == '__main__':
                 optimizer_type=optimizer_type,
                 min_compute=args.min_compute,
                 head_min=args.head_min,
+                head_max=args.head_max,
+                target_gamma_3_factor=args.target_gamma_3_factor,
                 cache_dir=args.cache_dir,
                 use_cache=not args.no_cache,
                 compute_formula=args.compute_formula,
@@ -2425,6 +2540,8 @@ if __name__ == '__main__':
             baseline_optimizer_short,
             use_affine_by_part=args.affine_by_part,
             show_title=show_title,
+            simple_title=args.simple_title,
+            title_fontsize=args.title_fontsize,
             no_loss=args.no_loss,
             mark_outliers=args.mark_outlier,
             compute_formula=args.compute_formula,
@@ -2432,7 +2549,8 @@ if __name__ == '__main__':
             efficiency_ymin=args.efficiency_ymin,
             broken_axis=args.broken_axis,
             broken_axis_lower=args.broken_axis_lower,
-            broken_axis_upper=args.broken_axis_upper
+            broken_axis_upper=args.broken_axis_upper,
+            all_size_labels=args.all_size_labels
         )
     elif args.fit_relative_to_adamw:
         # Create relative plot with AdamW as baseline
@@ -2446,6 +2564,8 @@ if __name__ == '__main__':
                 optimizer_types,
                 args.fit_metric,
                 show_title=show_title,
+                simple_title=args.simple_title,
+                title_fontsize=args.title_fontsize,
                 compute_formula=args.compute_formula,
                 seq_length=args.seq_length
             )
@@ -2459,6 +2579,8 @@ if __name__ == '__main__':
                 optimizer_types,
                 args.fit_metric,
                 show_title=show_title,
+                simple_title=args.simple_title,
+                title_fontsize=args.title_fontsize,
                 compute_formula=args.compute_formula,
                 seq_length=args.seq_length
             )
@@ -2472,6 +2594,8 @@ if __name__ == '__main__':
             optimizer_types,
             args.fit_metric,
             show_title=show_title,
+            simple_title=args.simple_title,
+            title_fontsize=args.title_fontsize,
             compute_formula=args.compute_formula,
             seq_length=args.seq_length
         )
