@@ -29,6 +29,11 @@ CLIPSNR="0.25"                  # SNR clipping for MK4 variants (dana-mk4, dana-
                                # ignored by adana and dana-star (they hardcode clipsnr=None)
 GAMMA_3_FACTOR="1.0"           # tilde-alpha: scaling factor for slow EMA in ademamix variants
 
+# --- Weight decay scheduling ---
+WD_TS_DIVISOR="10"             # WD_TS = ITERATIONS / this value (default: 10)
+                               # Set to "" and use WD_TS_CONST for raw constant instead
+WD_TS_CONST=""                 # Raw WD_TS constant (mutually exclusive with WD_TS_DIVISOR)
+
 # --- Model sizes to sweep (number of attention heads) ---
 HEADS_LIST=( 8 )
 
@@ -200,6 +205,13 @@ print(f'non_emb={dims[\"non_emb_params\"]/1e6:.1f}M total={dims[\"total_params\"
 
         if [ "$WANDB_OFFLINE" -eq 1 ]; then
             LAUNCH_ARGS+=(--wandb_offline)
+        fi
+
+        if [ -n "$WD_TS_DIVISOR" ]; then
+            LAUNCH_ARGS+=(--wd_ts_divisor "$WD_TS_DIVISOR")
+        fi
+        if [ -n "$WD_TS_CONST" ]; then
+            LAUNCH_ARGS+=(--wd_ts_const "$WD_TS_CONST")
         fi
 
         if [ -n "$EXTRA_ARGS" ]; then

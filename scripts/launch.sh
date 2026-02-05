@@ -37,6 +37,9 @@ KAPPA="${KAPPA:-0.85}"
 CLIPSNR="${CLIPSNR:-2.0}"
 OMEGA="${OMEGA:-4.0}"
 DELTA="${DELTA:-8.0}"
+WD_TS_DIVISOR="${WD_TS_DIVISOR:-}"
+WD_TS_CONST="${WD_TS_CONST:-}"
+WD_TS_DIVISOR_SET=""  # Track if user explicitly set divisor
 LR_OVERRIDE=""
 ITERATIONS_OVERRIDE=""
 WARMUP_STEPS=""
@@ -71,6 +74,8 @@ while [[ $# -gt 0 ]]; do
         --clipsnr)          CLIPSNR="$2"; shift 2 ;;
         --omega)            OMEGA="$2"; shift 2 ;;
         --delta)            DELTA="$2"; shift 2 ;;
+        --wd_ts_divisor)    WD_TS_DIVISOR="$2"; WD_TS_DIVISOR_SET=1; shift 2 ;;
+        --wd_ts_const)      WD_TS_CONST="$2"; shift 2 ;;
         --lr)               LR_OVERRIDE="$2"; shift 2 ;;
         --iterations)       ITERATIONS_OVERRIDE="$2"; shift 2 ;;
         --warmup_steps)     WARMUP_STEPS="$2"; shift 2 ;;
@@ -109,6 +114,8 @@ if [ -z "$ARCH" ] || [ -z "$OPT" ] || [ -z "$HEADS" ]; then
     echo "  --kappa <float>         Kappa for DANA variants (default: 0.85)"
     echo "  --clipsnr <float>       SNR clipping for MK4 variants (default: 2.0)"
     echo "  --omega <float>         Weight decay omega (default: 4.0)"
+    echo "  --wd_ts_divisor <N>     WD_TS = ITERATIONS/N (default: 10)"
+    echo "  --wd_ts_const <N>       WD_TS = N (raw constant, mutually exclusive with divisor)"
     echo "  --iterations <N>        Override auto-computed iterations"
     echo "  --iterations_to_run <N> Max iterations per SLURM job (for restart)"
     echo "  --no_compile            Disable torch.compile"
@@ -168,11 +175,28 @@ if [ -z "$WARMUP_STEPS" ]; then
 fi
 
 # =============================================================================
+# Compute WD_TS from divisor or constant (mutually exclusive)
+# =============================================================================
+# Check for mutual exclusion: error if user explicitly set both
+if [ -n "$WD_TS_CONST" ] && [ -n "$WD_TS_DIVISOR_SET" ]; then
+    echo "ERROR: Cannot specify both --wd_ts_divisor and --wd_ts_const"
+    exit 1
+fi
+
+if [ -n "$WD_TS_CONST" ]; then
+    WD_TS="$WD_TS_CONST"
+else
+    # Use divisor (default to 10 if not set)
+    WD_TS_DIVISOR="${WD_TS_DIVISOR:-10}"
+    WD_TS=$(python3 -c "print(int($ITERATIONS / $WD_TS_DIVISOR))")
+fi
+
+# =============================================================================
 # Set optimizer-specific flags and weight decay
 # =============================================================================
 # Weight decay convention:
 #   - DANA variants & decaying-WD (independent WD, paper convention):
-#     WD_TS = ITERATIONS/10, WD = OMEGA / WD_TS
+#     WD_TS = ITERATIONS/N (default N=10) or constant, WD = OMEGA / WD_TS
 #     The optimizer multiplies by schedule γ(t) but NOT by peak LR γ*
 #   - AdamW/Ademamix (PyTorch convention, coupled WD):
 #     WD = OMEGA / (LR * ITERATIONS)
@@ -180,7 +204,6 @@ fi
 OPT_FLAGS=""
 case "$OPT" in
     adana|dana-mk4|dana-star|dana-star-mk4)
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         case "$OPT" in
             adana)
@@ -206,12 +229,10 @@ case "$OPT" in
         OPT_FLAGS="--opt ademamix --beta1 0.9 --beta2 0.999"
         ;;
     adamw-decaying-wd)
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt adamw-decaying-wd --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
         ;;
     ademamix-decaying-wd)
-        WD_TS=$(python3 -c "print(int($ITERATIONS / 10))")
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt ademamix-decaying-wd --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
         ;;
@@ -302,7 +323,11 @@ echo "MLP hidden:   $MLP_HIDDEN"
 echo "QKV dim:      $QKV_DIM"
 echo "Parameters:   non_emb=${NON_EMB} ($(python3 -c "print(f'{$NON_EMB/1e6:.1f}M')")), total=${TOTAL_PARAMS} ($(python3 -c "print(f'{$TOTAL_PARAMS/1e6:.1f}M')"))"
 echo "LR:           $LR"
-echo "Weight Decay: $WEIGHT_DECAY (omega=$OMEGA)"
+if [ -n "$WD_TS_CONST" ]; then
+    echo "Weight Decay: $WEIGHT_DECAY (omega=$OMEGA, wd_ts_const=$WD_TS_CONST)"
+else
+    echo "Weight Decay: $WEIGHT_DECAY (omega=$OMEGA, wd_ts_divisor=$WD_TS_DIVISOR, wd_ts=$WD_TS)"
+fi
 echo "Iterations:   $ITERATIONS (from 20 * total_params / tokens_per_step)"
 echo "Warmup:       $WARMUP_STEPS (iterations/50)"
 echo "Scheduler:    $SCHEDULER"
