@@ -37,6 +37,7 @@ KAPPA="${KAPPA:-0.85}"
 CLIPSNR="${CLIPSNR:-2.0}"
 OMEGA="${OMEGA:-4.0}"
 DELTA="${DELTA:-8.0}"
+GAMMA_3_FACTOR="${GAMMA_3_FACTOR:-1.0}"
 WD_TS_DIVISOR="${WD_TS_DIVISOR:-}"
 WD_TS_CONST="${WD_TS_CONST:-}"
 WD_TS_DIVISOR_SET=""  # Track if user explicitly set divisor
@@ -74,6 +75,7 @@ while [[ $# -gt 0 ]]; do
         --clipsnr)          CLIPSNR="$2"; shift 2 ;;
         --omega)            OMEGA="$2"; shift 2 ;;
         --delta)            DELTA="$2"; shift 2 ;;
+        --gamma_3_factor)   GAMMA_3_FACTOR="$2"; shift 2 ;;
         --wd_ts_divisor)    WD_TS_DIVISOR="$2"; WD_TS_DIVISOR_SET=1; shift 2 ;;
         --wd_ts_const)      WD_TS_CONST="$2"; shift 2 ;;
         --lr)               LR_OVERRIDE="$2"; shift 2 ;;
