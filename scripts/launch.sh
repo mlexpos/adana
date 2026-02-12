@@ -226,7 +226,7 @@ case "$OPT" in
         ;;
     ademamix)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
-        OPT_FLAGS="--opt ademamix --beta1 0.9 --beta2 0.999"
+        OPT_FLAGS="--opt ademamix --beta1 0.9 --beta2 0.999 --delta $DELTA --kappa $KAPPA --gamma_3_factor $GAMMA_3_FACTOR --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS"
         ;;
     adamw-decaying-wd)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
@@ -234,7 +234,7 @@ case "$OPT" in
         ;;
     ademamix-decaying-wd)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
-        OPT_FLAGS="--opt ademamix-decaying-wd --beta1 0.9 --beta2 0.999 --wd_decaying --wd_ts $WD_TS"
+        OPT_FLAGS="--opt ademamix-decaying-wd --beta1 0.9 --beta2 0.999 --delta $DELTA --kappa $KAPPA --gamma_3_factor $GAMMA_3_FACTOR --adema_beta3_warmup $ITERATIONS --adema_alpha_warmup $ITERATIONS --wd_decaying --wd_ts $WD_TS"
         ;;
     d-muon)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
