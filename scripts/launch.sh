@@ -209,16 +209,16 @@ case "$OPT" in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         case "$OPT" in
             adana)
-                OPT_FLAGS="--opt adana --delta $DELTA --kappa $KAPPA --wd_decaying --wd_ts $WD_TS"
+                OPT_FLAGS="--opt adana --delta $DELTA --kappa $KAPPA --gamma_3_factor $GAMMA_3_FACTOR --wd_decaying --wd_ts $WD_TS"
                 ;;
             dana-mk4)
-                OPT_FLAGS="--opt dana-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+                OPT_FLAGS="--opt dana-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --gamma_3_factor $GAMMA_3_FACTOR --wd_decaying --wd_ts $WD_TS"
                 ;;
             dana-star)
-                OPT_FLAGS="--opt dana-star --delta $DELTA --kappa $KAPPA --wd_decaying --wd_ts $WD_TS"
+                OPT_FLAGS="--opt dana-star --delta $DELTA --kappa $KAPPA --gamma_3_factor $GAMMA_3_FACTOR --wd_decaying --wd_ts $WD_TS"
                 ;;
             dana-star-mk4)
-                OPT_FLAGS="--opt dana-star-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+                OPT_FLAGS="--opt dana-star-mk4 --delta $DELTA --kappa $KAPPA --clipsnr $CLIPSNR --gamma_3_factor $GAMMA_3_FACTOR --wd_decaying --wd_ts $WD_TS"
                 ;;
         esac
         ;;
