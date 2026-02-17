@@ -19,7 +19,7 @@ import os
 import json
 from datetime import datetime
 
-from optimizers import powerlaw_schedule, get_dana_star_mk4, TaneaOptimizerState
+from optimizers import powerlaw_schedule, get_dana_star_mk4, GalaxyOptimizerState
 from moe_plrf import MixtureOfExpertsPLRF
 
 
@@ -134,7 +134,7 @@ def extract_tau_statistics(opt_state):
         # optax.chain creates a tuple: (dana_star_mk4_state, scale_state)
         dana_state = opt_state[0]
 
-    if not isinstance(dana_state, TaneaOptimizerState):
+    if not isinstance(dana_state, GalaxyOptimizerState):
         return {}
 
     def compute_tau_order_stats_wrapper(x):

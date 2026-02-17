@@ -18,7 +18,7 @@ import numpy as np
 import argparse
 import os
 
-from optimizers import powerlaw_schedule, GalaxyOptimizerState, get_adam_star, get_adam_nesterov_star, get_dana_star, get_dana_star_mk4, get_long_adam, get_long_adam_nesterov
+from optimizers import powerlaw_schedule, get_dana_star, get_dana_star_mk4
 
 # Import MoE PLRF implementations from installed package
 from moe_plrf import (

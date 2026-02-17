@@ -9,7 +9,7 @@ import optax
 import numpy as np
 from typing import Dict, Any
 
-from optimizers import get_dana_star, TaneaOptimizerState
+from optimizers import get_dana_star
 from moe_m_sweeps_mk4 import get_dana_star_mk4_optimizer, get_dana_star_optimizer, LabelNoiseMixtureOfExpertsPLRF
 
 def print_buffer_stats(name: str, buffer: jnp.ndarray, step: int):
