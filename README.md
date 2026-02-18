@@ -84,6 +84,10 @@ bash scripts/launch.sh --arch enoki --opt dana-star-mk4 --heads 12 \
 }
 ```
 
+## Acknowledgments
+
+This codebase is adapted from [llm-optimizer-benchmark](https://github.com/epfml/llm-optimizer-benchmark) by EPFL ML.
+
 ## License
 
 See [LICENSE](LICENSE).
