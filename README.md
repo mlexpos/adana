@@ -50,12 +50,12 @@ where $m_{t+1}$ and $v_{t+1}$ are the usual first and second moment estimates wi
 
 ## Variants
 
-| Variant | Description |
-|---------|-------------|
-| **ADana** | Base algorithm with log-time momentum, decaying WD, and damped Nesterov |
-| **Dana-MK4** | + SNR clipping to reduce sensitivity to $\kappa$ |
-| **Dana-Star** | + $\tau$ estimator for robustness to sparse gradients |
-| **Dana-Star-MK4** | Both SNR clipping and $\tau$ estimator |
+| Variant | Description | PyTorch | Optax (JAX) |
+|---------|-------------|---------|-------------|
+| **ADana** | Base: log-time momentum, decaying WD, damped Nesterov | [`src/optim/adana.py`](src/optim/adana.py) | [`jax/optimizers.py`](jax/optimizers.py#L208) |
+| **Dana-MK4** | + SNR clipping to reduce sensitivity to $\kappa$ | [`src/optim/adana.py`](src/optim/adana.py) | [`jax/optimizers.py`](jax/optimizers.py#L377) |
+| **Dana-Star** | + $\tau$ estimator for robustness to sparse gradients | [`src/optim/dana_star_mk4.py`](src/optim/dana_star_mk4.py) | [`jax/optimizers.py`](jax/optimizers.py#L69) |
+| **Dana-Star-MK4** | Both SNR clipping and $\tau$ estimator | [`src/optim/dana_star_mk4.py`](src/optim/dana_star_mk4.py) | [`jax/optimizers.py`](jax/optimizers.py#L572) |
 
 ## Getting started
 
