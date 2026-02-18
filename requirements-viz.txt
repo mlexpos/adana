@@ -1,0 +1,4 @@
+jax
+optax
+matplotlib
+seaborn

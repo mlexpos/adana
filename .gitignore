@@ -212,6 +212,11 @@ exps/
 wandb/
 src/data/datasets/
 
+# Generated figures and caches
+visualization/*.pdf
+visualization/wandb_cache/
+visualization/hummingbird_data/
+
 # User-specific config (credentials, paths)
 scripts/config.local
 

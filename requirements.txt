@@ -1,15 +1,14 @@
 tiktoken
-# --find-links https://download.pytorch.org/whl/torch_stable.html
 torch
 torchaudio
 torchvision
 tqdm
+triton
 transformers
 wandb
 datasets
 zstandard
 numpy
-matplotlib
-seaborn
-jax
-optax
+sympy
+packaging
+pandas
