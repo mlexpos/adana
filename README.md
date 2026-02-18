@@ -76,7 +76,7 @@ bash scripts/launch.sh --arch enoki --opt dana-star-mk4 --heads 12 \
 ## Citation
 
 ```bibtex
-@article{paquette2026logarithmic,
+@article{ferbach2026logarithmic,
   title={Logarithmic-time Schedules for Scaling Language Models with Momentum},
   author={Ferbach, Damien and Paquette, Courtney and Gidel, Gauthier and Everett, Katie and Paquette, Elliot},
   journal={arXiv preprint arXiv:2602.05298},
