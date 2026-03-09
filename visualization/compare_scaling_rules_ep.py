@@ -213,6 +213,8 @@ parser.add_argument('--legend-bottom', action='store_true',
                     help='Place legend at bottom center instead of upper center')
 parser.add_argument('--legend-absolute-bottom', action='store_true',
                     help='Place legend at absolute bottom of figure, just above x-axis')
+parser.add_argument('--save-data', type=str, default=None, nargs='?', const='auto',
+                    help='Save plotted data to a formatted plain text file. Optionally specify filename (default: auto-generated from plot name with .txt extension)')
 args = parser.parse_args()
 
 # Parse legend suffixes into a dictionary
@@ -390,10 +392,19 @@ import hashlib
 
 def get_cache_path(cache_dir, scaling_rule, optimizer_type, project, entity, compute_formula='default'):
     """Generate cache file path for a specific query."""
-    # Create a unique key for this query
-    key = f"{scaling_rule}_{optimizer_type}_{project}_{entity}_{compute_formula}"
+    # Cache key excludes compute_formula since compute is recalculated on load
+    key = f"{scaling_rule}_{optimizer_type}_{project}_{entity}"
     filename = f"cache_{key}.pkl"
-    return os.path.join(cache_dir, filename)
+    path = os.path.join(cache_dir, filename)
+    if os.path.exists(path):
+        return path
+    # Fall back to legacy cache files that included compute_formula in the key
+    for legacy_formula in [compute_formula, 'default', '6N2', '6N1', 'M']:
+        legacy_key = f"{scaling_rule}_{optimizer_type}_{project}_{entity}_{legacy_formula}"
+        legacy_path = os.path.join(cache_dir, f"cache_{legacy_key}.pkl")
+        if os.path.exists(legacy_path):
+            return legacy_path
+    return path
 
 def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_compute=None, head_min=None,
                            head_max=None, target_gamma_3_factor=None,
@@ -424,6 +435,14 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
                 cached_data = pickle.load(f)
             df = cached_data['df']
             print(f"  Loaded {len(df)} {scaling_rule} runs from cache")
+
+            # Recalculate compute column for the requested formula
+            if len(df) > 0:
+                for idx, row in df.iterrows():
+                    params = compute_params(row['size'], scaling_rule, compute_formula, seq_length)
+                    df.at[idx, 'compute'] = params['compute']
+                    df.at[idx, 'non_emb'] = params['non_emb']
+                    df.at[idx, 'total_params'] = params['total_params']
 
             # Apply filters (min_compute, head_min, head_max) to cached data
             if len(df) > 0:
@@ -540,12 +559,21 @@ def load_scaling_rule_data(scaling_rule, project, entity, optimizer_type, min_co
             run_kappa = run_config.get('kappa', None)
             base_opt = optimizer_type.rsplit('-kappa-', 1)[0]
 
-            if opt != base_opt and opt != optimizer_type:
-                # Also check if it matches exactly (some runs have full name in opt)
-                if opt != optimizer_type:
+            # Grandfathered adana runs that should appear under dana-star-no-tau-kappa-0-85
+            _ADANA_GRANDFATHERED_RUNS = {
+                'Enoki_ScaledGPT_4x2_model-enoki_dataset-fineweb_100_opt-adana__hash_57004da1',
+                'Enoki_ScaledGPT_4x2_model-enoki_dataset-fineweb_100_opt-adana__hash_5bda960e',
+            }
+            is_grandfathered = (opt == 'adana' and optimizer_type == 'dana-star-no-tau-kappa-0-85'
+                                and run.name in _ADANA_GRANDFATHERED_RUNS)
+
+            if not is_grandfathered:
+                if opt != base_opt and opt != optimizer_type:
+                    # Also check if it matches exactly (some runs have full name in opt)
+                    if opt != optimizer_type:
+                        continue
+                if run_kappa is not None and run_kappa != target_kappa:
                     continue
-            if run_kappa is not None and run_kappa != target_kappa:
-                continue
         elif optimizer_type == 'adana':
             # ADANA: runs with opt='adana' (relabeled from dana-mk4 with clipsnr=1000)
             if opt != 'adana':
@@ -1967,10 +1995,9 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
                                 line_gain, = ax_gain.plot(sorted_metrics, sorted_gains, linestyle=line_style, color=gain_color,
                                            linewidth=line_width, alpha=line_alpha, zorder=8)
                                 
-                                # Store handle for legend when no_loss
-                                if no_loss:
-                                    gain_key = (rule, opt_short, 'affine')
-                                    gain_handles[gain_key] = (line_gain, _make_legend_label(opt_short, rule, scaling_rules))
+                                # Store handle for legend
+                                gain_key = (rule, opt_short, 'affine')
+                                gain_handles[gain_key] = (line_gain, _make_legend_label(opt_short, rule, scaling_rules))
                     
                     # Plot fitted curve compute gain (if available)
                     if rule in baseline_fits and curve_name in fit_results['curves']:
@@ -2058,8 +2085,11 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
         # Connect with solid line
         sorted_idx = np.argsort(adamw_x_positions)
         line_width = 5.0 if no_loss else 4.0  # Thicker for data lines
-        ax_gain.plot(adamw_x_positions[sorted_idx], adamw_y_values[sorted_idx],
+        adamw_line, = ax_gain.plot(adamw_x_positions[sorted_idx], adamw_y_values[sorted_idx],
                     linestyle='-', color=adamw_baseline_color, linewidth=line_width, alpha=1.0, zorder=8)
+        # Store solid line handle for legend
+        for rule in scaling_rules:
+            gain_handles[(rule, baseline_optimizer, 'affine')] = (adamw_line, _make_legend_label(baseline_optimizer, rule, scaling_rules))
 
         # Add dashed horizontal "fit" line spanning the full range (styled like other fit curves)
         line_width_fit = 6.0 if no_loss else 5.0
@@ -2123,11 +2153,16 @@ def plot_compute_gain(data_dict, fit_results, scaling_rules, optimizer_shorts, o
     if not no_loss:
         for rule in scaling_rules:
             for opt_short in optimizer_shorts:
+                # Prefer solid compute-gain lines for legend clarity
+                gain_key_affine = (rule, opt_short, 'affine')
                 fit_key = (rule, opt_short)
                 obs_key = (rule, opt_short)
-                
-                # Prefer fit curve with equation, otherwise just show optimizer name
-                if fit_key in fit_handles:
+
+                if gain_key_affine in gain_handles:
+                    handle, label = gain_handles[gain_key_affine]
+                    legend_handles.append(handle)
+                    legend_labels.append(label)
+                elif fit_key in fit_handles:
                     handle, label = fit_handles[fit_key]
                     legend_handles.append(handle)
                     legend_labels.append(label)
@@ -2633,3 +2668,147 @@ if __name__ == '__main__':
     print(f"\n{'='*70}")
     print(f"Plot saved to: {os.path.abspath(output_file)}")
     print(f"{'='*70}")
+
+    # Save data to plain text file if requested
+    if args.save_data is not None:
+        if args.save_data == 'auto':
+            # Derive from output_file: replace extension with .txt
+            data_file = os.path.splitext(output_file)[0] + '.txt'
+        else:
+            data_file = args.save_data
+
+        with open(data_file, 'w') as f:
+            f.write(f"# Data exported from compare_scaling_rules_ep.py\n")
+            f.write(f"# Scaling Rules: {', '.join(args.scaling_rules)}\n")
+            f.write(f"# Optimizers: {', '.join(args.optimizers)}\n")
+            f.write(f"# Fit Metric: {args.fit_metric}\n")
+            f.write(f"# Compute Formula: {args.compute_formula}\n")
+            if args.plot_compute_gain:
+                f.write(f"# Compute Gain Baseline: {baseline_optimizer_short}\n")
+            f.write(f"#\n")
+
+            # Section 1: Raw data points
+            f.write(f"{'='*80}\n")
+            f.write(f"RAW DATA POINTS\n")
+            f.write(f"{'='*80}\n\n")
+
+            for optimizer_idx, optimizer_type in enumerate(optimizer_types):
+                opt_short = args.optimizers[optimizer_idx]
+                opt_display = _display_name(opt_short)
+
+                for scaling_rule in args.scaling_rules:
+                    df = data_dict[optimizer_type][scaling_rule]
+                    if len(df) == 0:
+                        continue
+
+                    f.write(f"--- {opt_display} ({scaling_rule}) ---\n")
+                    header = f"{'Size':>6s}  {'Total Params':>14s}  {'Non-emb Params':>14s}  {'Compute (PFH)':>14s}  {'Val Loss':>10s}"
+                    if 'use_for_fit' in df.columns:
+                        header += f"  {'Fit':>3s}"
+                    f.write(header + "\n")
+
+                    df_sorted = df.sort_values(by='size')
+                    for _, row in df_sorted.iterrows():
+                        line = f"{row['size']:>6.0f}  {row['total_params']:>14.0f}  {row['non_emb']:>14.0f}  {row['compute']:>14.6e}  {row['val_loss']:>10.6f}"
+                        if 'use_for_fit' in df.columns:
+                            line += f"  {'yes' if row['use_for_fit'] else 'no':>3s}"
+                        f.write(line + "\n")
+                    f.write("\n")
+
+            # Section 2: Fit parameters
+            f.write(f"{'='*80}\n")
+            f.write(f"FIT PARAMETERS\n")
+            f.write(f"{'='*80}\n\n")
+
+            is_single = fit_results.get('is_single_power_law', False)
+            metric_sym = 'C' if args.fit_metric == 'compute' else 'P'
+            if is_single:
+                f.write(f"Model: loss = a + b * {metric_sym}^(-c)\n")
+            else:
+                f.write(f"Model: loss = a + b * {metric_sym}^(-c) + e * {metric_sym}^(-f)\n")
+            f.write(f"Shared saturation: a = {fit_results['a']:.6f}\n\n")
+
+            for curve_name, curve_params in fit_results['curves'].items():
+                f.write(f"{curve_name}:\n")
+                f.write(f"  b  = {curve_params['b']:.6e}\n")
+                f.write(f"  c  = {curve_params['c']:.6f}\n")
+                if not is_single:
+                    f.write(f"  e  = {curve_params['e']:.6e}\n")
+                    f.write(f"  f  = {curve_params['f']:.6f}\n")
+                f.write(f"  R² = {curve_params['r_squared']:.6f}\n")
+            f.write("\n")
+
+            # Section 3: Compute gain data (if applicable)
+            if args.plot_compute_gain:
+                f.write(f"{'='*80}\n")
+                f.write(f"COMPUTE MULTIPLIER (relative to {_display_name(baseline_optimizer_short)})\n")
+                f.write(f"{'='*80}\n\n")
+
+                baseline_opt_type = optimizer_map[baseline_optimizer_short]
+
+                for scaling_rule in args.scaling_rules:
+                    # Get baseline data for interpolation
+                    if baseline_opt_type not in data_dict or scaling_rule not in data_dict[baseline_opt_type]:
+                        continue
+                    baseline_df = data_dict[baseline_opt_type][scaling_rule]
+                    if len(baseline_df) == 0:
+                        continue
+
+                    baseline_df_sorted = baseline_df.sort_values(by=args.fit_metric)
+                    baseline_metric = baseline_df_sorted[args.fit_metric].values
+                    baseline_loss = baseline_df_sorted['val_loss'].values
+
+                    for optimizer_idx, optimizer_type in enumerate(optimizer_types):
+                        opt_short = args.optimizers[optimizer_idx]
+                        if opt_short == baseline_optimizer_short:
+                            continue
+
+                        opt_display = _display_name(opt_short)
+                        opt_df = data_dict[optimizer_type][scaling_rule]
+                        if 'use_for_fit' in opt_df.columns:
+                            opt_df = opt_df[opt_df['use_for_fit']]
+                        if len(opt_df) == 0:
+                            continue
+
+                        f.write(f"--- {opt_display} ({scaling_rule}) ---\n")
+                        f.write(f"{'Size':>6s}  {args.fit_metric:>14s}  {'Val Loss':>10s}  {'Compute Mult':>12s}\n")
+
+                        opt_df_sorted = opt_df.sort_values(by='size')
+                        for _, row in opt_df_sorted.iterrows():
+                            opt_metric = row[args.fit_metric]
+                            opt_loss = row['val_loss']
+                            gain_str = ""
+
+                            if baseline_loss.min() <= opt_loss <= baseline_loss.max():
+                                log_bm = np.log(baseline_metric)
+                                log_bl = np.log(baseline_loss)
+                                log_ol = np.log(opt_loss)
+                                if baseline_loss[0] > baseline_loss[-1]:
+                                    log_metric_bl = np.interp(log_ol, log_bl[::-1], log_bm[::-1])
+                                else:
+                                    log_metric_bl = np.interp(log_ol, log_bl, log_bm)
+                                gain = np.exp(log_metric_bl) / opt_metric
+                                gain_str = f"{gain:.4f}"
+                            elif opt_loss < baseline_loss.min() and len(baseline_loss) >= 2:
+                                log_m1, log_m2 = np.log(baseline_metric[-2]), np.log(baseline_metric[-1])
+                                log_l1, log_l2 = np.log(baseline_loss[-2]), np.log(baseline_loss[-1])
+                                slope = (log_m2 - log_m1) / (log_l2 - log_l1)
+                                log_metric_bl = log_m2 + slope * (np.log(opt_loss) - log_l2)
+                                gain = np.exp(log_metric_bl) / opt_metric
+                                gain_str = f"{gain:.4f}*"
+                            elif opt_loss > baseline_loss.max() and len(baseline_loss) >= 2:
+                                log_m1, log_m2 = np.log(baseline_metric[0]), np.log(baseline_metric[1])
+                                log_l1, log_l2 = np.log(baseline_loss[0]), np.log(baseline_loss[1])
+                                slope = (log_m2 - log_m1) / (log_l2 - log_l1)
+                                log_metric_bl = log_m1 + slope * (np.log(opt_loss) - log_l1)
+                                gain = np.exp(log_metric_bl) / opt_metric
+                                gain_str = f"{gain:.4f}*"
+                            else:
+                                gain_str = "N/A"
+
+                            f.write(f"{row['size']:>6.0f}  {opt_metric:>14.6e}  {opt_loss:>10.6f}  {gain_str:>12s}\n")
+                        f.write("\n")
+
+                f.write("# * = extrapolated beyond baseline data range\n")
+
+        print(f"Data saved to: {os.path.abspath(data_file)}")
