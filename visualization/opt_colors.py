@@ -78,7 +78,7 @@ OPT_LINESTYLES = {
 # Display names for optimizers - nice formatting for legends
 OPT_DISPLAY_NAMES = {
     'adamw': 'AdamW',
-    'adamw-decaying-wd': 'AdamW-DecayWD',
+    'adamw-decaying-wd': 'AdamW (DW)',
     'mk4': 'DANA-Star-MK4',
     'dana': 'DANA',
     'dana-mk4': 'DANA-MK4',
@@ -88,7 +88,8 @@ OPT_DISPLAY_NAMES = {
     'dana-star-mk4': 'DANA-Star-MK4',
     'adana': 'ADANA',
     'adana-kappa-0-85': 'ADANA κ=0.85',
-    'dana-star-no-tau': 'ADANA κ=0.75',
+    'dana-star-no-tau': 'ADANA',
+    'dana-star-no-tau-kappa-0-75': 'ADANA κ=0.75',
     'dana-star-no-tau-kappa-1-0': 'ADANA κ=1.0',
     'dana-star-no-tau-kappa-0-8': 'ADANA κ=0.8',
     'dana-star-no-tau-kappa-0-85': 'ADANA κ=0.85',
@@ -102,7 +103,7 @@ OPT_DISPLAY_NAMES = {
     'dana-star-no-tau-dana-constant-beta1': 'ADANA-DanaConst-β₁',
     'dana-star-no-tau-dana-constant-beta2-constant-beta1': 'ADANA-DanaConst-β₂Const-β₁',
     'ademamix': 'Ademamix',
-    'ademamix-decaying-wd': 'Ademamix-DecayWD',
+    'ademamix-decaying-wd': 'Ademamix (DW)',
     'd-muon': 'Muon',
     'manau': 'Manau',
     'manau-hard': 'Manau-Hard',
