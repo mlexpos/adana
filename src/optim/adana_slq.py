@@ -38,20 +38,20 @@ from .slq_torch import GaussNewtonOperator, effective_tokens, slq
 
 
 def _alloc_group(name):
-    """Group for 'typed' allocation: attn (qkv + attention output), mlp (in + out), vocab (embedding + unembedding);
-    everything else (layer norms, QK-norms, biases, scalars) gets no long momentum ('off')."""
+    """Tensor type for 'typed' allocation: attn (qkv + attention output), mlp (in + out), vocab (embedding +
+    unembedding), tiny (layer norms, QK-norms, biases, scalars)."""
     n = re.sub(r"^(module\.|_orig_mod\.)+", "", name)
     if "wte" in n or "lm_head" in n:
         return "vocab"
     parts = n.split(".")
     module = parts[-2] if len(parts) >= 2 else n
     if re.search(r"(^ln_|norm)", module) or n.endswith(".bias"):
-        return "off"
+        return "tiny"
     if ".attn." in n:
         return "attn"
     if ".mlp." in n:
         return "mlp"
-    return "off"
+    return "tiny"
 
 
 def _tensor_type(name):
@@ -64,10 +64,10 @@ def _tensor_type(name):
 
 class ADanaSLQ(ADana):
     def __init__(self, params, lr=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0, clipsnr=None, wd_decaying=False,
-                 wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=64, probes=1, slq_batch=8,
+                 wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=128, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
                  gn_mode="jvp", first_refresh=4, aitken=True, gn_chunk=2, gn_cache=True,
-                 type_frac="attn=0.45,mlp=0.45,vocab=0.1"):
+                 type_frac="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", reject_gap=0.5):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -77,6 +77,8 @@ class ADanaSLQ(ADana):
         self.gn_mode = gn_mode
         self.gn_chunk, self.gn_cache = int(gn_chunk), bool(gn_cache)
         self.aitken = aitken
+        self.reject_gap = float(reject_gap)
+        self.n_reject = 0
         self.teff = 1.0 if teff == "auto" else float(teff)
         self.batch_seqs = int(batch_seqs)
         self.log_dir = Path(log_dir) if log_dir is not None else None
@@ -155,41 +157,61 @@ class ADanaSLQ(ADana):
             self.bnr = 4.0 * max(self.eX.sum(), 0.0) / self.eD.sum() if self.eD.sum() > 0 else float("nan")
             self.mu = 1.0
         self.S = self.s * B_eff * self.mu
-        if self.alloc == "typed":
-            # each type g gets a fixed fraction pi_g of the budget, spread with ONE ratio over its tensors (trace-weighted
-            # comparison only within a type): r_g = min(cap, pi_g S / N_g); types not listed (e.g. norms) get 0
-            ratio = np.zeros(L)
-            for gname, pi in self.type_frac.items():
-                m = self.agroup == gname
-                if not m.any() or pi <= 0:
-                    continue
-                ratio[m] = min(self.cap, pi * self.S / max(NTc[m].sum(), 1e-12))
-            self.ratio = ratio
-            self.afrac = ratio * NTc / max(self.S, 1e-30)             # budget share actually spent per tensor
-        elif self.alloc == "waterfill" and self.n_split > 0:
+        if self.n_split > 0:
+            # buffer signal: buffer energy minus its predicted noise part (buffer identity, global temperature)
             temp = (B_eff * self.eDz.sum() / 4.0) / max(self.q["trF"], 1e-30)
             noise = (NTc / B_eff) * temp / (2.0 * g)
             self.G = self.mz2 - D * D * noise
+        if self.alloc == "typed":
+            # typed water-filling: each type g (attn / mlp / vocab / tiny) gets a FIXED fraction pi_g of the budget; within
+            # a type the budget is water-filled on the buffer signal G_T (tensors compared only with tensors of the same
+            # type). Conservative: a tensor with G_T <= 0 (noise on the order of the signal, or no split statistics yet)
+            # gets NO long momentum; only tensors with positive signal share their type's budget.
+            ratio = np.zeros(L)
+            for gname, pi in self.type_frac.items():
+                m = self.agroup == gname
+                if not m.any() or pi <= 0 or self.n_split == 0:
+                    continue
+                c = np.maximum(self.G[m], 0.0) / NTc[m]
+                ratio[m] = self._waterfill(c, NTc[m], pi * self.S, zero_without_signal=True)
+            self.ratio = np.minimum(ratio, self.cap)
+            self.afrac = self.ratio * NTc / max(self.S, 1e-30)        # budget share actually spent per tensor
+        elif self.alloc == "waterfill" and self.n_split > 0:
             c = np.maximum(self.G, 0.0) / NTc
-            if NTc.sum() <= self.S:
-                a = np.ones(L)
-            elif c.sum() <= 0:
-                a = np.full(L, min(self.S / NTc.sum(), 1.0))
-            else:
-                lo, hi = 0.0, 1e30
-                for _ in range(200):
-                    mid = math.sqrt(max(lo, 1e-300) * hi)
-                    if np.sum(np.minimum(1.0, mid * c) * NTc) <= self.S:
-                        lo = mid
-                    else:
-                        hi = mid
-                a = np.minimum(1.0, lo * c)
+            a = self._waterfill(c, NTc, self.S)
             self.afrac = a
             self.ratio = np.minimum(a, self.cap)
         elif self.alloc != "typed":
             self.afrac = np.ones(L)
             self.ratio = np.full(L, min(self.S / self.N, self.cap))
         self.A = self.ratio / D
+
+    @staticmethod
+    def _waterfill(c, NTc, budget, zero_without_signal=False):
+        """a_T = min{1, nu c_T} with sum_T a_T NTc_T = budget (bisection on nu).
+        zero_without_signal=False (original 'waterfill'): all-ones if the budget covers every tensor, one uniform ratio if
+        no tensor has positive signal.  zero_without_signal=True ('typed'): tensors with c_T = 0 always get 0; the tensors
+        with positive signal get 1 if the budget covers them all."""
+        if zero_without_signal:
+            pos = c > 0
+            a = np.zeros(len(NTc))
+            if not pos.any():
+                return a
+            if NTc[pos].sum() <= budget:
+                a[pos] = 1.0
+                return a
+        elif NTc.sum() <= budget:
+            return np.ones(len(NTc))
+        elif c.sum() <= 0:
+            return np.full(len(NTc), min(budget / NTc.sum(), 1.0))
+        lo, hi = 0.0, 1e30
+        for _ in range(200):
+            mid = math.sqrt(max(lo, 1e-300) * hi)
+            if np.sum(np.minimum(1.0, mid * c) * NTc) <= budget:
+                lo = mid
+            else:
+                hi = mid
+        return np.minimum(1.0, lo * c)
 
     # ---------------------------------------------------------------- estimator inputs from the training loop
     @torch.no_grad()
@@ -248,8 +270,14 @@ class ADanaSLQ(ADana):
         w = res["weights"].reshape(K)
         wT = res["block"].reshape(K, -1)
         corr = float(np.mean(res["aitken"])) if self.aitken else 1.0          # finite-m Gauss bias correction
-        self.q = dict(nodes=nodes, w=w * corr, wT=wT * corr, trF=float(np.sum(w * np.maximum(nodes, 0.0))),
-                      lam_max=res["lam_max"])
+        # reject a refresh whose Lanczos did not converge (Gauss estimate still moving at m_max AND an open Gauss/Radau
+        # bracket): keep the previous quadrature (or, before the first accepted one, no long momentum at all)
+        accepted = bool(np.all(res["converged"])) or float(np.nanmax(res["gap"])) <= self.reject_gap
+        if accepted:
+            self.q = dict(nodes=nodes, w=w * corr, wT=wT * corr, trF=float(np.sum(w * np.maximum(nodes, 0.0))),
+                          lam_max=res["lam_max"])
+        else:
+            self.n_reject += 1
         te_new = float("nan")
         if self.teff_mode == "auto":
             with torch.enable_grad():
@@ -264,11 +292,13 @@ class ADanaSLQ(ADana):
         dt = time.time() - t0
         self.n_refresh += 1; self.refresh_seconds += dt
         self.last_refresh = dict(t=self.t, m_used=float(res["m_used"].mean()), gap=float(np.nanmax(res["gap"])),
-                                 aitken=corr,
-                                 lam_max=res["lam_max"], trF=self.q["trF"], teff_raw=te_new, seconds=dt)
+                                 aitken=corr, accepted=float(accepted), rejects=float(self.n_reject),
+                                 lam_max=res["lam_max"], trF=float(np.sum(w * np.maximum(nodes, 0.0))),
+                                 teff_raw=te_new, seconds=dt)
         self.next_refresh = self._next_after(self.t)
         self._compute_ratio(self.delta / (self.delta + self.t + 1))
-        self._save_diag()
+        if self.q is not None:
+            self._save_diag()
 
     def _next_after(self, t):
         return max(t + 1, min(int(math.ceil(t * self.refresh_ratio)), t + self.max_gap))
@@ -336,7 +366,8 @@ class ADanaSLQ(ADana):
             logs[f"slq_type/afrac/{key}"] = float(np.mean(self.afrac[idx]))
             logs[f"slq_type/N_T/{key}"] = float(np.sum(wN[idx]))
             logs[f"slq_type/G_T/{key}"] = float(np.sum(self.G[idx]))
-        for gname in ("attn", "mlp", "vocab", "off"):
+        logs["slq/refresh_rejects"] = self.n_reject
+        for gname in ("attn", "mlp", "vocab", "tiny"):
             m = self.agroup == gname
             if m.any():
                 logs[f"slq_group/ratio/{gname}"] = float(np.mean(self.ratio[m]))

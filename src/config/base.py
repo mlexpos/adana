@@ -233,9 +233,13 @@ def parse_args(base_parser, args, namespace):
                         help="signal-fraction multiplier mu = min(1, k'/B_noise), k' in sequences; <= 0 disables")
     parser.add_argument("--slq_cap", default=1.0, type=float, help="cap on gamma_3/gamma_2")
     parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill", "typed"])
-    parser.add_argument("--slq_type_frac", default="attn=0.45,mlp=0.45,vocab=0.1", type=str,
-                        help="typed allocation: budget fractions per tensor type (attn, mlp, vocab); norms get none")
-    parser.add_argument("--slq_m", default=64, type=int, help="max Lanczos steps per probe")
+    parser.add_argument("--slq_type_frac", default="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", type=str,
+                        help="typed allocation: budget fraction per tensor type (attn, mlp, vocab, tiny), normalized; "
+                             "within a type the budget is water-filled on the buffer signal G_T")
+    parser.add_argument("--slq_m", default=128, type=int, help="max Lanczos steps per probe")
+    parser.add_argument("--slq_reject_gap", default=0.5, type=float,
+                        help="reject a refresh (keep the previous quadrature) if Lanczos did not converge and the "
+                             "Gauss/Radau bracket exceeds this")
     parser.add_argument("--slq_probes", default=1, type=int)
     parser.add_argument("--slq_batch", default=8, type=int, help="sequences used for the SLQ / T_eff estimates")
     parser.add_argument("--slq_eps", default=0.03, type=float,

@@ -194,14 +194,14 @@ def fsum(th, w, g, D):
 
 # ------------------------------------------------------------------ Lanczos driver
 @torch.no_grad()
-def slq(op, like, m_max=64, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None):
+def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None):
     """Run `probes` Lanczos recurrences (no reorthogonalization; Gauss quadrature of a smooth f is robust to it) of up to
     m_max steps on `op` (list-of-tensors -> list-of-tensors, symmetric PSD).  Stops a probe early when the Gauss / Gauss-
     Radau bracket on N(D) for every D in D_check is within relative eps.  Returns dict with nodes (P, m), weights (P, m),
     block weights (P, m, L) (per-probe arrays padded with zero weight), m used per probe and the final bracket gap."""
     L = len(like)
     D_check = [] if D_check is None else list(D_check)
-    out_th, out_w, out_wT, used, gaps, hists, corrs = [], [], [], [], [], [], []
+    out_th, out_w, out_wT, used, gaps, hists, corrs, convs = [], [], [], [], [], [], [], []
     for _ in range(probes):
         z = [(torch.randint(0, 2, x.shape, device=x.device, generator=generator, dtype=torch.int8).to(x.dtype) * 2 - 1)
              for x in like]
@@ -213,6 +213,7 @@ def slq(op, like, m_max=64, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, ge
         C = np.zeros((m_max, L))
         m_used, gap = m_max, np.nan
         hist = []
+        converged = not D_check
         for j in range(m_max):
             C[j] = [float((a.double() * c.double()).sum()) for a, c in zip(z, v)]
             w = op(v)
@@ -222,8 +223,9 @@ def slq(op, like, m_max=64, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, ge
             _axpy_(w, -a, v)
             b = math.sqrt(max(float(_dot(w, w)), 0.0))
             al[j], be[j] = a, b
-            if b < 1e-12 * max(abs(a), 1e-30):          # invariant subspace found
+            if b < 1e-12 * max(abs(a), 1e-30):          # invariant subspace found (quadrature is exact)
                 m_used = j + 1
+                converged = True
                 break
             vp, v, bprev = v, [wi / b for wi in w], b
             if D_check and (j + 1) % chunk == 0 and j + 1 < m_max:
@@ -239,8 +241,13 @@ def slq(op, like, m_max=64, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, ge
                 conv = len(hist) >= 2 and max(abs(a_ - b_) / max(a_, 1e-30) for a_, b_ in zip(NG, hist[-2][1])) < eps
                 if gap < eps or conv:
                     m_used = m
+                    converged = True
                     break
         th, w, wT = gauss_rule(al[:m_used], be[:m_used], C, zn)
+        if not converged and D_check and hist:          # reached m_max: converged if the last chunk barely moved
+            NGf = [fsum(th, w, g, D) for D in D_check]
+            converged = max(abs(a_ - b_) / max(a_, 1e-30) for a_, b_ in zip(NGf, hist[-1][1])) < eps
+        convs.append(converged)
         # Aitken extrapolation of the (monotonically decreasing, roughly geometric in m) Gauss estimates when the
         # recurrence stopped before converging: correction factor N_inf / N_m at each checked Delta, clipped to [0.25, 1]
         corr = []
@@ -266,7 +273,7 @@ def slq(op, like, m_max=64, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, ge
         used.append(m_used); gaps.append(gap); hists.append(hist)
     return dict(nodes=np.stack(out_th), weights=np.stack(out_w) / probes, block=np.stack(out_wT) / probes,
                 m_used=np.array(used), gap=np.array(gaps), lam_max=float(np.max(np.stack(out_th))), hist=hists,
-                aitken=np.array(corrs))
+                aitken=np.array(corrs), converged=np.array(convs))
 
 
 # ------------------------------------------------------------------ token correlation length (effective tokens / sequence)
