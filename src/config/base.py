@@ -122,6 +122,7 @@ def parse_args(base_parser, args, namespace):
             # ADana family (no tau)
             "adana",
             "dana-mk4",
+            "adana-slq",
             # Dana-Star family (with tau)
             "dana-star",
             "dana-star-mk4",
@@ -226,6 +227,21 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--use_v_ema", default=False, action="store_true")
     parser.add_argument("--v_ema_beta", default=0.999, type=float)
     parser.add_argument("--gamma_3_factor", default=1.0, type=float)
+    # adana-slq: long momentum from the SLQ stability budget (src/optim/adana_slq.py)
+    parser.add_argument("--slq_s", default=0.25, type=float, help="fraction of the stochastic stability budget")
+    parser.add_argument("--slq_kprime", default=0.0, type=float,
+                        help="signal-fraction multiplier mu = min(1, k'/B_noise), k' in sequences; <= 0 disables")
+    parser.add_argument("--slq_cap", default=1.0, type=float, help="cap on gamma_3/gamma_2")
+    parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill"])
+    parser.add_argument("--slq_m", default=32, type=int, help="max Lanczos steps per probe")
+    parser.add_argument("--slq_probes", default=2, type=int)
+    parser.add_argument("--slq_batch", default=8, type=int, help="sequences used for the SLQ / T_eff estimates")
+    parser.add_argument("--slq_eps", default=0.05, type=float, help="Gauss/Radau bracket tolerance")
+    parser.add_argument("--slq_refresh_ratio", default=1.25, type=float)
+    parser.add_argument("--slq_max_gap", default=0, type=int, help="max steps between refreshes (0: max(50, iters/10))")
+    parser.add_argument("--slq_teff", default="auto", type=str, help="'auto' or a fixed T_eff (tokens per sequence)")
+    parser.add_argument("--slq_clipsnr", default=False, action="store_true",
+                        help="also apply the Dana-MK4 per-element SNR clip (uses --clipsnr)")
     parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])
 
     # Tau statistics collection (for dana-star-mk4)

@@ -222,6 +222,12 @@ case "$OPT" in
                 ;;
         esac
         ;;
+    adana-slq)
+        # ADana moments + log-time WD; long momentum from the SLQ budget. Pass --slq_* flags through (e.g. --slq_kprime 64
+        # --slq_alloc waterfill); --clipsnr applies only with --slq_clipsnr.
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        OPT_FLAGS="--opt adana-slq --delta $DELTA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
+        ;;
     adamw)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         OPT_FLAGS="--opt adamw --beta1 0.9 --beta2 0.999"

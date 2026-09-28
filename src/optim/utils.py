@@ -568,6 +568,9 @@ def log_optimizer_schedules(optimizer, optimizer_name):
             if one_minus_beta3_values:
                 logs["optimizer/one_minus_beta3_schedule"] = sum(one_minus_beta3_values) / len(one_minus_beta3_values)
     
+    elif optimizer_name == "adana-slq":
+        logs.update(optimizer.diagnostics())
+
     elif optimizer_name in ["adana", "dana-mk4", "dana-star", "dana-star-mk4"]:
         # Log DANA schedules: alpha factor and (1+t)**(1-kappa)
         alpha_values = []
@@ -601,6 +604,16 @@ def log_optimizer_schedules(optimizer, optimizer_name):
                         if v is not None:
                             m_norm_values.append(v)
 
+        steps = [optimizer.state[p]["step"] for g in optimizer.param_groups for p in g["params"]
+                 if p in optimizer.state and "step" in optimizer.state[p]]
+        if steps:
+            t = float(max(steps))
+            kap = getattr(optimizer, "kappa", 1.0); g3f = getattr(optimizer, "gamma_3_factor", 1.0)
+            dl = getattr(optimizer, "delta", 8.0)
+            amp = g3f * (1.0 + (1.0 + t) ** (1.0 - kap))
+            logs["momentum/amplification_nominal"] = amp               # alpha(t) before SNR clipping
+            logs["momentum/g3_over_g2_nominal"] = amp * dl / (dl + t)   # gamma_3 / gamma_2 = alpha Delta_t
+            logs["momentum/Delta"] = dl / (dl + t)
         if alpha_values:
             logs["optimizer/alpha_schedule"] = sum(alpha_values) / len(alpha_values)
             if kappa_factor_values:
@@ -612,4 +625,10 @@ def log_optimizer_schedules(optimizer, optimizer_name):
             if m_norm_values:
                 logs["optimizer/m_norm"] = sum(m_norm_values) / len(m_norm_values)
     
+    if optimizer_name.startswith("adamw") or optimizer_name.startswith("ademamix"):
+        b = optimizer.param_groups[0].get("betas", None)
+        if b is not None:
+            logs["momentum/beta1"] = float(b[0])
+            logs["momentum/memory_steps"] = 1.0 / max(1.0 - float(b[0]), 1e-12)
+
     return logs

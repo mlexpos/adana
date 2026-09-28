@@ -32,12 +32,16 @@ enoki:
     ademamix:             {a: 4.51,    b: 6.71e+3, d: -0.503}
     ademamix-decaying-wd: {a: 7.28,    b: 8.43e+3, d: -0.525}
     d-muon:               {a: 2.19,    b: 5.64e+4, d: -0.417}
+    # adana-slq: PLACEHOLDER (= ADana kappa=0.85) until fitted from the momentum-reloaded sweeps
+    adana-slq:            {a: 2.25e+1, b: 1.22e+5, d: -0.618}
   lr_formula_512:
     # Batch size 512 (global_batch = 512 * 2048), Enoki architecture
     # Fitted with: python finalfigs/bighead_lr_scaling.py --scaling-rule Enoki_512 --top-k 5 --largest-head 24
     adamw:                {a: 1.67e+1, b: 1.58e+7, d: -0.464}
     adana:
       "0.85":             {a: 8.53e+1, b: 3.04e+4, d: -0.654}
+    # adana-slq: PLACEHOLDER (= ADana kappa=0.85, gamma_3_factor 2.5) until fitted from the momentum-reloaded sweeps
+    adana-slq:            {a: 8.53e+1, b: 3.04e+4, d: -0.654}
     dana-mk4:
       "0.85":             {a: 2.47e+3, b: 2.24e+7, d: -0.826}
     dana-star-mk4:

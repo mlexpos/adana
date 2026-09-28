@@ -30,6 +30,7 @@ from optim.sign import Signum
 from optim.soap import SOAP
 from optim.sophia import SophiaG
 from optim.adana import ADana
+from optim.adana_slq import ADanaSLQ
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.adamw_decaying_wd import AdamWDecayingWD
 from optim.ademamix_decaying_wd import AdEMAMix_DecayingWD
@@ -225,6 +226,17 @@ def build_optimizer(args, model, group_specs):
             weight_decay=args.weight_decay, clipsnr=args.clipsnr,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
             gamma_3_factor=args.gamma_3_factor,
+        ),
+        # ADana with the long-momentum amplification set by the SLQ stability budget (see src/optim/adana_slq.py)
+        "adana-slq": lambda: ADanaSLQ(
+            group_specs, lr=args.lr, delta=args.delta,
+            weight_decay=args.weight_decay, clipsnr=(args.clipsnr if args.slq_clipsnr else None),
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+            s=args.slq_s, kprime=args.slq_kprime, cap=args.slq_cap, alloc=args.slq_alloc,
+            m_max=args.slq_m, probes=args.slq_probes, slq_batch=args.slq_batch, slq_eps=args.slq_eps,
+            refresh_ratio=args.slq_refresh_ratio,
+            max_gap=(args.slq_max_gap if args.slq_max_gap > 0 else max(50, args.iterations // 10)),
+            teff=args.slq_teff, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
         ),
         # Dana-Star family (with tau buffer)
         "dana-star": lambda: DANA_STAR_MK4(

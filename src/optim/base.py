@@ -107,6 +107,13 @@ def train(
     grad_norms = []
     model.train()
 
+    # adana-slq: split-half gradient statistics (needs >= 2 micro-steps) and quadrature refreshes
+    slq_split = hasattr(opt, "set_split_stats") and cfg.acc_steps >= 2
+    if hasattr(opt, "set_split_stats") and cfg.acc_steps < 2 and distributed_backend.is_master_process():
+        print("[adana-slq] acc_steps < 2: no split-half noise statistics (mu = 1, water-filling falls back to global)")
+    if hasattr(opt, "log_dir") and opt.log_dir is None and distributed_backend.is_master_process():
+        opt.log_dir = Path(exp_dir)
+
     while curr_iter <= cfg.iterations:
         # Save permanent checkpoint
         if cfg.permanent_ckpt_interval > 0:
@@ -246,6 +253,30 @@ def train(
             loss = outputs["loss"] / cfg.acc_steps
             loss.backward()
             substep += 1
+            if slq_split and microstep_idx == cfg.acc_steps // 2 - 1:
+                slq_half = [p.grad.detach().clone() if p.grad is not None else None for p in opt.plist]
+
+        if slq_split:
+            if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+                live = [h for h in slq_half if h is not None]
+                flat = torch.cat([h.reshape(-1).float() for h in live])
+                dist.all_reduce(flat)
+                flat /= dist.get_world_size()
+                k = 0
+                for h in live:
+                    n = h.numel(); h.copy_(flat[k:k + n].view_as(h)); k += n
+                del flat
+            opt.set_split_stats(slq_half, [p.grad for p in opt.plist])
+            del slq_half
+
+        if hasattr(opt, "needs_refresh") and opt.needs_refresh():
+            raw_for_slq = distributed_backend.get_raw_model(not_compiled_model)
+            opt.refresh(raw_for_slq, x, y)
+            if distributed_backend.is_master_process():
+                lr_ = opt.last_refresh
+                print(f"[adana-slq] refresh t={lr_['t']}: m={lr_['m_used']:.0f} gap={lr_['gap']:.3f} "
+                      f"lam_max={lr_['lam_max']:.3g} T_eff={opt.teff:.1f} N={opt.N:.4g} S={opt.S:.4g} "
+                      f"mu={opt.mu:.3g} ratio={min(opt.S / max(opt.N, 1e-12), opt.cap):.3g} ({lr_['seconds']:.1f}s)")
 
         if cfg.grad_clip != 0.0:
             raw_model = distributed_backend.get_raw_model(model)
