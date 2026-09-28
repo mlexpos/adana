@@ -63,10 +63,10 @@ def _dense(op, params):
 
 def test_fd_gn_matches_exact():
     model, names, params, x, y = _setup()
-    op = GaussNewtonOperator(model, names, params, x, y, r=None, fd_rel=1e-4)
     torch.manual_seed(1)
     u = [torch.randn_like(p) for p in params]
-    got = torch.cat([o.reshape(-1) for o in op(u)])
+    got = {m: torch.cat([o.reshape(-1) for o in GaussNewtonOperator(model, names, params, x, y, r=None, fd_rel=1e-4,
+                                                                    mode=m)(u)]) for m in ("fd", "jvp")}
 
     def f(*ps):
         return torch.func.functional_call(model, dict(zip(names, ps)), (x,), dict(get_logits=True))["logits"]
@@ -76,8 +76,9 @@ def test_fd_gn_matches_exact():
     hv = (pr * Ju - pr * (pr * Ju).sum(-1, keepdim=True)) / y.numel()
     _, vjp = torch.func.vjp(f, *[p.detach() for p in params])
     want = torch.cat([g.reshape(-1) for g in vjp(hv)])
-    rel = float((got - want).norm() / want.norm())
-    assert rel < 1e-3, rel
+    for m in got:
+        rel = float((got[m] - want).norm() / want.norm())
+        assert rel < (1e-3 if m == "fd" else 1e-10), (m, rel)
 
 
 def test_lanczos_quadrature_vs_dense():

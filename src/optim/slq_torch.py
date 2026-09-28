@@ -41,10 +41,12 @@ class GaussNewtonOperator:
     Distributed: each rank uses its own batch; products are averaged across ranks (identical Lanczos on all ranks).
     """
 
-    def __init__(self, model, names, params, x, y, r=None, fd_rel=1e-3, chunk=2):
+    def __init__(self, model, names, params, x, y, r=None, fd_rel=1e-3, chunk=2, mode="jvp", cache=True):
         self.model, self.names, self.params = model, names, params
         self.x, self.y, self.r = x, y, r
         self.fd_rel, self.chunk = fd_rel, chunk
+        self.mode, self.cache = mode, cache
+        self._cache = {}
         self.dtype = torch.float64 if params[0].dtype == torch.float64 else torch.float32
         self.pnorm = math.sqrt(float(_dot([p.detach() for p in params], [p.detach() for p in params])))
         self.ntok = float((y >= 0).sum())
@@ -65,8 +67,59 @@ class GaussNewtonOperator:
                 return self.model(xc, targets=yc, get_logits=True)
             return functional_call(self.model, pdict, (xc,), dict(targets=yc, get_logits=True))
 
+    # ---- exact products: J u by forward-mode AD (math SDPA backend), J^T by a cached reverse-mode closure
+    def _f(self, xc, yc):
+        names, model = self.names, self.model
+
+        def f(*ps):
+            return functional_call(model, dict(zip(names, ps)), (xc,), dict(targets=yc, get_logits=True))["logits"].to(
+                self.dtype)
+        return f
+
+    def _chunk_state(self, i, xc, yc):
+        if i in self._cache:
+            return self._cache[i]
+        prim = tuple(p.detach() for p in self.params)
+        with torch.enable_grad():
+            logits, vjp_fn = torch.func.vjp(self._f(xc, yc), *prim)
+        st = (torch.softmax(logits.detach(), dim=-1), vjp_fn)
+        if self.cache:
+            self._cache[i] = st
+        return st
+
+    def _call_jvp(self, d):
+        from torch.nn.attention import SDPBackend, sdpa_kernel
+        out = [torch.zeros_like(p) for p in self.params]
+        prim = tuple(p.detach() for p in self.params)
+        tang = tuple(di.to(p.dtype) for di, p in zip(d, self.params))
+        B = self.x.shape[0]
+        with torch.autocast(device_type=self.x.device.type, enabled=False), sdpa_kernel(SDPBackend.MATH):
+            for k, i in enumerate(range(0, B, self.chunk)):
+                xc, yc = self.x[i:i + self.chunk], self.y[i:i + self.chunk]
+                p, vjp_fn = self._chunk_state(k, xc, yc)
+                with torch.no_grad():
+                    _, ju = torch.func.jvp(self._f(xc, yc), prim, tang)
+                hv = p * ju - p * (p * ju).sum(-1, keepdim=True)
+                hv = hv * (yc >= 0).unsqueeze(-1).to(hv.dtype) / self.ntok
+                gs = vjp_fn(hv)
+                for o, gg in zip(out, gs):
+                    if gg is not None:
+                        o.add_(gg.to(o.dtype))
+                del ju, hv, gs
+        return out
+
     def __call__(self, u):
         d = [ui * ri for ui, ri in zip(u, self.r)] if self.r is not None else u
+        if self.mode == "jvp":
+            out = self._call_jvp(d)
+            if self.world > 1:
+                flat = torch.cat([o.reshape(-1) for o in out])
+                dist.all_reduce(flat)
+                flat /= self.world
+                k = 0
+                for o in out:
+                    n = o.numel(); o.copy_(flat[k:k + n].view_as(o)); k += n
+            return [o * ri for o, ri in zip(out, self.r)] if self.r is not None else out
         dn = math.sqrt(float(_dot(d, d)))
         out = [torch.zeros_like(p) for p in self.params]
         if dn == 0.0:
@@ -141,14 +194,14 @@ def fsum(th, w, g, D):
 
 # ------------------------------------------------------------------ Lanczos driver
 @torch.no_grad()
-def slq(op, like, m_max=32, probes=2, chunk=8, eps=0.05, g=1.0, D_check=None, generator=None):
+def slq(op, like, m_max=64, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None):
     """Run `probes` Lanczos recurrences (no reorthogonalization; Gauss quadrature of a smooth f is robust to it) of up to
     m_max steps on `op` (list-of-tensors -> list-of-tensors, symmetric PSD).  Stops a probe early when the Gauss / Gauss-
     Radau bracket on N(D) for every D in D_check is within relative eps.  Returns dict with nodes (P, m), weights (P, m),
     block weights (P, m, L) (per-probe arrays padded with zero weight), m used per probe and the final bracket gap."""
     L = len(like)
     D_check = [] if D_check is None else list(D_check)
-    out_th, out_w, out_wT, used, gaps = [], [], [], [], []
+    out_th, out_w, out_wT, used, gaps, hists, corrs = [], [], [], [], [], [], []
     for _ in range(probes):
         z = [(torch.randint(0, 2, x.shape, device=x.device, generator=generator, dtype=torch.int8).to(x.dtype) * 2 - 1)
              for x in like]
@@ -159,6 +212,7 @@ def slq(op, like, m_max=32, probes=2, chunk=8, eps=0.05, g=1.0, D_check=None, ge
         al, be = np.zeros(m_max), np.zeros(m_max)
         C = np.zeros((m_max, L))
         m_used, gap = m_max, np.nan
+        hist = []
         for j in range(m_max):
             C[j] = [float((a.double() * c.double()).sum()) for a, c in zip(z, v)]
             w = op(v)
@@ -173,14 +227,35 @@ def slq(op, like, m_max=32, probes=2, chunk=8, eps=0.05, g=1.0, D_check=None, ge
                 break
             vp, v, bprev = v, [wi / b for wi in w], b
             if D_check and (j + 1) % chunk == 0 and j + 1 < m_max:
+                # stop when the Gauss estimate has converged in m (relative change over the last chunk < eps) or the
+                # certified Gauss / Gauss-Radau bracket is within eps.  (The Radau lower bound is loose when the spectrum
+                # spans many decades, so the bracket alone rarely closes on LM curvature.)
                 m = j + 1
                 thG, wG, _ = gauss_rule(al[:m], be[:m], C, zn)
+                NG = [fsum(thG, wG, g, D) for D in D_check]
+                hist.append((m, NG))
                 thR, wR = radau_lower(al[:m], be[:m], zn)
-                gap = max((fsum(thG, wG, g, D) - fsum(thR, wR, g, D)) / max(fsum(thG, wG, g, D), 1e-30) for D in D_check)
-                if gap < eps:
+                gap = max((a_ - fsum(thR, wR, g, D)) / max(a_, 1e-30) for a_, D in zip(NG, D_check))
+                conv = len(hist) >= 2 and max(abs(a_ - b_) / max(a_, 1e-30) for a_, b_ in zip(NG, hist[-2][1])) < eps
+                if gap < eps or conv:
                     m_used = m
                     break
         th, w, wT = gauss_rule(al[:m_used], be[:m_used], C, zn)
+        # Aitken extrapolation of the (monotonically decreasing, roughly geometric in m) Gauss estimates when the
+        # recurrence stopped before converging: correction factor N_inf / N_m at each checked Delta, clipped to [0.25, 1]
+        corr = []
+        if D_check:
+            NG = [fsum(th, w, g, D) for D in D_check]
+            seq = [h for h in hist if h[0] < m_used] + [(m_used, NG)]
+            for k in range(len(D_check)):
+                if len(seq) >= 3:
+                    n1, n2, n3 = seq[-3][1][k], seq[-2][1][k], seq[-1][1][k]
+                    d1, d2 = n2 - n1, n3 - n2
+                    if d1 < 0 and d2 < 0 and 0 < d2 / d1 < 1:
+                        corr.append(float(np.clip((n3 - d2 * d2 / (d2 - d1)) / max(n3, 1e-30), 0.25, 1.0)))
+                        continue
+                corr.append(1.0)
+        corrs.append(float(np.mean(corr)) if corr else 1.0)
         if D_check:
             thR, wR = radau_lower(al[:m_used], be[:m_used], zn)
             gap = max((fsum(th, w, g, D) - fsum(thR, wR, g, D)) / max(fsum(th, w, g, D), 1e-30) for D in D_check)
@@ -188,9 +263,10 @@ def slq(op, like, m_max=32, probes=2, chunk=8, eps=0.05, g=1.0, D_check=None, ge
         out_th.append(np.pad(th, (0, pad)))
         out_w.append(np.pad(w, (0, pad)))
         out_wT.append(np.pad(wT, ((0, pad), (0, 0))))
-        used.append(m_used); gaps.append(gap)
+        used.append(m_used); gaps.append(gap); hists.append(hist)
     return dict(nodes=np.stack(out_th), weights=np.stack(out_w) / probes, block=np.stack(out_wT) / probes,
-                m_used=np.array(used), gap=np.array(gaps), lam_max=float(np.max(np.stack(out_th))))
+                m_used=np.array(used), gap=np.array(gaps), lam_max=float(np.max(np.stack(out_th))), hist=hists,
+                aitken=np.array(corrs))
 
 
 # ------------------------------------------------------------------ token correlation length (effective tokens / sequence)

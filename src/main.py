@@ -235,8 +235,9 @@ def build_optimizer(args, model, group_specs):
             s=args.slq_s, kprime=args.slq_kprime, cap=args.slq_cap, alloc=args.slq_alloc,
             m_max=args.slq_m, probes=args.slq_probes, slq_batch=args.slq_batch, slq_eps=args.slq_eps,
             refresh_ratio=args.slq_refresh_ratio,
-            max_gap=(args.slq_max_gap if args.slq_max_gap > 0 else max(50, args.iterations // 10)),
-            teff=args.slq_teff, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
+            max_gap=(args.slq_max_gap if args.slq_max_gap > 0 else max(50, args.iterations // 8)),
+            first_refresh=args.slq_first_refresh, aitken=not args.slq_no_aitken,
+            teff=args.slq_teff, gn_mode=args.slq_gn, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
         ),
         # Dana-Star family (with tau buffer)
         "dana-star": lambda: DANA_STAR_MK4(

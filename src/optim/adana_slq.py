@@ -47,14 +47,17 @@ def _tensor_type(name):
 
 class ADanaSLQ(ADana):
     def __init__(self, params, lr=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0, clipsnr=None, wd_decaying=False,
-                 wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=32, probes=2, slq_batch=8,
-                 slq_eps=0.05, refresh_ratio=1.25, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0):
+                 wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=64, probes=1, slq_batch=8,
+                 slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
+                 gn_mode="jvp", first_refresh=4, aitken=True):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
         self.m_max, self.probes, self.slq_batch, self.slq_eps = int(m_max), int(probes), int(slq_batch), float(slq_eps)
         self.refresh_ratio, self.max_gap = float(refresh_ratio), int(max_gap)
         self.teff_mode = teff
+        self.gn_mode = gn_mode
+        self.aitken = aitken
         self.teff = 1.0 if teff == "auto" else float(teff)
         self.batch_seqs = int(batch_seqs)
         self.log_dir = Path(log_dir) if log_dir is not None else None
@@ -72,7 +75,7 @@ class ADanaSLQ(ADana):
         self.ttype = [t for t, _ in types]
         self.tlayer = [l for _, l in types]
         self.t = 0                                  # completed optimizer steps
-        self.next_refresh = 1
+        self.next_refresh = max(1, int(first_refresh))
         self.q = None                               # quadrature: nodes (K,), w (K,), wT (K, L), trF, lam_max
         self.eX = np.zeros(L); self.eD = np.zeros(L); self.eDz = np.zeros(L); self.n_split = 0
         self.mz2 = np.zeros(L)                      # |m_T|^2 in z coordinates (last step)
@@ -199,7 +202,7 @@ class ADanaSLQ(ADana):
         xb, yb = x[: self.slq_batch], y[: self.slq_batch]
         was_training = model.training
         model.eval()
-        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=r)
+        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=r, mode=self.gn_mode)
         D_now = self.delta / (self.delta + self.t + 1)
         D_next = self.delta / (self.delta + self._next_after(self.t) + 1)
         res = slq(op, self.plist, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr,
@@ -208,7 +211,9 @@ class ADanaSLQ(ADana):
         nodes = res["nodes"].reshape(K)
         w = res["weights"].reshape(K)
         wT = res["block"].reshape(K, -1)
-        self.q = dict(nodes=nodes, w=w, wT=wT, trF=float(np.sum(w * np.maximum(nodes, 0.0))), lam_max=res["lam_max"])
+        corr = float(np.mean(res["aitken"])) if self.aitken else 1.0          # finite-m Gauss bias correction
+        self.q = dict(nodes=nodes, w=w * corr, wT=wT * corr, trF=float(np.sum(w * np.maximum(nodes, 0.0))),
+                      lam_max=res["lam_max"])
         te_new = float("nan")
         if self.teff_mode == "auto":
             with torch.enable_grad():
@@ -223,6 +228,7 @@ class ADanaSLQ(ADana):
         dt = time.time() - t0
         self.n_refresh += 1; self.refresh_seconds += dt
         self.last_refresh = dict(t=self.t, m_used=float(res["m_used"].mean()), gap=float(np.nanmax(res["gap"])),
+                                 aitken=corr,
                                  lam_max=res["lam_max"], trF=self.q["trF"], teff_raw=te_new, seconds=dt)
         self.next_refresh = self._next_after(self.t)
         self._compute_ratio(self.delta / (self.delta + self.t + 1))

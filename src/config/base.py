@@ -233,13 +233,19 @@ def parse_args(base_parser, args, namespace):
                         help="signal-fraction multiplier mu = min(1, k'/B_noise), k' in sequences; <= 0 disables")
     parser.add_argument("--slq_cap", default=1.0, type=float, help="cap on gamma_3/gamma_2")
     parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill"])
-    parser.add_argument("--slq_m", default=32, type=int, help="max Lanczos steps per probe")
-    parser.add_argument("--slq_probes", default=2, type=int)
+    parser.add_argument("--slq_m", default=64, type=int, help="max Lanczos steps per probe")
+    parser.add_argument("--slq_probes", default=1, type=int)
     parser.add_argument("--slq_batch", default=8, type=int, help="sequences used for the SLQ / T_eff estimates")
-    parser.add_argument("--slq_eps", default=0.05, type=float, help="Gauss/Radau bracket tolerance")
-    parser.add_argument("--slq_refresh_ratio", default=1.25, type=float)
-    parser.add_argument("--slq_max_gap", default=0, type=int, help="max steps between refreshes (0: max(50, iters/10))")
+    parser.add_argument("--slq_eps", default=0.03, type=float,
+                        help="stop Lanczos when the Gauss estimate changes < eps per 8 steps (or the Radau bracket closes)")
+    parser.add_argument("--slq_refresh_ratio", default=2.0, type=float)
+    parser.add_argument("--slq_first_refresh", default=4, type=int, help="first refresh step (alpha = 0 before)")
+    parser.add_argument("--slq_max_gap", default=0, type=int, help="max steps between refreshes (0: max(50, iters/8))")
+    parser.add_argument("--slq_no_aitken", default=False, action="store_true",
+                        help="disable the Aitken correction of the finite-m Gauss bias")
     parser.add_argument("--slq_teff", default="auto", type=str, help="'auto' or a fixed T_eff (tokens per sequence)")
+    parser.add_argument("--slq_gn", default="jvp", choices=["jvp", "fd"],
+                        help="Gauss-Newton products: exact forward-mode AD (math SDPA) or central finite differences")
     parser.add_argument("--slq_clipsnr", default=False, action="store_true",
                         help="also apply the Dana-MK4 per-element SNR clip (uses --clipsnr)")
     parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])
