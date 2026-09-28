@@ -37,6 +37,23 @@ from .adana import ADana
 from .slq_torch import GaussNewtonOperator, effective_tokens, slq
 
 
+def _alloc_group(name):
+    """Group for 'typed' allocation: attn (qkv + attention output), mlp (in + out), vocab (embedding + unembedding);
+    everything else (layer norms, QK-norms, biases, scalars) gets no long momentum ('off')."""
+    n = re.sub(r"^(module\.|_orig_mod\.)+", "", name)
+    if "wte" in n or "lm_head" in n:
+        return "vocab"
+    parts = n.split(".")
+    module = parts[-2] if len(parts) >= 2 else n
+    if re.search(r"(^ln_|norm)", module) or n.endswith(".bias"):
+        return "off"
+    if ".attn." in n:
+        return "attn"
+    if ".mlp." in n:
+        return "mlp"
+    return "off"
+
+
 def _tensor_type(name):
     """'transformer.h.3.attn.c_attn.weight' -> ('attn.c_attn.weight', 3); non-block tensors -> (name, -1)."""
     mt = re.search(r"\.h\.(\d+)\.", name)
@@ -49,7 +66,8 @@ class ADanaSLQ(ADana):
     def __init__(self, params, lr=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0, clipsnr=None, wd_decaying=False,
                  wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=64, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
-                 gn_mode="jvp", first_refresh=4, aitken=True, gn_chunk=2, gn_cache=True):
+                 gn_mode="jvp", first_refresh=4, aitken=True, gn_chunk=2, gn_cache=True,
+                 type_frac="attn=0.45,mlp=0.45,vocab=0.1"):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -75,6 +93,11 @@ class ADanaSLQ(ADana):
         types = [_tensor_type(n) for n in self.pnames]
         self.ttype = [t for t, _ in types]
         self.tlayer = [l for _, l in types]
+        # typed allocation: fixed budget fractions per tensor type (normalized over the listed types)
+        fr = {k.strip(): float(v) for k, v in (kv.split("=") for kv in type_frac.split(",") if kv.strip())}
+        tot = sum(fr.values())
+        self.type_frac = {k: v / tot for k, v in fr.items()} if tot > 0 else {}
+        self.agroup = np.array([_alloc_group(n) for n in self.pnames])
         self.t = 0                                  # completed optimizer steps
         self.next_refresh = max(1, int(first_refresh))
         self.q = None                               # quadrature: nodes (K,), w (K,), wT (K, L), trF, lam_max
@@ -132,7 +155,18 @@ class ADanaSLQ(ADana):
             self.bnr = 4.0 * max(self.eX.sum(), 0.0) / self.eD.sum() if self.eD.sum() > 0 else float("nan")
             self.mu = 1.0
         self.S = self.s * B_eff * self.mu
-        if self.alloc == "waterfill" and self.n_split > 0:
+        if self.alloc == "typed":
+            # each type g gets a fixed fraction pi_g of the budget, spread with ONE ratio over its tensors (trace-weighted
+            # comparison only within a type): r_g = min(cap, pi_g S / N_g); types not listed (e.g. norms) get 0
+            ratio = np.zeros(L)
+            for gname, pi in self.type_frac.items():
+                m = self.agroup == gname
+                if not m.any() or pi <= 0:
+                    continue
+                ratio[m] = min(self.cap, pi * self.S / max(NTc[m].sum(), 1e-12))
+            self.ratio = ratio
+            self.afrac = ratio * NTc / max(self.S, 1e-30)             # budget share actually spent per tensor
+        elif self.alloc == "waterfill" and self.n_split > 0:
             temp = (B_eff * self.eDz.sum() / 4.0) / max(self.q["trF"], 1e-30)
             noise = (NTc / B_eff) * temp / (2.0 * g)
             self.G = self.mz2 - D * D * noise
@@ -152,7 +186,7 @@ class ADanaSLQ(ADana):
                 a = np.minimum(1.0, lo * c)
             self.afrac = a
             self.ratio = np.minimum(a, self.cap)
-        else:
+        elif self.alloc != "typed":
             self.afrac = np.ones(L)
             self.ratio = np.full(L, min(self.S / self.N, self.cap))
         self.A = self.ratio / D
@@ -302,6 +336,13 @@ class ADanaSLQ(ADana):
             logs[f"slq_type/afrac/{key}"] = float(np.mean(self.afrac[idx]))
             logs[f"slq_type/N_T/{key}"] = float(np.sum(wN[idx]))
             logs[f"slq_type/G_T/{key}"] = float(np.sum(self.G[idx]))
+        for gname in ("attn", "mlp", "vocab", "off"):
+            m = self.agroup == gname
+            if m.any():
+                logs[f"slq_group/ratio/{gname}"] = float(np.mean(self.ratio[m]))
+                logs[f"slq_group/A/{gname}"] = float(np.mean(self.A[m]))
+                logs[f"slq_group/N/{gname}"] = float(np.sum(wN[m]))
+                logs[f"slq_group/budget_share/{gname}"] = float(np.sum(self.ratio[m] * wN[m]) / max(self.S, 1e-30))
         for layer in sorted(set(l for l in self.tlayer if l >= 0)):
             idx = [i for i, l in enumerate(self.tlayer) if l == layer]
             logs[f"slq_layer/ratio/{layer}"] = float(np.mean(self.ratio[idx]))

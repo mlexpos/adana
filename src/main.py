@@ -237,7 +237,7 @@ def build_optimizer(args, model, group_specs):
             refresh_ratio=args.slq_refresh_ratio,
             max_gap=(args.slq_max_gap if args.slq_max_gap > 0 else max(50, args.iterations // 8)),
             first_refresh=args.slq_first_refresh, aitken=not args.slq_no_aitken,
-            gn_chunk=args.slq_chunk, gn_cache=not args.slq_no_cache,
+            gn_chunk=args.slq_chunk, gn_cache=not args.slq_no_cache, type_frac=args.slq_type_frac,
             teff=args.slq_teff, gn_mode=args.slq_gn, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
         ),
         # Dana-Star family (with tau buffer)

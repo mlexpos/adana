@@ -232,7 +232,9 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_kprime", default=0.0, type=float,
                         help="signal-fraction multiplier mu = min(1, k'/B_noise), k' in sequences; <= 0 disables")
     parser.add_argument("--slq_cap", default=1.0, type=float, help="cap on gamma_3/gamma_2")
-    parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill"])
+    parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill", "typed"])
+    parser.add_argument("--slq_type_frac", default="attn=0.45,mlp=0.45,vocab=0.1", type=str,
+                        help="typed allocation: budget fractions per tensor type (attn, mlp, vocab); norms get none")
     parser.add_argument("--slq_m", default=64, type=int, help="max Lanczos steps per probe")
     parser.add_argument("--slq_probes", default=1, type=int)
     parser.add_argument("--slq_batch", default=8, type=int, help="sequences used for the SLQ / T_eff estimates")

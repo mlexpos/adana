@@ -144,6 +144,28 @@ def test_waterfill_spends_budget():
     assert (np.all(o.afrac <= 1 + 1e-12) and (abs(spent - o.S) / o.S < 1e-6 or np.all(o.afrac == 1))), (spent, o.S)
 
 
+def test_typed_allocation():
+    names = ["transformer.wte.weight", "transformer.h.0.attn.c_attn.weight", "transformer.h.0.attn.c_proj.weight",
+             "transformer.h.0.mlp.c_fc.weight", "transformer.h.0.mlp.c_proj.weight", "transformer.h.0.ln_1.weight",
+             "lm_head.weight", "transformer.h.0.attn.q_layernorm.weight", "transformer.ln_f.weight"]
+    params = [nn.Parameter(torch.zeros(3)) for _ in names]
+    o = ADanaSLQ([{"params": params, "param_names": names}], lr=0.1, s=0.25, alloc="typed", batch_seqs=64,
+                 type_frac="attn=0.45,mlp=0.45,vocab=0.1")
+    assert list(o.agroup) == ["vocab", "attn", "attn", "mlp", "mlp", "off", "vocab", "off", "off"], list(o.agroup)
+    rng = np.random.default_rng(1)
+    wT = np.abs(rng.normal(size=(10, len(names)))) * np.array([500, 30, 10, 40, 40, 0.1, 900.0, 0.1, 0.1])
+    o.q = dict(nodes=rng.uniform(1, 50, 10), w=wT.sum(1), wT=wT, trF=1.0, lam_max=50.0)
+    o.teff = 1.0
+    o._compute_ratio(0.01)
+    NTc = np.maximum(o.NT, 1e-2)
+    for g, pi in o.type_frac.items():
+        m = o.agroup == g
+        share = float((o.ratio[m] * NTc[m]).sum() / o.S)
+        assert np.allclose(o.ratio[m], o.ratio[m][0])                    # one ratio per type
+        assert share <= pi + 1e-9 and (abs(share - pi) < 1e-9 or np.isclose(o.ratio[m][0], o.cap)), (g, share, pi)
+    assert o.ratio[o.agroup == "off"].max() == 0.0
+
+
 def test_split_half_noise_scale():
     torch.manual_seed(0)
     P, B, sig = 2000, 64, 0.5
