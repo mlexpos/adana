@@ -307,7 +307,7 @@ class ADanaSLQ(ADana):
         self.history.append(dict(t=self.t, NT=self.NT.copy(), ratio=self.ratio.copy(), A=self.A.copy(),
                                  afrac=self.afrac.copy(), G=self.G.copy(), N=self.N, S=self.S, mu=self.mu, bnr=self.bnr,
                                  teff=self.teff, nodes=self.q["nodes"].copy(), w=self.q["w"].copy(),
-                                 lam_max=self.q["lam_max"], **{k: v for k, v in self.last_refresh.items() if k != "t"}))
+                                 lam_max=self.q["lam_max"], **{k: v for k, v in self.last_refresh.items() if k not in ("t", "lam_max")}))
         out = {"names": np.array(self.pnames)}
         for k in self.history[0]:
             vals = [h[k] for h in self.history]
