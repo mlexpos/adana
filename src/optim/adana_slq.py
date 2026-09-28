@@ -20,7 +20,9 @@ alpha(t) = gamma_3 / (gamma_2 Delta_t) is the momentum AMPLIFICATION.  ADana-SLQ
     k' (sequences) is the open constant; k' <= 0 disables the multiplier.
   * a_T: allocation.  'global': a_T = 1 (same ratio for every tensor).  'waterfill': a_T = min{1, nu G_T / N_T} with
     sum_T a_T N_T = S, where G_T = |m_T|_z^2 - Delta^2 (N_T / B_eff) Temp / (2 g) is the buffer signal (buffer energy
-    minus its noise part, Temp = tr C_z / tr H_z).
+    minus its noise part, Temp = tr C_z / tr H_z).  'independent': each tensor is its own stability problem with the
+    FULL budget, ratio_T = min{S / N_T, cap} (no sharing; the total spent sum_T ratio_T N_T may exceed S and is logged
+    against the linear limit 2 B_eff as slq/spent_over_limit).  s = inf gives every tensor the cap (Nesterov).
 Everything else (moments, weight decay, optional per-element SNR clip `clipsnr`) is ADana's.  The LR schedule multiplies
 the whole update, so the ratio is computed at the peak LR.
 """
@@ -107,7 +109,7 @@ class ADanaSLQ(ADana):
         self.mz2 = np.zeros(L)                      # |m_T|^2 in z coordinates (last step)
         self.ratio = np.zeros(L); self.A = np.zeros(L); self.afrac = np.ones(L)
         self.NT = np.zeros(L); self.N = 0.0; self.S = 0.0; self.mu = 1.0; self.bnr = float("nan"); self.Delta = 1.0
-        self.G = np.zeros(L)
+        self.G = np.zeros(L); self.spent = 0.0
         self.n_refresh = 0; self.refresh_seconds = 0.0; self.last_refresh = {}
         self.history = []
 
@@ -181,9 +183,13 @@ class ADanaSLQ(ADana):
             a = self._waterfill(c, NTc, self.S)
             self.afrac = a
             self.ratio = np.minimum(a, self.cap)
+        elif self.alloc == "independent":
+            self.ratio = np.minimum(self.S / NTc, self.cap)
+            self.afrac = self.ratio * NTc / max(self.S, 1e-30)
         elif self.alloc != "typed":
             self.afrac = np.ones(L)
             self.ratio = np.full(L, min(self.S / self.N, self.cap))
+        self.spent = float(self.ratio @ np.maximum(self.NT, 0.0)) / (2.0 * B_eff)   # fraction of the linear limit used
         self.A = self.ratio / D
 
     @staticmethod
@@ -353,6 +359,7 @@ class ADanaSLQ(ADana):
             "slq/ratio_global": min(self.S / max(self.N, 1e-12), self.cap) if self.q is not None else 0.0,
             "slq/A_mean": float(np.mean(self.A)), "slq/A_max": float(np.max(self.A)),
             "slq/ratio_mean": float(np.mean(self.ratio)), "slq/ratio_max": float(np.max(self.ratio)),
+            "slq/spent_over_limit": self.spent,
             "slq/refreshes": self.n_refresh, "slq/refresh_seconds": self.refresh_seconds,
         }
         for k, v in self.last_refresh.items():
@@ -385,7 +392,7 @@ class ADanaSLQ(ADana):
         if self.log_dir is None or (dist.is_available() and dist.is_initialized() and dist.get_rank() != 0):
             return
         self.history.append(dict(t=self.t, NT=self.NT.copy(), ratio=self.ratio.copy(), A=self.A.copy(),
-                                 afrac=self.afrac.copy(), G=self.G.copy(), N=self.N, S=self.S, mu=self.mu, bnr=self.bnr,
+                                 afrac=self.afrac.copy(), G=self.G.copy(), N=self.N, S=self.S, spent=self.spent, mu=self.mu, bnr=self.bnr,
                                  teff=self.teff, nodes=self.q["nodes"].copy(), w=self.q["w"].copy(),
                                  lam_max=self.q["lam_max"], **{k: v for k, v in self.last_refresh.items() if k not in ("t", "lam_max")}))
         out = {"names": np.array(self.pnames)}

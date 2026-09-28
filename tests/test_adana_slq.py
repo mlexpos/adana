@@ -170,6 +170,23 @@ def test_typed_allocation():
     assert o.ratio[o.agroup == "tiny"].max() == 0.0
 
 
+def test_independent_allocation():
+    names = ["transformer.wte.weight", "transformer.h.0.attn.c_attn.weight", "transformer.h.0.mlp.c_fc.weight", "lm_head.weight"]
+    params = [nn.Parameter(torch.zeros(3)) for _ in names]
+    o = ADanaSLQ([{"params": params, "param_names": names}], lr=0.1, s=0.25, alloc="independent", batch_seqs=64)
+    rng = np.random.default_rng(2)
+    wT = np.abs(rng.normal(size=(10, len(names)))) * np.array([300, 0.5, 0.5, 900.0])
+    o.q = dict(nodes=rng.uniform(1, 50, 10), w=wT.sum(1), wT=wT, trF=1.0, lam_max=50.0)
+    o.teff = 1.0
+    o._compute_ratio(0.01)
+    NTc = np.maximum(o.NT, 1e-2)
+    assert np.allclose(o.ratio, np.minimum(o.S / NTc, o.cap))           # each tensor against its own N_T, full budget
+    assert o.ratio[1] == o.cap and o.ratio[3] < o.cap                      # small blocks at the cap, lm_head limited
+    assert np.isclose(o.spent, (o.ratio * o.NT).sum() / (2 * 64))
+    o.s = float("inf"); o._compute_ratio(0.01)
+    assert np.all(o.ratio == o.cap)                                        # s = inf: Nesterov everywhere
+
+
 def test_split_half_noise_scale():
     torch.manual_seed(0)
     P, B, sig = 2000, 64, 0.5

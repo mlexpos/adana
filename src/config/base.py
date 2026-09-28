@@ -232,7 +232,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_kprime", default=0.0, type=float,
                         help="signal-fraction multiplier mu = min(1, k'/B_noise), k' in sequences; <= 0 disables")
     parser.add_argument("--slq_cap", default=1.0, type=float, help="cap on gamma_3/gamma_2")
-    parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill", "typed"])
+    parser.add_argument("--slq_alloc", default="global", choices=["global", "waterfill", "typed", "independent"])
     parser.add_argument("--slq_type_frac", default="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", type=str,
                         help="typed allocation: budget fraction per tensor type (attn, mlp, vocab, tiny), normalized; "
                              "within a type the budget is water-filled on the buffer signal G_T")
