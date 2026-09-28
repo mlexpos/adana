@@ -49,7 +49,7 @@ class ADanaSLQ(ADana):
     def __init__(self, params, lr=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0, clipsnr=None, wd_decaying=False,
                  wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=64, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
-                 gn_mode="jvp", first_refresh=4, aitken=True):
+                 gn_mode="jvp", first_refresh=4, aitken=True, gn_chunk=2, gn_cache=True):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -57,6 +57,7 @@ class ADanaSLQ(ADana):
         self.refresh_ratio, self.max_gap = float(refresh_ratio), int(max_gap)
         self.teff_mode = teff
         self.gn_mode = gn_mode
+        self.gn_chunk, self.gn_cache = int(gn_chunk), bool(gn_cache)
         self.aitken = aitken
         self.teff = 1.0 if teff == "auto" else float(teff)
         self.batch_seqs = int(batch_seqs)
@@ -202,7 +203,8 @@ class ADanaSLQ(ADana):
         xb, yb = x[: self.slq_batch], y[: self.slq_batch]
         was_training = model.training
         model.eval()
-        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=r, mode=self.gn_mode)
+        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=r, mode=self.gn_mode, chunk=self.gn_chunk,
+                                 cache=self.gn_cache)
         D_now = self.delta / (self.delta + self.t + 1)
         D_next = self.delta / (self.delta + self._next_after(self.t) + 1)
         res = slq(op, self.plist, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr,

@@ -246,6 +246,9 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_teff", default="auto", type=str, help="'auto' or a fixed T_eff (tokens per sequence)")
     parser.add_argument("--slq_gn", default="jvp", choices=["jvp", "fd"],
                         help="Gauss-Newton products: exact forward-mode AD (math SDPA) or central finite differences")
+    parser.add_argument("--slq_chunk", default=2, type=int, help="sequences per Gauss-Newton product chunk")
+    parser.add_argument("--slq_no_cache", default=False, action="store_true",
+                        help="recompute the reverse pass per product instead of caching it (less memory, ~30%% slower)")
     parser.add_argument("--slq_clipsnr", default=False, action="store_true",
                         help="also apply the Dana-MK4 per-element SNR clip (uses --clipsnr)")
     parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])
