@@ -81,6 +81,18 @@ def test_fd_gn_matches_exact():
         assert rel < (1e-3 if m == "fd" else 1e-10), (m, rel)
 
 
+def test_jvp_nocache_matches_cached():
+    # the no-cache path (J^T by ordinary reverse mode, optional activation checkpointing) equals the cached vjp closure
+    model, names, params, x, y = _setup()
+    torch.manual_seed(2)
+    u = [torch.randn_like(p) for p in params]
+    r = [torch.rand_like(p) + 0.5 for p in params]
+    a, b = (torch.cat([o.reshape(-1) for o in GaussNewtonOperator(model, names, params, x, y, r=r, chunk=2,
+                                                                     cache=c)(u)]) for c in (True, False))
+    assert float((a - b).norm() / a.norm()) < 1e-12
+    assert all(p.grad is None for p in params)
+
+
 def test_lanczos_quadrature_vs_dense():
     model, names, params, x, y = _setup()
     r = [torch.rand_like(p) + 0.5 for p in params]

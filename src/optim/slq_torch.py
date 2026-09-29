@@ -87,6 +87,21 @@ class GaussNewtonOperator:
             self._cache[i] = st
         return st
 
+    def _vjp_ckpt(self, xc, yc, hv):
+        """J^T hv by ordinary reverse mode with per-block activation checkpointing (no cached closure): the backward
+        keeps only block inputs plus one block's residuals, instead of every layer's fp32 attention matrices."""
+        cfg = getattr(self.model, "config", None)
+        old = getattr(cfg, "activation_checkpointing", None)
+        if cfg is not None:
+            cfg.activation_checkpointing = True
+        try:
+            with torch.enable_grad():
+                logits = self._f(xc, yc)(*self.params)
+                return torch.autograd.grad(logits, self.params, grad_outputs=hv, allow_unused=True)
+        finally:
+            if cfg is not None:
+                cfg.activation_checkpointing = old
+
     def _call_jvp(self, d):
         from torch.nn.attention import SDPBackend, sdpa_kernel
         out = [torch.zeros_like(p) for p in self.params]
@@ -96,12 +111,17 @@ class GaussNewtonOperator:
         with torch.autocast(device_type=self.x.device.type, enabled=False), sdpa_kernel(SDPBackend.MATH):
             for k, i in enumerate(range(0, B, self.chunk)):
                 xc, yc = self.x[i:i + self.chunk], self.y[i:i + self.chunk]
-                p, vjp_fn = self._chunk_state(k, xc, yc)
-                with torch.no_grad():
-                    _, ju = torch.func.jvp(self._f(xc, yc), prim, tang)
+                if self.cache:
+                    p, vjp_fn = self._chunk_state(k, xc, yc)
+                    with torch.no_grad():
+                        _, ju = torch.func.jvp(self._f(xc, yc), prim, tang)
+                else:
+                    with torch.no_grad():
+                        logits, ju = torch.func.jvp(self._f(xc, yc), prim, tang)
+                    p = torch.softmax(logits, dim=-1); del logits
                 hv = p * ju - p * (p * ju).sum(-1, keepdim=True)
                 hv = hv * (yc >= 0).unsqueeze(-1).to(hv.dtype) / self.ntok
-                gs = vjp_fn(hv)
+                gs = vjp_fn(hv) if self.cache else self._vjp_ckpt(xc, yc, hv)
                 for o, gg in zip(out, gs):
                     if gg is not None:
                         o.add_(gg.to(o.dtype))
