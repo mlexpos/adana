@@ -237,9 +237,10 @@ def parse_args(base_parser, args, namespace):
                         help="typed allocation: budget fraction per tensor type (attn, mlp, vocab, tiny), normalized; "
                              "within a type the budget is water-filled on the buffer signal G_T")
     parser.add_argument("--slq_m", default=128, type=int, help="max Lanczos steps per probe")
-    parser.add_argument("--slq_reject_gap", default=0.5, type=float,
+    parser.add_argument("--slq_reject_gap", default=-1.0, type=float,
                         help="reject a refresh (keep the previous quadrature) if Lanczos did not converge and the "
-                             "Gauss/Radau bracket exceeds this")
+                             "Gauss/Radau bracket exceeds this; negative (default): never reject -- the Gauss rule is "
+                             "an upper bound on N at every m, so a non-converged refresh is still conservative")
     parser.add_argument("--slq_probes", default=1, type=int)
     parser.add_argument("--slq_batch", default=8, type=int, help="sequences used for the SLQ / T_eff estimates")
     parser.add_argument("--slq_eps", default=0.03, type=float,
@@ -247,8 +248,14 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_refresh_ratio", default=2.0, type=float)
     parser.add_argument("--slq_first_refresh", default=4, type=int, help="first refresh step (alpha = 0 before)")
     parser.add_argument("--slq_max_gap", default=0, type=int, help="max steps between refreshes (0: max(50, iters/8))")
+    parser.add_argument("--slq_aitken", default=False, action="store_true",
+                        help="apply the Aitken correction of the finite-m Gauss bias (off by default: N and N_T are "
+                             "taken at the Gauss upper bound)")
     parser.add_argument("--slq_no_aitken", default=False, action="store_true",
-                        help="disable the Aitken correction of the finite-m Gauss bias")
+                        help="disable the Aitken correction (now the default; kept for old launch scripts)")
+    parser.add_argument("--slq_wf_leftover", default="uniform", choices=["uniform", "none"],
+                        help="waterfill: budget left once every tensor with positive buffer signal is at the cap is "
+                             "spread uniformly over the tensors without signal ('none': left unspent)")
     parser.add_argument("--slq_teff", default="auto", type=str, help="'auto' or a fixed T_eff (tokens per sequence)")
     parser.add_argument("--slq_gn", default="jvp", choices=["jvp", "fd"],
                         help="Gauss-Newton products: exact forward-mode AD (math SDPA) or central finite differences")

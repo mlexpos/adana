@@ -156,6 +156,40 @@ def test_waterfill_spends_budget():
     assert (np.all(o.afrac <= 1 + 1e-12) and (abs(spent - o.S) / o.S < 1e-6 or np.all(o.afrac == 1))), (spent, o.S)
 
 
+def test_waterfill_leftover_budget():
+    """Only tiny tensors carry signal: they are capped, and the rest of the budget is spread uniformly over the tensors
+    without signal instead of being left unspent.  A binding budget is unaffected."""
+    c = np.array([1.0, 0.0, 0.0, 0.5]); NTc = np.array([1e-2, 10.0, 30.0, 1e-2])
+    a = ADanaSLQ._waterfill(c, NTc, 20.0, leftover=True)
+    assert np.allclose(a[[0, 3]], 1.0) and np.allclose(a[[1, 2]], (20.0 - 0.02) / 40.0), a
+    assert abs(a @ NTc - 20.0) < 1e-9
+    assert np.allclose(ADanaSLQ._waterfill(c, NTc, 20.0, leftover=False)[[1, 2]], 0.0)
+    c2 = np.array([1.0, 0.2, 0.0, 0.5])
+    assert np.allclose(ADanaSLQ._waterfill(c2, NTc, 5.0, leftover=True),
+                       ADanaSLQ._waterfill(c2, NTc, 5.0, leftover=False), atol=1e-9)
+
+
+def test_gauss_radau_bracket_contains_trace():
+    """Gauss is an upper and Gauss-Radau (node at 0) a lower bound on z^T f(H) z at every m.  For a diagonal operator a
+    Rademacher probe returns the trace exactly, so the bracket must contain N(D) itself, even far from convergence."""
+    lam = [torch.tensor(np.logspace(-6, 2, 300)), torch.tensor(np.logspace(-4, 1, 200))]
+    op = lambda u: [l * ui for l, ui in zip(lam, u)]
+    g, D = 1.0, 1e-3
+    exact = sum(float((g * l / (g * l + D)).sum()) for l in lam)
+    prev = float("inf")
+    for m in (2, 4, 8, 16, 32):
+        gen = torch.Generator(); gen.manual_seed(1)
+        res = slq(op, lam, m_max=m, probes=1, eps=0.0, g=g, D_check=[D], generator=gen)
+        lo, hi = float(res["N_lo"][0, 0]), float(res["N_hi"][0, 0])
+        assert lo <= exact * (1 + 1e-9) and exact <= hi * (1 + 1e-9), (m, lo, exact, hi)
+        assert hi <= prev * (1 + 1e-9), (m, hi, prev)          # Gauss decreases monotonically in m
+        prev = hi
+        th, w, wT = res["nodes"][0], res["weights"][0], res["block"][0]
+        f = g * np.maximum(th, 0) / (g * np.maximum(th, 0) + D)
+        assert abs(f @ w - hi) <= 1e-9 * hi
+        assert abs((f @ wT).sum() - hi) <= 1e-6 * hi               # per-tensor Gauss values sum to the Gauss bound
+
+
 def test_typed_allocation():
     names = ["transformer.wte.weight", "transformer.h.0.attn.c_attn.weight", "transformer.h.0.attn.c_proj.weight",
              "transformer.h.0.mlp.c_fc.weight", "transformer.h.0.mlp.c_proj.weight", "transformer.h.0.ln_1.weight",
@@ -234,6 +268,9 @@ def test_refresh_and_train_smoke():
     assert o.n_refresh >= 2 and np.isfinite(losses).all() and losses[-1] < losses[0], losses
     d = o.diagnostics()
     assert "slq/N" in d and np.isfinite(d["slq/N"])
+    # default: every refresh adopted, N at the Gauss bound, bracket logged
+    assert o.n_reject == 0 and d["slq/last_accepted"] == 1.0 and d["slq/last_aitken"] == 1.0
+    assert d["slq/last_N_lo"] <= d["slq/last_N_hi"] * (1 + 1e-6)          # closed bracket: equal up to roundoff
 
 
 def test_effective_tokens_limits():

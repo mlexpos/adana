@@ -217,11 +217,15 @@ def fsum(th, w, g, D):
 def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None):
     """Run `probes` Lanczos recurrences (no reorthogonalization; Gauss quadrature of a smooth f is robust to it) of up to
     m_max steps on `op` (list-of-tensors -> list-of-tensors, symmetric PSD).  Stops a probe early when the Gauss / Gauss-
-    Radau bracket on N(D) for every D in D_check is within relative eps.  Returns dict with nodes (P, m), weights (P, m),
-    block weights (P, m, L) (per-probe arrays padded with zero weight), m used per probe and the final bracket gap."""
+    Radau bracket on N(D) for every D in D_check is within relative eps.  For f(x) = g x / (g x + D) the Gauss rule is an
+    upper bound on z^T f(H) z at EVERY m (all even derivatives of f are negative) and Gauss-Radau with a node at 0 is a
+    lower bound, so a recurrence stopped at m_max still returns a certified (conservative) N.  Returns dict with nodes
+    (P, m), weights (P, m), block weights (P, m, L) (per-probe arrays padded with zero weight), m used per probe, the final
+    bracket gap, and the bracket itself: N_hi (Gauss) and N_lo (Radau), each (P, len(D_check))."""
     L = len(like)
     D_check = [] if D_check is None else list(D_check)
     out_th, out_w, out_wT, used, gaps, hists, corrs, convs = [], [], [], [], [], [], [], []
+    n_hi, n_lo = [], []
     for _ in range(probes):
         z = [(torch.randint(0, 2, x.shape, device=x.device, generator=generator, dtype=torch.int8).to(x.dtype) * 2 - 1)
              for x in like]
@@ -285,7 +289,10 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
         corrs.append(float(np.mean(corr)) if corr else 1.0)
         if D_check:
             thR, wR = radau_lower(al[:m_used], be[:m_used], zn)
-            gap = max((fsum(th, w, g, D) - fsum(thR, wR, g, D)) / max(fsum(th, w, g, D), 1e-30) for D in D_check)
+            hi = [fsum(th, w, g, D) for D in D_check]
+            lo = [fsum(thR, wR, g, D) for D in D_check]
+            gap = max((h - l) / max(h, 1e-30) for h, l in zip(hi, lo))
+            n_hi.append(hi); n_lo.append(lo)
         pad = m_max - m_used
         out_th.append(np.pad(th, (0, pad)))
         out_w.append(np.pad(w, (0, pad)))
@@ -293,7 +300,8 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
         used.append(m_used); gaps.append(gap); hists.append(hist)
     return dict(nodes=np.stack(out_th), weights=np.stack(out_w) / probes, block=np.stack(out_wT) / probes,
                 m_used=np.array(used), gap=np.array(gaps), lam_max=float(np.max(np.stack(out_th))), hist=hists,
-                aitken=np.array(corrs), converged=np.array(convs))
+                aitken=np.array(corrs), converged=np.array(convs),
+                N_hi=np.array(n_hi).reshape(len(n_hi), -1), N_lo=np.array(n_lo).reshape(len(n_lo), -1))
 
 
 # ------------------------------------------------------------------ token correlation length (effective tokens / sequence)
