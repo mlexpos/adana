@@ -169,6 +169,26 @@ def test_waterfill_leftover_budget():
                        ADanaSLQ._waterfill(c2, NTc, 5.0, leftover=False), atol=1e-9)
 
 
+def test_version_defaults():
+    """'waterfill' (and the other allocations) keep the v1 estimator: rejection at gap 0.5, Aitken on, no leftover.
+    'waterfill_v2' takes the Gauss bound, never rejects and spends the leftover.  Same resolution on the command line."""
+    import argparse
+    from config import base
+    model, names, params, x, y = _setup()
+    spec = [{"params": params, "param_names": names}]
+    for alloc, (ait, rej, left) in {"waterfill": (True, 0.5, False), "independent": (True, 0.5, False),
+                                    "waterfill_v2": (False, -1.0, True)}.items():
+        o = ADanaSLQ(spec, lr=0.1, alloc=alloc)
+        assert (o.aitken, o.reject_gap, o.leftover) == (ait, rej, left), alloc
+        a = base.parse_args(argparse.ArgumentParser(allow_abbrev=False), ["--opt", "adana-slq", "--slq_alloc", alloc],
+                            argparse.Namespace())
+        assert (a.slq_aitken, a.slq_reject_gap) == (ait, rej), alloc
+    a = base.parse_args(argparse.ArgumentParser(allow_abbrev=False),
+                        ["--opt", "adana-slq", "--slq_alloc", "waterfill_v2", "--slq_aitken", "--slq_reject_gap", "0.3"],
+                        argparse.Namespace())
+    assert (a.slq_aitken, a.slq_reject_gap) == (True, 0.3)
+
+
 def test_gauss_radau_bracket_contains_trace():
     """Gauss is an upper and Gauss-Radau (node at 0) a lower bound on z^T f(H) z at every m.  For a diagonal operator a
     Rademacher probe returns the trace exactly, so the bracket must contain N(D) itself, even far from convergence."""
@@ -251,7 +271,7 @@ def test_split_half_noise_scale():
 
 def test_refresh_and_train_smoke():
     model, names, params, x, y = _setup(B=8, T=6)
-    o = ADanaSLQ([{"params": params, "param_names": names}], lr=0.05, kprime=16.0, alloc="waterfill", m_max=8,
+    o = ADanaSLQ([{"params": params, "param_names": names}], lr=0.05, kprime=16.0, alloc="waterfill_v2", m_max=8,
                  probes=1, slq_batch=4, batch_seqs=8, max_gap=3)
     losses = []
     for it in range(12):
@@ -268,7 +288,7 @@ def test_refresh_and_train_smoke():
     assert o.n_refresh >= 2 and np.isfinite(losses).all() and losses[-1] < losses[0], losses
     d = o.diagnostics()
     assert "slq/N" in d and np.isfinite(d["slq/N"])
-    # default: every refresh adopted, N at the Gauss bound, bracket logged
+    # waterfill_v2: every refresh adopted, N at the Gauss bound, bracket logged
     assert o.n_reject == 0 and d["slq/last_accepted"] == 1.0 and d["slq/last_aitken"] == 1.0
     assert d["slq/last_N_lo"] <= d["slq/last_N_hi"] * (1 + 1e-6)          # closed bracket: equal up to roundoff
 

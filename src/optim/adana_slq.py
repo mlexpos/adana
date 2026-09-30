@@ -23,6 +23,9 @@ alpha(t) = gamma_3 / (gamma_2 Delta_t) is the momentum AMPLIFICATION.  ADana-SLQ
     minus its noise part, Temp = tr C_z / tr H_z).  'independent': each tensor is its own stability problem with the
     FULL budget, ratio_T = min{S / N_T, cap} (no sharing; the total spent sum_T ratio_T N_T may exceed S and is logged
     against the linear limit 2 B_eff as slq/spent_over_limit).  s = inf gives every tensor the cap (Nesterov).
+    'waterfill_v2': 'waterfill' with (i) N and N_T read off the Gauss rule (an upper bound on N at every Lanczos step;
+    no Aitken extrapolation below it), (ii) every refresh adopted (no rejection), and (iii) budget left over once every
+    tensor with positive signal is at the cap spread uniformly over the tensors without signal.
 Everything else (moments, weight decay, optional per-element SNR clip `clipsnr`) is ADana's.  The LR schedule multiplies
 the whole update, so the ratio is computed at the peak LR.
 """
@@ -68,8 +71,8 @@ class ADanaSLQ(ADana):
     def __init__(self, params, lr=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0, clipsnr=None, wd_decaying=False,
                  wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=128, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
-                 gn_mode="jvp", first_refresh=4, aitken=False, gn_chunk=2, gn_cache=True,
-                 type_frac="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", reject_gap=-1.0, leftover="uniform"):
+                 gn_mode="jvp", first_refresh=4, aitken=None, gn_chunk=2, gn_cache=True,
+                 type_frac="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", reject_gap=None):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -78,9 +81,10 @@ class ADanaSLQ(ADana):
         self.teff_mode = teff
         self.gn_mode = gn_mode
         self.gn_chunk, self.gn_cache = int(gn_chunk), bool(gn_cache)
-        self.aitken = aitken
-        self.reject_gap = float(reject_gap)
-        self.leftover = leftover
+        v2 = alloc == "waterfill_v2"
+        self.aitken = (not v2) if aitken is None else bool(aitken)
+        self.reject_gap = (-1.0 if v2 else 0.5) if reject_gap is None else float(reject_gap)
+        self.leftover = v2
         self.n_reject = 0
         self.teff = 1.0 if teff == "auto" else float(teff)
         self.batch_seqs = int(batch_seqs)
@@ -179,9 +183,9 @@ class ADanaSLQ(ADana):
                 ratio[m] = self._waterfill(c, NTc[m], pi * self.S, zero_without_signal=True)
             self.ratio = np.minimum(ratio, self.cap)
             self.afrac = self.ratio * NTc / max(self.S, 1e-30)        # budget share actually spent per tensor
-        elif self.alloc == "waterfill" and self.n_split > 0:
+        elif self.alloc in ("waterfill", "waterfill_v2") and self.n_split > 0:
             c = np.maximum(self.G, 0.0) / NTc
-            a = self._waterfill(c, NTc, self.S, leftover=(self.leftover == "uniform"))
+            a = self._waterfill(c, NTc, self.S, leftover=self.leftover)
             self.afrac = a
             self.ratio = np.minimum(a, self.cap)
         elif self.alloc == "independent":
@@ -284,11 +288,11 @@ class ADanaSLQ(ADana):
         nodes = res["nodes"].reshape(K)
         w = res["weights"].reshape(K)
         wT = res["block"].reshape(K, -1)
-        # default: N and every N_T are read off the Gauss rule, an upper bound on N at any m (conservative).  The Aitken
-        # correction (opt-in) extrapolates below it.
+        # without Aitken (waterfill_v2) N and every N_T are read off the Gauss rule, an upper bound on N at any m
+        # (conservative); the Aitken correction extrapolates below it.
         corr = float(np.mean(res["aitken"])) if self.aitken else 1.0
-        # default (reject_gap < 0): always adopt the fresh quadrature.  Rejecting a non-converged refresh would replace
-        # a certified bound on the current operator by the previous quadrature, which bounds nothing at the new point.
+        # reject_gap < 0 (waterfill_v2): always adopt the fresh quadrature.  Rejecting a non-converged refresh replaces a
+        # certified bound on the current operator by the previous quadrature, which bounds nothing at the new point.
         accepted = (self.reject_gap < 0 or bool(np.all(res["converged"]))
                     or float(np.nanmax(res["gap"])) <= self.reject_gap)
         if accepted:
