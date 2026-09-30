@@ -233,12 +233,17 @@ def parse_args(base_parser, args, namespace):
                         help="signal-fraction multiplier mu = min(1, k'/B_noise), k' in sequences; <= 0 disables")
     parser.add_argument("--slq_cap", default=1.0, type=float, help="cap on gamma_3/gamma_2")
     parser.add_argument("--slq_alloc", default="global",
-                        choices=["global", "waterfill", "waterfill_v2", "typed", "independent"],
+                        choices=["global", "waterfill", "waterfill_v2", "typed", "typed_v2", "independent"],
                         help="waterfill_v2: water-filling with N at the Gauss bound, every refresh adopted, and the "
-                             "budget left by capped signal tensors spread over the rest")
-    parser.add_argument("--slq_type_frac", default="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", type=str,
-                        help="typed allocation: budget fraction per tensor type (attn, mlp, vocab, tiny), normalized; "
-                             "within a type the budget is water-filled on the buffer signal G_T")
+                             "budget left by capped signal tensors spread over the rest.  typed_v2: fixed budget "
+                             "fractions per group (--slq_type_frac) spread over depth by --slq_depth_ratio, no buffer "
+                             "signal, same estimator as waterfill_v2")
+    parser.add_argument("--slq_depth_ratio", default=0.6, type=float,
+                        help="typed_v2: depth weight of the last block relative to the first (linear in between)")
+    parser.add_argument("--slq_type_frac", default=None, type=str,
+                        help="budget fraction per tensor group, normalized.  typed (default attn=0.45,mlp=0.45,"
+                             "vocab=0.1,tiny=0): water-filled on G_T within a group.  typed_v2 (default attn=0.21,"
+                             "mlp=0.50,lm_head=0.25,wte=0.04; tiny always at the cap): spread by depth")
     parser.add_argument("--slq_m", default=128, type=int, help="max Lanczos steps per probe")
     parser.add_argument("--slq_reject_gap", default=None, type=float,
                         help="reject a refresh (keep the previous quadrature) if Lanczos did not converge and the "
@@ -467,7 +472,10 @@ def parse_args(base_parser, args, namespace):
     a = parser.parse_args(args, namespace)
     # adana-slq estimator defaults depend on the allocation version; resolved here so wandb records the values used
     if hasattr(a, "slq_alloc"):
-        v2 = a.slq_alloc == "waterfill_v2"
+        v2 = a.slq_alloc in ("waterfill_v2", "typed_v2")
+        if a.slq_type_frac is None:
+            a.slq_type_frac = ("attn=0.21,mlp=0.50,lm_head=0.25,wte=0.04" if a.slq_alloc == "typed_v2"
+                               else "attn=0.45,mlp=0.45,vocab=0.1,tiny=0")
         if a.slq_reject_gap is None:
             a.slq_reject_gap = -1.0 if v2 else 0.5
         a.slq_aitken = False if a.slq_no_aitken else (True if a.slq_aitken else not v2)

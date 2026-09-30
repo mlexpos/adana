@@ -26,6 +26,11 @@ alpha(t) = gamma_3 / (gamma_2 Delta_t) is the momentum AMPLIFICATION.  ADana-SLQ
     'waterfill_v2': 'waterfill' with (i) N and N_T read off the Gauss rule (an upper bound on N at every Lanczos step;
     no Aitken extrapolation below it), (ii) every refresh adopted (no rejection), and (iii) budget left over once every
     tensor with positive signal is at the cap spread uniformly over the tensors without signal.
+    'typed_v2': deterministic split, no buffer signal.  Group g (attn, mlp, lm_head, wte) gets the fixed fraction pi_g
+    of the budget, spread over its tensors with a linear depth weight h(l) (1 at the first block, depth_ratio at the
+    last): r_T = min{1, nu c_T}, c_T = pi_g h(l_T) / sum_{T' in g} h(l_T') N_T', sum_T r_T N_T = S.  Uncapped, group g
+    spends exactly pi_g S; budget freed by capped tensors flows to the others in proportion to c_T.  Norms and other
+    tiny tensors are held at the cap (as water-filling does).  Estimator as in waterfill_v2 (Gauss bound, no rejection).
 Everything else (moments, weight decay, optional per-element SNR clip `clipsnr`) is ADana's.  The LR schedule multiplies
 the whole update, so the ratio is computed at the peak LR.
 """
@@ -59,6 +64,18 @@ def _alloc_group(name):
     return "tiny"
 
 
+def _alloc_group2(name):
+    """Groups for 'typed_v2': as _alloc_group, with the vocabulary matrices split into wte and lm_head."""
+    g = _alloc_group(name)
+    if g == "vocab":
+        return "wte" if "wte" in re.sub(r"^(module\.|_orig_mod\.)+", "", name) else "lm_head"
+    return g
+
+
+TYPE_FRAC_V1 = "attn=0.45,mlp=0.45,vocab=0.1,tiny=0"
+TYPE_FRAC_V2 = "attn=0.21,mlp=0.50,lm_head=0.25,wte=0.04"     # water-filling's budget shares at 20-24 heads
+
+
 def _tensor_type(name):
     """'transformer.h.3.attn.c_attn.weight' -> ('attn.c_attn.weight', 3); non-block tensors -> (name, -1)."""
     mt = re.search(r"\.h\.(\d+)\.", name)
@@ -72,7 +89,7 @@ class ADanaSLQ(ADana):
                  wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=128, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
                  gn_mode="jvp", first_refresh=4, aitken=None, gn_chunk=2, gn_cache=True,
-                 type_frac="attn=0.45,mlp=0.45,vocab=0.1,tiny=0", reject_gap=None):
+                 type_frac=None, reject_gap=None, depth_ratio=0.6):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -81,10 +98,10 @@ class ADanaSLQ(ADana):
         self.teff_mode = teff
         self.gn_mode = gn_mode
         self.gn_chunk, self.gn_cache = int(gn_chunk), bool(gn_cache)
-        v2 = alloc == "waterfill_v2"
+        v2 = alloc in ("waterfill_v2", "typed_v2")
         self.aitken = (not v2) if aitken is None else bool(aitken)
         self.reject_gap = (-1.0 if v2 else 0.5) if reject_gap is None else float(reject_gap)
-        self.leftover = v2
+        self.leftover = alloc == "waterfill_v2"
         self.n_reject = 0
         self.teff = 1.0 if teff == "auto" else float(teff)
         self.batch_seqs = int(batch_seqs)
@@ -103,10 +120,19 @@ class ADanaSLQ(ADana):
         self.ttype = [t for t, _ in types]
         self.tlayer = [l for _, l in types]
         # typed allocation: fixed budget fractions per tensor type (normalized over the listed types)
+        if type_frac is None:
+            type_frac = TYPE_FRAC_V2 if alloc == "typed_v2" else TYPE_FRAC_V1
         fr = {k.strip(): float(v) for k, v in (kv.split("=") for kv in type_frac.split(",") if kv.strip())}
+        if alloc == "typed_v2" and not set(fr) <= {"attn", "mlp", "lm_head", "wte"}:
+            raise ValueError(f"typed_v2 fractions take keys attn, mlp, lm_head, wte (tiny is at the cap): {type_frac}")
         tot = sum(fr.values())
         self.type_frac = {k: v / tot for k, v in fr.items()} if tot > 0 else {}
         self.agroup = np.array([_alloc_group(n) for n in self.pnames])
+        self.agroup2 = np.array([_alloc_group2(n) for n in self.pnames])
+        self.depth_ratio = float(depth_ratio)
+        nl = max(self.tlayer) + 1
+        self.hdepth = np.array([1.0 - (1.0 - self.depth_ratio) * l / max(nl - 1, 1) if l >= 0 else 1.0
+                                for l in self.tlayer])
         self.t = 0                                  # completed optimizer steps
         self.next_refresh = max(1, int(first_refresh))
         self.q = None                               # quadrature: nodes (K,), w (K,), wT (K, L), trF, lam_max
@@ -183,6 +209,20 @@ class ADanaSLQ(ADana):
                 ratio[m] = self._waterfill(c, NTc[m], pi * self.S, zero_without_signal=True)
             self.ratio = np.minimum(ratio, self.cap)
             self.afrac = self.ratio * NTc / max(self.S, 1e-30)        # budget share actually spent per tensor
+        elif self.alloc == "typed_v2":
+            tiny = self.agroup2 == "tiny"
+            c = np.zeros(L)
+            for gname, pi in self.type_frac.items():
+                m = self.agroup2 == gname
+                if m.any() and pi > 0:
+                    c[m] = pi * self.hdepth[m] / float(np.sum(self.hdepth[m] * NTc[m]))
+            ratio = np.zeros(L)
+            ratio[tiny] = 1.0
+            budget = self.S - float(NTc[tiny].sum())
+            if budget > 0 and (~tiny).any():
+                ratio[~tiny] = self._waterfill(c[~tiny], NTc[~tiny], budget)
+            self.ratio = np.minimum(ratio, self.cap)
+            self.afrac = self.ratio * NTc / max(self.S, 1e-30)
         elif self.alloc in ("waterfill", "waterfill_v2") and self.n_split > 0:
             c = np.maximum(self.G, 0.0) / NTc
             a = self._waterfill(c, NTc, self.S, leftover=self.leftover)
@@ -398,6 +438,10 @@ class ADanaSLQ(ADana):
                 logs[f"slq_group/ratio/{gname}"] = float(np.mean(self.ratio[m]))
                 logs[f"slq_group/A/{gname}"] = float(np.mean(self.A[m]))
                 logs[f"slq_group/N/{gname}"] = float(np.sum(wN[m]))
+                logs[f"slq_group/budget_share/{gname}"] = float(np.sum(self.ratio[m] * wN[m]) / max(self.S, 1e-30))
+        for gname in ("lm_head", "wte"):
+            m = self.agroup2 == gname
+            if m.any():
                 logs[f"slq_group/budget_share/{gname}"] = float(np.sum(self.ratio[m] * wN[m]) / max(self.S, 1e-30))
         for layer in sorted(set(l for l in self.tlayer if l >= 0)):
             idx = [i for i, l in enumerate(self.tlayer) if l == layer]

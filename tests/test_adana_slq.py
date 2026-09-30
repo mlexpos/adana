@@ -177,12 +177,13 @@ def test_version_defaults():
     model, names, params, x, y = _setup()
     spec = [{"params": params, "param_names": names}]
     for alloc, (ait, rej, left) in {"waterfill": (True, 0.5, False), "independent": (True, 0.5, False),
-                                    "waterfill_v2": (False, -1.0, True)}.items():
+                                    "waterfill_v2": (False, -1.0, True), "typed_v2": (False, -1.0, False)}.items():
         o = ADanaSLQ(spec, lr=0.1, alloc=alloc)
         assert (o.aitken, o.reject_gap, o.leftover) == (ait, rej, left), alloc
         a = base.parse_args(argparse.ArgumentParser(allow_abbrev=False), ["--opt", "adana-slq", "--slq_alloc", alloc],
                             argparse.Namespace())
         assert (a.slq_aitken, a.slq_reject_gap) == (ait, rej), alloc
+        assert a.slq_type_frac.startswith("attn=0.21" if alloc == "typed_v2" else "attn=0.45"), alloc
     a = base.parse_args(argparse.ArgumentParser(allow_abbrev=False),
                         ["--opt", "adana-slq", "--slq_alloc", "waterfill_v2", "--slq_aitken", "--slq_reject_gap", "0.3"],
                         argparse.Namespace())
@@ -234,6 +235,44 @@ def test_typed_allocation():
         full = np.all(o.ratio[m][pos] >= o.cap - 1e-12)
         assert share <= pi + 1e-9 and (abs(share - pi) < 1e-6 or full or pi == 0), (g, share, pi)
     assert o.ratio[o.agroup == "tiny"].max() == 0.0
+
+
+def test_typed_v2_allocation():
+    """Fixed group fractions spread over depth; tiny tensors at the cap; no zeroing when G_T <= 0."""
+    blk = ["attn.c_attn", "attn.c_proj", "mlp.c_fc", "mlp.c_proj", "ln_1"]
+    names = ["transformer.wte.weight"] + [f"transformer.h.{l}.{b}.weight" for l in range(3) for b in blk] + \
+            ["transformer.ln_f.weight", "lm_head.weight"]
+    params = [nn.Parameter(torch.zeros(3)) for _ in names]
+    o = ADanaSLQ([{"params": params, "param_names": names}], lr=0.1, s=0.25, alloc="typed_v2", batch_seqs=64,
+                 depth_ratio=0.5)
+    L = len(names)
+    g2 = list(o.agroup2)
+    assert g2[0] == "wte" and g2[-1] == "lm_head" and g2[-2] == "tiny" and g2[1:6] == ["attn", "attn", "mlp", "mlp", "tiny"]
+    assert np.allclose(o.hdepth[1:16:5], [1.0, 0.75, 0.5])
+    rng = np.random.default_rng(2)
+    scale = np.array([50.0] + [30, 10, 40, 40, 0.1] * 3 + [0.1, 90.0])
+    wT = np.abs(rng.normal(size=(10, L))) * scale
+    o.q = dict(nodes=rng.uniform(1, 50, 10), w=wT.sum(1), wT=wT, trF=1.0, lam_max=50.0)
+    o.teff = 1.0
+    o.n_split = 1; o.eX = np.ones(L); o.eD = np.ones(L); o.eDz = np.full(L, 1e3)
+    o.mz2 = np.full(L, 1e-12)                                            # G_T < 0 everywhere: must not matter
+    o._compute_ratio(0.01)
+    assert np.all(o.G < 0) and np.all(o.ratio[o.agroup2 != "tiny"] > 0)
+    assert np.all(o.ratio[o.agroup2 == "tiny"] == o.cap)
+    NTc = np.maximum(o.NT, 1e-2)
+    tinyN = NTc[o.agroup2 == "tiny"].sum()
+    assert abs(float(o.ratio @ NTc) - o.S) < 1e-6 * o.S                   # whole budget spent
+    if o.ratio[o.agroup2 != "tiny"].max() < 1.0:                           # uncapped: exact group fractions
+        for g, pi in o.type_frac.items():
+            m = o.agroup2 == g
+            assert abs(float(o.ratio[m] @ NTc[m]) - pi * (o.S - tinyN)) < 1e-6 * o.S, g
+        r = o.ratio
+        assert np.allclose(r[[3, 8, 13]] / r[3], [1.0, 0.75, 0.5])          # mlp.c_fc across depth
+        assert np.isclose(r[1], r[3] * (o.type_frac["attn"] / o.type_frac["mlp"])
+                          * np.sum(o.hdepth[o.agroup2 == "mlp"] * NTc[o.agroup2 == "mlp"])
+                          / np.sum(o.hdepth[o.agroup2 == "attn"] * NTc[o.agroup2 == "attn"]))
+    else:
+        raise AssertionError("test budget should not saturate any tensor")
 
 
 def test_independent_allocation():
