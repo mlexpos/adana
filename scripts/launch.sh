@@ -228,6 +228,12 @@ case "$OPT" in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt adana-slq --delta $DELTA --clipsnr $CLIPSNR --wd_decaying --wd_ts $WD_TS"
         ;;
+    soap-dana-slq)
+        # SOAP's preconditioner (--beta2, --shampoo_beta, --precondition_frequency, --max_precond_dim as for soap) with the
+        # SLQ-budgeted DANA momentum in LaProp order and ADana's log-time WD. Pass --slq_* flags through.
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        OPT_FLAGS="--opt soap-dana-slq --delta $DELTA --wd_decaying --wd_ts $WD_TS"
+        ;;
     adamw)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         OPT_FLAGS="--opt adamw --beta1 0.9 --beta2 0.999"

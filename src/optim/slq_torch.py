@@ -32,12 +32,28 @@ def _axpy_(y, a, x):                       # y <- y + a x (in place)
         yy.add_(xx, alpha=a)
 
 
+def _apply_r(r, u):
+    """r u leafwise: a tensor entry multiplies (diagonal preconditioner), a callable entry is applied (e.g. a rotated
+    diagonal Q_L [(Q_L^T U Q_R) d] Q_R^T for SOAP's basis)."""
+    return [ri(ui) if callable(ri) else ui * ri for ui, ri in zip(u, r)]
+
+
+def _block_dots(a, b, splits):
+    """<a_T, b_T> per block: tensor i contributes splits[i] equal chunks along dim 0 (e.g. q, k, v of a fused QKV)."""
+    out = []
+    for x, y, k in zip(a, b, splits):
+        xy = x.double() * y.double()
+        out.extend([float(xy.sum())] if k == 1 else xy.reshape(k, -1).sum(1).tolist())
+    return out
+
+
 # ------------------------------------------------------------------ Gauss-Newton operator
 class GaussNewtonOperator:
     """u (list of tensors shaped like params) -> r * GN(r * u), GN of the mean-over-tokens CE on a fixed batch.
 
     model: the raw (unwrapped, uncompiled) module; its forward(idx, targets, get_logits=True) returns dict(logits=...).
-    names/params: the trainable parameters, in the optimizer's order.  r: list of tensors (or None for identity).
+    names/params: the trainable parameters, in the optimizer's order.  r: list of tensors (elementwise) or callables
+    (a symmetric linear map per tensor), or None for identity.
     Distributed: each rank uses its own batch; products are averaged across ranks (identical Lanczos on all ranks).
     """
 
@@ -129,7 +145,7 @@ class GaussNewtonOperator:
         return out
 
     def __call__(self, u):
-        d = [ui * ri for ui, ri in zip(u, self.r)] if self.r is not None else u
+        d = _apply_r(self.r, u) if self.r is not None else u
         if self.mode == "jvp":
             out = self._call_jvp(d)
             if self.world > 1:
@@ -139,7 +155,7 @@ class GaussNewtonOperator:
                 k = 0
                 for o in out:
                     n = o.numel(); o.copy_(flat[k:k + n].view_as(o)); k += n
-            return [o * ri for o, ri in zip(out, self.r)] if self.r is not None else out
+            return _apply_r(self.r, out) if self.r is not None else out
         dn = math.sqrt(float(_dot(d, d)))
         out = [torch.zeros_like(p) for p in self.params]
         if dn == 0.0:
@@ -170,7 +186,7 @@ class GaussNewtonOperator:
             for o in out:
                 n = o.numel(); o.copy_(flat[k:k + n].view_as(o)); k += n
         if self.r is not None:
-            out = [o * ri for o, ri in zip(out, self.r)]
+            out = _apply_r(self.r, out)
         return out
 
 
@@ -214,15 +230,17 @@ def fsum(th, w, g, D):
 
 # ------------------------------------------------------------------ Lanczos driver
 @torch.no_grad()
-def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None):
+def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None, splits=None):
     """Run `probes` Lanczos recurrences (no reorthogonalization; Gauss quadrature of a smooth f is robust to it) of up to
     m_max steps on `op` (list-of-tensors -> list-of-tensors, symmetric PSD).  Stops a probe early when the Gauss / Gauss-
     Radau bracket on N(D) for every D in D_check is within relative eps.  For f(x) = g x / (g x + D) the Gauss rule is an
     upper bound on z^T f(H) z at EVERY m (all even derivatives of f are negative) and Gauss-Radau with a node at 0 is a
     lower bound, so a recurrence stopped at m_max still returns a certified (conservative) N.  Returns dict with nodes
     (P, m), weights (P, m), block weights (P, m, L) (per-probe arrays padded with zero weight), m used per probe, the final
-    bracket gap, and the bracket itself: N_hi (Gauss) and N_lo (Radau), each (P, len(D_check))."""
-    L = len(like)
+    bracket gap, and the bracket itself: N_hi (Gauss) and N_lo (Radau), each (P, len(D_check)).
+    splits: optional number of equal dim-0 chunks per tensor; the block weights are then per chunk (L = sum(splits))."""
+    splits = [1] * len(like) if splits is None else [int(k) for k in splits]
+    L = sum(splits)
     D_check = [] if D_check is None else list(D_check)
     out_th, out_w, out_wT, used, gaps, hists, corrs, convs = [], [], [], [], [], [], [], []
     n_hi, n_lo = [], []
@@ -239,7 +257,7 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
         hist = []
         converged = not D_check
         for j in range(m_max):
-            C[j] = [float((a.double() * c.double()).sum()) for a, c in zip(z, v)]
+            C[j] = _block_dots(z, v, splits)
             w = op(v)
             if bprev > 0:
                 _axpy_(w, -bprev, vp)

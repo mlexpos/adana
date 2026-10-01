@@ -568,7 +568,7 @@ def log_optimizer_schedules(optimizer, optimizer_name):
             if one_minus_beta3_values:
                 logs["optimizer/one_minus_beta3_schedule"] = sum(one_minus_beta3_values) / len(one_minus_beta3_values)
     
-    elif optimizer_name == "adana-slq":
+    elif optimizer_name in ("adana-slq", "soap-dana-slq"):
         logs.update(optimizer.diagnostics())
 
     elif optimizer_name in ["adana", "dana-mk4", "dana-star", "dana-star-mk4"]:

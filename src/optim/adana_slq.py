@@ -114,11 +114,7 @@ class ADanaSLQ(ADana):
             names = g.get("param_names", [None] * len(g["params"]))
             for p, n in zip(g["params"], names):
                 self.plist.append(p); self.pnames.append(n if n is not None else f"param{len(self.pnames)}")
-        L = len(self.plist)
         self.pidx = {id(p): i for i, p in enumerate(self.plist)}
-        types = [_tensor_type(n) for n in self.pnames]
-        self.ttype = [t for t, _ in types]
-        self.tlayer = [l for _, l in types]
         # typed allocation: fixed budget fractions per tensor type (normalized over the listed types)
         if type_frac is None:
             type_frac = TYPE_FRAC_V2 if alloc == "typed_v2" else TYPE_FRAC_V1
@@ -127,22 +123,33 @@ class ADanaSLQ(ADana):
             raise ValueError(f"typed_v2 fractions take keys attn, mlp, lm_head, wte (tiny is at the cap): {type_frac}")
         tot = sum(fr.values())
         self.type_frac = {k: v / tot for k, v in fr.items()} if tot > 0 else {}
-        self.agroup = np.array([_alloc_group(n) for n in self.pnames])
-        self.agroup2 = np.array([_alloc_group2(n) for n in self.pnames])
         self.depth_ratio = float(depth_ratio)
-        nl = max(self.tlayer) + 1
-        self.hdepth = np.array([1.0 - (1.0 - self.depth_ratio) * l / max(nl - 1, 1) if l >= 0 else 1.0
-                                for l in self.tlayer])
+        self._setup_blocks(self.pnames)
         self.t = 0                                  # completed optimizer steps
         self.next_refresh = max(1, int(first_refresh))
         self.q = None                               # quadrature: nodes (K,), w (K,), wT (K, L), trF, lam_max
-        self.eX = np.zeros(L); self.eD = np.zeros(L); self.eDz = np.zeros(L); self.n_split = 0
-        self.mz2 = np.zeros(L)                      # |m_T|^2 in z coordinates (last step)
-        self.ratio = np.zeros(L); self.A = np.zeros(L); self.afrac = np.ones(L)
-        self.NT = np.zeros(L); self.N = 0.0; self.S = 0.0; self.mu = 1.0; self.bnr = float("nan"); self.Delta = 1.0
-        self.G = np.zeros(L); self.spent = 0.0
+        self.N = 0.0; self.S = 0.0; self.mu = 1.0; self.bnr = float("nan"); self.Delta = 1.0
+        self.n_split = 0; self.spent = 0.0
         self.n_refresh = 0; self.refresh_seconds = 0.0; self.last_refresh = {}
         self.history = []
+
+    def _setup_blocks(self, bnames):
+        """Per-block bookkeeping for the budget.  A block is one parameter tensor here; subclasses may split a tensor
+        into several blocks (bnames then names the blocks, in the order of slq's block weights)."""
+        L = len(bnames)
+        self.bnames = list(bnames)
+        types = [_tensor_type(n) for n in self.bnames]
+        self.ttype = [t for t, _ in types]
+        self.tlayer = [l for _, l in types]
+        self.agroup = np.array([_alloc_group(n) for n in self.bnames])
+        self.agroup2 = np.array([_alloc_group2(n) for n in self.bnames])
+        nl = max(self.tlayer) + 1
+        self.hdepth = np.array([1.0 - (1.0 - self.depth_ratio) * l / max(nl - 1, 1) if l >= 0 else 1.0
+                                for l in self.tlayer])
+        self.eX = np.zeros(L); self.eD = np.zeros(L); self.eDz = np.zeros(L)
+        self.mz2 = np.zeros(L)                      # |m_T|^2 in z coordinates (last step)
+        self.ratio = np.zeros(L); self.A = np.zeros(L); self.afrac = np.ones(L)
+        self.NT = np.zeros(L); self.G = np.zeros(L)
 
     # ---------------------------------------------------------------- compiled update (ADana with alpha -> A_T)
     @staticmethod
@@ -171,7 +178,7 @@ class ADanaSLQ(ADana):
 
     # ---------------------------------------------------------------- the rule
     def _compute_ratio(self, D):
-        L = len(self.plist)
+        L = len(self.bnames)
         self.Delta = D
         if self.q is None:
             self.ratio[:] = 0.0; self.A[:] = 0.0; self.afrac[:] = 1.0
@@ -290,6 +297,10 @@ class ADanaSLQ(ADana):
                 dz[i] = float((d * d / (torch.sqrt(st["v"]) + self.epsilon)).sum())
             else:
                 dz[i] = dg[i]
+        self._accumulate_split(xg, dg, dz)
+
+    def _accumulate_split(self, xg, dg, dz):
+        """Running means of the per-block split-half statistics <g1, g2>, |g1 - g2|^2 and |g1 - g2|_{P^{-1}}^2."""
         rho = min(1.0, 3.0 / (self.t + 1.0))                  # window ~ t/3
         if self.n_split == 0:
             self.eX, self.eD, self.eDz = xg, dg, dz
@@ -311,19 +322,15 @@ class ADanaSLQ(ADana):
             self.gen = torch.Generator(device=x.device); self.gen.manual_seed(1234)
         names_by_id = {id(p): n for n, p in model.named_parameters()}
         names = [names_by_id[id(p)] for p in self.plist]
-        r = []
-        for p in self.plist:
-            st = self.state.get(p, {})
-            r.append((torch.sqrt(st["v"]) + self.epsilon).rsqrt() if "v" in st else torch.ones_like(p))
         xb, yb = x[: self.slq_batch], y[: self.slq_batch]
         was_training = model.training
         model.eval()
-        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=r, mode=self.gn_mode, chunk=self.gn_chunk,
-                                 cache=self.gn_cache)
+        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=self._slq_r(), mode=self.gn_mode,
+                                 chunk=self.gn_chunk, cache=self.gn_cache)
         D_now = self.delta / (self.delta + self.t + 1)
         D_next = self.delta / (self.delta + self._next_after(self.t) + 1)
         res = slq(op, self.plist, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr,
-                  D_check=[D_now, D_next], generator=self.gen)
+                  D_check=[D_now, D_next], generator=self.gen, splits=self._slq_splits())
         K = res["nodes"].size
         nodes = res["nodes"].reshape(K)
         w = res["weights"].reshape(K)
@@ -363,6 +370,17 @@ class ADanaSLQ(ADana):
         self._compute_ratio(self.delta / (self.delta + self.t + 1))
         if self.q is not None:
             self._save_diag()
+
+    def _slq_r(self):
+        """r = P^{-1/2} per tensor (the z coordinates of the quadrature): Adam's diagonal (sqrt(v) + eps)^{-1/2}."""
+        r = []
+        for p in self.plist:
+            st = self.state.get(p, {})
+            r.append((torch.sqrt(st["v"]) + self.epsilon).rsqrt() if "v" in st else torch.ones_like(p))
+        return r
+
+    def _slq_splits(self):
+        return None                                 # one block per tensor
 
     def _next_after(self, t):
         return max(t + 1, min(int(math.ceil(t * self.refresh_ratio)), t + self.max_gap))
@@ -457,7 +475,7 @@ class ADanaSLQ(ADana):
                                  afrac=self.afrac.copy(), G=self.G.copy(), N=self.N, S=self.S, spent=self.spent, mu=self.mu, bnr=self.bnr,
                                  teff=self.teff, nodes=self.q["nodes"].copy(), w=self.q["w"].copy(),
                                  lam_max=self.q["lam_max"], **{k: v for k, v in self.last_refresh.items() if k not in ("t", "lam_max")}))
-        out = {"names": np.array(self.pnames)}
+        out = {"names": np.array(self.bnames)}
         for k in self.history[0]:
             vals = [h[k] for h in self.history]
             try:

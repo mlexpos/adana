@@ -123,6 +123,7 @@ def parse_args(base_parser, args, namespace):
             "adana",
             "dana-mk4",
             "adana-slq",
+            "soap-dana-slq",
             # Dana-Star family (with tau)
             "dana-star",
             "dana-star-mk4",
@@ -267,6 +268,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_chunk", default=2, type=int, help="sequences per Gauss-Newton product chunk")
     parser.add_argument("--slq_no_cache", default=False, action="store_true",
                         help="recompute the reverse pass per product instead of caching it (less memory, ~30%% slower)")
+    parser.add_argument("--soap_fused_qkv", default=False, action="store_true",
+                        help="soap-dana-slq: precondition the fused QKV matrix as one block (default: q, k, v split)")
     parser.add_argument("--slq_clipsnr", default=False, action="store_true",
                         help="also apply the Dana-MK4 per-element SNR clip (uses --clipsnr)")
     parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])

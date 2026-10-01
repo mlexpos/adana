@@ -31,6 +31,7 @@ from optim.soap import SOAP
 from optim.sophia import SophiaG
 from optim.adana import ADana
 from optim.adana_slq import ADanaSLQ
+from optim.soap_dana_slq import SOAPDanaSLQ
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.adamw_decaying_wd import AdamWDecayingWD
 from optim.ademamix_decaying_wd import AdEMAMix_DecayingWD
@@ -74,6 +75,19 @@ def get_args():
 
 def build_optimizer(args, model, group_specs):
     """Build optimizer from args using a registry pattern."""
+    def slq_kw():
+        """Budget / estimator options shared by the SLQ optimizers (adana-slq, soap-dana-slq)."""
+        return dict(
+            s=args.slq_s, kprime=args.slq_kprime, cap=args.slq_cap, alloc=args.slq_alloc,
+            m_max=args.slq_m, probes=args.slq_probes, slq_batch=args.slq_batch, slq_eps=args.slq_eps,
+            refresh_ratio=args.slq_refresh_ratio,
+            max_gap=(args.slq_max_gap if args.slq_max_gap > 0 else max(50, args.iterations // 8)),
+            first_refresh=args.slq_first_refresh, aitken=args.slq_aitken,
+            gn_chunk=args.slq_chunk, gn_cache=not args.slq_no_cache, type_frac=args.slq_type_frac,
+            reject_gap=args.slq_reject_gap, depth_ratio=args.slq_depth_ratio,
+            teff=args.slq_teff, gn_mode=args.slq_gn, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
+        )
+
     def _adamw():
         device_type = "cuda" if "cuda" in args.device else "cpu"
         # Fused Adam can't handle mixed-mesh DTensors from TP+FSDP composition.
@@ -231,15 +245,14 @@ def build_optimizer(args, model, group_specs):
         "adana-slq": lambda: ADanaSLQ(
             group_specs, lr=args.lr, delta=args.delta,
             weight_decay=args.weight_decay, clipsnr=(args.clipsnr if args.slq_clipsnr else None),
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, **slq_kw(),
+        ),
+        # SOAP's preconditioner with the SLQ-budgeted DANA momentum in LaProp order (see src/optim/soap_dana_slq.py)
+        "soap-dana-slq": lambda: SOAPDanaSLQ(
+            group_specs, lr=args.lr, delta=args.delta, weight_decay=args.weight_decay,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
-            s=args.slq_s, kprime=args.slq_kprime, cap=args.slq_cap, alloc=args.slq_alloc,
-            m_max=args.slq_m, probes=args.slq_probes, slq_batch=args.slq_batch, slq_eps=args.slq_eps,
-            refresh_ratio=args.slq_refresh_ratio,
-            max_gap=(args.slq_max_gap if args.slq_max_gap > 0 else max(50, args.iterations // 8)),
-            first_refresh=args.slq_first_refresh, aitken=args.slq_aitken,
-            gn_chunk=args.slq_chunk, gn_cache=not args.slq_no_cache, type_frac=args.slq_type_frac,
-            reject_gap=args.slq_reject_gap, depth_ratio=args.slq_depth_ratio,
-            teff=args.slq_teff, gn_mode=args.slq_gn, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
+            beta2=args.beta2, shampoo_beta=args.shampoo_beta, precondition_frequency=args.precondition_frequency,
+            max_precond_dim=args.max_precond_dim, split_qkv=not args.soap_fused_qkv, **slq_kw(),
         ),
         # Dana-Star family (with tau buffer)
         "dana-star": lambda: DANA_STAR_MK4(
