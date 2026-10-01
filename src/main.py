@@ -32,6 +32,7 @@ from optim.sophia import SophiaG
 from optim.adana import ADana
 from optim.adana_slq import ADanaSLQ
 from optim.soap_dana_slq import SOAPDanaSLQ
+from optim.muon_dana_slq import MuonDanaSLQ
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.adamw_decaying_wd import AdamWDecayingWD
 from optim.ademamix_decaying_wd import AdEMAMix_DecayingWD
@@ -86,6 +87,7 @@ def build_optimizer(args, model, group_specs):
             gn_chunk=args.slq_chunk, gn_cache=not args.slq_no_cache, type_frac=args.slq_type_frac,
             reject_gap=args.slq_reject_gap, depth_ratio=args.slq_depth_ratio,
             teff=args.slq_teff, gn_mode=args.slq_gn, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
+            slq_tf32=args.slq_tf32,
         )
 
     def _adamw():
@@ -246,6 +248,13 @@ def build_optimizer(args, model, group_specs):
             group_specs, lr=args.lr, delta=args.delta,
             weight_decay=args.weight_decay, clipsnr=(args.clipsnr if args.slq_clipsnr else None),
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, **slq_kw(),
+        ),
+        # momentum-free Muon (d-muon's update) as the stochastic gradient, with SLQ-budgeted DANA momentum on top
+        # (see src/optim/muon_dana_slq.py)
+        "muon-dana-slq": lambda: MuonDanaSLQ(
+            group_specs, lr=args.lr, delta=args.delta, weight_decay=args.weight_decay,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, beta2=args.beta2, ns_steps=args.muon_ns_steps,
+            matched_rms=args.matched_adamw_rms, polar_floor=args.slq_polar_floor, **slq_kw(),
         ),
         # SOAP's preconditioner with the SLQ-budgeted DANA momentum in LaProp order (see src/optim/soap_dana_slq.py)
         "soap-dana-slq": lambda: SOAPDanaSLQ(

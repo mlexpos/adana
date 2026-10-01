@@ -124,6 +124,7 @@ def parse_args(base_parser, args, namespace):
             "dana-mk4",
             "adana-slq",
             "soap-dana-slq",
+            "muon-dana-slq",
             # Dana-Star family (with tau)
             "dana-star",
             "dana-star-mk4",
@@ -268,6 +269,11 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_chunk", default=2, type=int, help="sequences per Gauss-Newton product chunk")
     parser.add_argument("--slq_no_cache", default=False, action="store_true",
                         help="recompute the reverse pass per product instead of caching it (less memory, ~30%% slower)")
+    parser.add_argument("--slq_tf32", default=False, action="store_true",
+                        help="run the SLQ refresh with TF32 matmuls (behaviour before 2026-10-01; breaks the quadrature "
+                             "for non-diagonal preconditioners)")
+    parser.add_argument("--slq_polar_floor", default=2e-3, type=float,
+                        help="muon-dana-slq: singular-value floor / |G|_F in the polar derivative of the SLQ operator")
     parser.add_argument("--soap_fused_qkv", default=False, action="store_true",
                         help="soap-dana-slq: precondition the fused QKV matrix as one block (default: q, k, v split)")
     parser.add_argument("--slq_clipsnr", default=False, action="store_true",

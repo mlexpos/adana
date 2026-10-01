@@ -234,6 +234,21 @@ def test_refresh_and_train_smoke():
     assert all(np.isfinite(v) for v in o.mz2) and (o.mz2 > 0).all()
 
 
+
+def test_refresh_runs_without_tf32():
+    """The quadrature runs with TF32 matmuls off (unless slq_tf32) and the global setting is restored afterwards."""
+    model, names, params = _model()
+    seen = {}
+    for flag in (False, True):
+        o = SOAPDanaSLQ([{"params": params, "param_names": names}], lr=0.02, slq_tf32=flag)
+        o._refresh = lambda *a, o=o, flag=flag: seen.__setitem__(flag, torch.backends.cuda.matmul.allow_tf32)
+        old = torch.backends.cuda.matmul.allow_tf32
+        torch.backends.cuda.matmul.allow_tf32 = True
+        o.refresh(model, None, None)
+        assert torch.backends.cuda.matmul.allow_tf32 is True
+        torch.backends.cuda.matmul.allow_tf32 = old
+    assert seen == {False: False, True: True}
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

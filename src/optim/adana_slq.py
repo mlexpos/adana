@@ -89,7 +89,7 @@ class ADanaSLQ(ADana):
                  wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=128, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
                  gn_mode="jvp", first_refresh=4, aitken=None, gn_chunk=2, gn_cache=True,
-                 type_frac=None, reject_gap=None, depth_ratio=0.6):
+                 type_frac=None, reject_gap=None, depth_ratio=0.6, slq_tf32=False):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -98,6 +98,7 @@ class ADanaSLQ(ADana):
         self.teff_mode = teff
         self.gn_mode = gn_mode
         self.gn_chunk, self.gn_cache = int(gn_chunk), bool(gn_cache)
+        self.slq_tf32 = bool(slq_tf32)
         v2 = alloc in ("waterfill_v2", "typed_v2")
         self.aitken = (not v2) if aitken is None else bool(aitken)
         self.reject_gap = (-1.0 if v2 else 0.5) if reject_gap is None else float(reject_gap)
@@ -315,7 +316,18 @@ class ADanaSLQ(ADana):
 
     @torch.no_grad()
     def refresh(self, model, x, y):
-        """Refresh the quadrature (and T_eff) on the first `slq_batch` sequences of (x, y), using the raw module."""
+        """Refresh the quadrature (and T_eff) on the first `slq_batch` sequences of (x, y), using the raw module.
+        Matmuls run in full fp32 (TF32 off) unless slq_tf32: TF32 rounding in a non-diagonal R (rotations around a
+        wide-range diagonal) perturbs R GN R by ~1e-3 lam_max, far above the threshold Delta/gamma, and breaks the
+        quadrature (Enoki SOAP-DANA: N 2.8x too high, Gauss/Radau bracket open)."""
+        prev = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
+        torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = self.slq_tf32
+        try:
+            self._refresh(model, x, y)
+        finally:
+            torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = prev
+
+    def _refresh(self, model, x, y):
         t0 = time.time()
         if self.gen is None:
             # same probes on every rank (the Lanczos is replicated; products are averaged across ranks)

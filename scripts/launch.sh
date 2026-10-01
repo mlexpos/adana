@@ -234,6 +234,12 @@ case "$OPT" in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt soap-dana-slq --delta $DELTA --wd_decaying --wd_ts $WD_TS"
         ;;
+    muon-dana-slq)
+        # momentum-free Muon (d-muon's update; AdamW-without-beta1 elsewhere) + SLQ-budgeted DANA momentum, ADana's
+        # log-time WD. Pass --slq_* flags through (allocation: global, typed_v2 or independent).
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        OPT_FLAGS="--opt muon-dana-slq --delta $DELTA --beta2 0.999 --muon_ns_steps 5 --wd_decaying --wd_ts $WD_TS"
+        ;;
     adamw)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         OPT_FLAGS="--opt adamw --beta1 0.9 --beta2 0.999"
