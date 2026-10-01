@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+# generated data, caches and run outputs (kept in Dropbox, not in git)
+cache/
+results/
+results_*/
+report/adana_slq/data/
+# LaTeX build artifacts
+*.aux
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.toc
+*.synctex.gz
+# report and plots: not tracked for now
+report/
+plots/
