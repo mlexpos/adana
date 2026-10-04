@@ -137,7 +137,7 @@ def _mean_across_ranks_(t):
 class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
-                 polar="ns", polar_floor=2e-3, log_dir=None):
+                 polar="ns", polar_floor=2e-3, store="fp32", log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -146,6 +146,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
         if polar not in ("ns", "svd"):
             raise ValueError(f"muon-dana-f2g: polar must be 'ns' or 'svd', got {polar}")
         self.polar, self.polar_floor = polar, float(polar_floor)
+        if store not in ("fp32", "bf16"):
+            raise ValueError(f"muon-dana-f2g: store must be 'fp32' or 'bf16', got {store}")
+        self.store = store                          # dtype of the captured layer vectors (products always in fp32/fp64)
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.plist, self.pnames = [], []
         for g in self.param_groups:
@@ -268,7 +271,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
                 for hd in handles:
                     hd.remove()
             for j, gj in zip(js, gr):
-                dt_ = torch.float64 if gj.dtype == torch.float64 else torch.float32
+                dt_ = torch.bfloat16 if self.store == "bf16" else (torch.float64 if gj.dtype == torch.float64 else torch.float32)
                 Xs[j].append(cap[j][0].reshape(-1, cap[j][0].shape[-1]).to(dt_))
                 Bs[j].append(gj.reshape(-1, gj.shape[-1]).to(dt_))
             b, T = yc.shape
@@ -307,22 +310,27 @@ class MuonDanaF2G(torch.optim.Optimizer):
             st = self._fstate(p)
             if X[j] is None:
                 continue
-            u = st["u_prev"].to(X[j].dtype)
-            Hu = h_seq(X[j], B[j], seq, nseq, u, ntok)
-            G = p.grad.to(X[j].dtype)
+            Xj = X[j].float() if X[j].dtype == torch.bfloat16 else X[j]
+            Bj = B[j].float() if B[j].dtype == torch.bfloat16 else B[j]
+            X[j] = B[j] = None                              # free the stored copy as we go
+            u = st["u_prev"].to(Xj.dtype)
+            Hu = h_seq(Xj, Bj, seq, nseq, u, ntok)
+            G = p.grad.to(Xj.dtype)
             if self.polar == "ns":
                 DH = dns(G, Hu, self.ns_steps)
             else:
                 DH = _polar_pow(_polar_factors(G, self.polar_floor), Hu, 1.0)
             Ns[j] = float((u * DH.to(u.dtype)).sum())
             if do_L:
-                op = lambda V, j=j: _mean_across_ranks_(h_tok(X[j], B[j], V, ntok))
+                op = lambda V, Xj=Xj, Bj=Bj: _mean_across_ranks_(h_tok(Xj, Bj, V, ntok))
                 th, tau, m = lanczos(op, u, self.k)
                 lanc.append(m)
                 st["f2g_w"].zero_(); st["f2g_tau"].zero_()
                 st["f2g_w"][:len(th)] = torch.from_numpy(np.maximum(th, 0.0))
                 st["f2g_tau"][:len(tau)] = torch.from_numpy(tau)
                 st["f2g"][3] = float(np.sum(tau * np.sqrt(np.maximum(th, 0.0))))
+                del op
+            del Xj, Bj, Hu, DH
         Ns = _mean_across_ranks_(Ns.to(x.device)).cpu() if _world() > 1 else Ns
         rho = max(1.0 - (1.0 - D) ** self.R, 1.0 / (g0["f2g_n"] + 1))
         for j, i in enumerate(self.fidx):

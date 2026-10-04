@@ -169,6 +169,20 @@ def test_smoke_with_refreshes_and_state_dict():
         assert losses[-1] < losses[0]
 
 
+def test_bf16_store_matches_fp32():
+    """Numerator and Lanczos nodes with bf16-stored layer vectors agree with full precision to bf16 accuracy."""
+    out = {}
+    for store in ("fp32", "bf16"):
+        model, names, params = _model()
+        o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, store=store)
+        torch.manual_seed(3)
+        _train(o, model, params, 5, seed=1)                      # one refresh at t = 5
+        out[store] = (o.last_N.copy(), np.stack([o.state[o.plist[i]]["f2g_w"].numpy() for i in o.fidx]))
+    (N32, w32), (N16, w16) = out["fp32"], out["bf16"]
+    assert np.allclose(N16, N32, rtol=3e-2), (N16, N32)
+    assert np.allclose(w16[:, -1], w32[:, -1], rtol=3e-2)       # largest node
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
