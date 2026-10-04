@@ -367,6 +367,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c)
         ready = tn >= self.warm and g0["f2g_n"] > 0 and g0["f2g_nL"] > 0
         self.E, self.K0, self.a0 = E, K0, a0
+        r = np.where((Nb > 0) & (S > 0), r, 0.0)                 # no positive numerator yet: no floor known, no momentum
         return r if ready else np.zeros(L)
 
     @torch.no_grad()
