@@ -137,7 +137,7 @@ def _mean_across_ranks_(t):
 class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
-                 polar="ns", polar_floor=2e-3, store="fp32", log_dir=None):
+                 polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -149,6 +149,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         if store not in ("fp32", "bf16"):
             raise ValueError(f"muon-dana-f2g: store must be 'fp32' or 'bf16', got {store}")
         self.store = store                          # dtype of the captured layer vectors (products always in fp32/fp64)
+        self.hmult = float(hidden_lr_mult)          # hidden-matrix step = lr * hmult * c_p (...); AdamW and weight decay use lr
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.plist, self.pnames = [], []
         for g in self.param_groups:
@@ -370,7 +371,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         tn = self.t + 1
         rho = max(D, 1.0 / tn)
         E = xb - self.nse * np.sqrt(np.maximum(Vb, 0.0) * rho / (2.0 - rho))
-        eps = np.array([self._lr_of(self.plist[i])[0] * self._scale(self.plist[i]) for i in self.fidx])
+        eps = np.array([self._lr_of(self.plist[i])[0] * self.hmult * self._scale(self.plist[i]) for i in self.fidx])
         a0 = np.where(S > 0, np.maximum(Nb, 0.0) / np.maximum(S, 1e-300), 0.0)
         r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c)
         ready = tn >= self.warm and g0["f2g_n"] > 0 and g0["f2g_nL"] > 0
@@ -407,7 +408,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     st["u_prev"] = (u.clone() if u.dtype == torch.float64 else u.float().clone())
                     st["m"].mul_(1 - D).add_(u, alpha=D)
                     p.mul_(1 - lr * wd)
-                    p.add_(u.add_(st["m"], alpha=rmap.get(i, 0.0) / D), alpha=-lr * self._scale(p))
+                    p.add_(u.add_(st["m"], alpha=rmap.get(i, 0.0) / D), alpha=-lr * self.hmult * self._scale(p))
                 else:
                     if "adamw_exp_avg" not in st:
                         st["adamw_exp_avg"] = torch.zeros_like(g)

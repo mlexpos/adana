@@ -288,6 +288,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--f2g_warm", default=50, type=int, help="muon-dana-f2g: r = 0 before this step")
     parser.add_argument("--f2g_store", default="fp32", choices=["fp32", "bf16"],
                         help="muon-dana-f2g: dtype of the captured layer vectors (bf16 halves the refresh memory)")
+    parser.add_argument("--f2g_hidden_lr_mult", default=1.0, type=float,
+                        help="muon-dana-f2g: multiplier on the hidden-matrix step (AdamW params and weight decay keep --lr)")
     parser.add_argument("--f2g_polar", default="ns", choices=["ns", "svd"],
                         help="muon-dana-f2g: derivative of the Newton-Schulz map (ns) or of the exact polar factor (svd)")
     parser.add_argument("--slq_clipsnr", default=False, action="store_true",

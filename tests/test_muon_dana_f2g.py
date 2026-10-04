@@ -134,6 +134,21 @@ def test_zero_r_is_momentum_free_muon_and_dmuon_adamw():
     assert sum(o.use_muon) == 2                                   # c_attn and c_fc (wte / lm_head excluded)
 
 
+def test_hidden_lr_mult_scales_only_the_hidden_step():
+    res = {}
+    for mult in (1.0, 0.25):
+        model, names, params = _model()
+        o = _opt(params, names, warm=10 ** 9, hidden_lr_mult=mult)
+        x, y = _batch()
+        before = [p.detach().clone() for p in params]
+        model(x, targets=y)["loss"].backward()
+        o.step()
+        res[mult] = [(p.detach() - b0 * (1 - 0.05 * 0.01)) for p, b0 in zip(params, before)]   # step net of weight decay
+    for i in range(len(params)):
+        scale = 0.25 if o.use_muon[i] else 1.0
+        assert torch.allclose(res[0.25][i], scale * res[1.0][i], atol=1e-12), names[i]
+
+
 def _train(o, model, params, steps, seed=1):
     torch.manual_seed(seed)
     losses = []
