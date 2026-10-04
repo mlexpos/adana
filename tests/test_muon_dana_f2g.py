@@ -149,6 +149,15 @@ def test_hidden_lr_mult_scales_only_the_hidden_step():
         assert torch.allclose(res[0.25][i], scale * res[1.0][i], atol=1e-12), names[i]
 
 
+def test_fixed_schedule_control():
+    model, names, params = _model()
+    o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, fixed=(0.5, 1.0))
+    _train(o, model, params, 12)
+    assert np.allclose(o.r, 0.5 / (1 + 12 / 8.0))                # applied: the fixed schedule at t = 12
+    assert o.r_rule is not None and np.all((o.r_rule >= 0) & (o.r_rule <= 1))   # the rule ran in shadow
+    assert "f2g/r_rule_shadow_mean" in o.diagnostics()
+
+
 def _train(o, model, params, steps, seed=1):
     torch.manual_seed(seed)
     losses = []

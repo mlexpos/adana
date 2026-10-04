@@ -137,7 +137,7 @@ def _mean_across_ranks_(t):
 class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
-                 polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, log_dir=None):
+                 polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -150,6 +150,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
             raise ValueError(f"muon-dana-f2g: store must be 'fp32' or 'bf16', got {store}")
         self.store = store                          # dtype of the captured layer vectors (products always in fp32/fp64)
         self.hmult = float(hidden_lr_mult)          # hidden-matrix step = lr * hmult * c_p (...); AdamW and weight decay use lr
+        # fixed schedule control: r_t = min(1, c0 (1 + t/delta)^-kappa) from the first step; the rule still runs (shadow)
+        self.fixed = None if fixed is None else (float(fixed[0]), float(fixed[1]))
+        self.r_rule = None
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.plist, self.pnames = [], []
         for g in self.param_groups:
@@ -389,6 +392,10 @@ class MuonDanaF2G(torch.optim.Optimizer):
         tn = self.t + 1
         D = self.delta / (self.delta + tn)
         self.r = self._rule(D)
+        if self.fixed is not None:
+            c0, kap = self.fixed
+            self.r_rule = self.r
+            self.r = np.full(len(self.fidx), min(1.0, c0 * (1.0 + tn / self.delta) ** (-kap)))
         rmap = {self.fidx[j]: float(self.r[j]) for j in range(len(self.fidx))}
         for group in self.param_groups:
             group["step"] = group.get("step", 0) + 1
@@ -430,6 +437,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
                 "f2g/refreshes": int(self.param_groups[0]["f2g_nref"]),
                 "f2g/lanczos_runs": int(self.param_groups[0]["f2g_nL"]),
                 "f2g/refresh_seconds": self.refresh_seconds}
+        if self.r_rule is not None and len(self.r_rule):
+            logs["f2g/r_rule_shadow_mean"] = float(np.mean(self.r_rule))
+            logs["f2g/r_rule_shadow_max"] = float(np.max(self.r_rule))
         D = self.delta / (self.delta + max(self.t, 1))
         with np.errstate(invalid="ignore", divide="ignore"):
             red = np.where(self.K0 > 0, self.E / self.K0 - 1.0, np.nan)
@@ -453,7 +463,8 @@ class MuonDanaF2G(torch.optim.Optimizer):
                                  N=self.last_N.copy(), Nbar=np.array([float(f["f2g"][2]) for f in F]),
                                  xbar=np.array([float(f["f2g"][0]) for f in F]), S=np.array([float(f["f2g"][3]) for f in F]),
                                  w=np.stack([f["f2g_w"].numpy() for f in F]), tau=np.stack([f["f2g_tau"].numpy() for f in F]),
-                                 lanczos=self.last_refresh.get("lanczos", False), seconds=self.last_refresh.get("seconds", 0.0)))
+                                 lanczos=self.last_refresh.get("lanczos", False), seconds=self.last_refresh.get("seconds", 0.0),
+                                 r_rule=(self.r_rule.copy() if self.r_rule is not None else self.r.copy())))
         out = {"names": np.array([self.pnames[i] for i in self.fidx])}
         for key in self.history[0]:
             out[key] = np.array([h_[key] for h_ in self.history])
