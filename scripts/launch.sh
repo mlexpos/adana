@@ -57,6 +57,7 @@ ITERATIONS_TO_RUN=""
 DISTRIBUTED_BACKEND="${DISTRIBUTED_BACKEND:-nccl}"
 WANDB_OFFLINE="${WANDB_OFFLINE:-0}"
 Z_LOSS_COEFF="${Z_LOSS_COEFF:-1e-4}"
+WD_LOGTIME="${WD_LOGTIME:-0}"
 EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -94,6 +95,7 @@ while [[ $# -gt 0 ]]; do
         --no_auto_resume)   AUTO_RESUME=0; shift ;;
         --iterations_to_run) ITERATIONS_TO_RUN="$2"; shift 2 ;;
         --z_loss_coeff)     Z_LOSS_COEFF="$2"; shift 2 ;;
+        --wd_logtime)       WD_LOGTIME=1; shift ;;
         *)                  EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
@@ -243,8 +245,14 @@ case "$OPT" in
     muon-dana-f2g)
         # d-muon (same c_p, weight decay and AdamW for wte / lm_head / gains) with the hidden-matrix momentum replaced by
         # DANA momentum set by the F2g rule. Pass --f2g_* flags through.
-        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
-        OPT_FLAGS="--opt muon-dana-f2g --beta1 0.8 --beta2 0.999 --muon_ns_steps 5 --delta $DELTA"
+        # --wd_logtime: ADana's log-time weight decay (WD = OMEGA / WD_TS, decayed as 1/(1 + t/WD_TS)) instead of d-muon's
+        if [ "$WD_LOGTIME" -eq 1 ]; then
+            WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+            OPT_FLAGS="--opt muon-dana-f2g --beta1 0.8 --beta2 0.999 --muon_ns_steps 5 --delta $DELTA --wd_decaying --wd_ts $WD_TS"
+        else
+            WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+            OPT_FLAGS="--opt muon-dana-f2g --beta1 0.8 --beta2 0.999 --muon_ns_steps 5 --delta $DELTA"
+        fi
         ;;
     adamw)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")

@@ -137,7 +137,8 @@ def _mean_across_ranks_(t):
 class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
-                 polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, log_dir=None):
+                 polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, wd_decaying=False,
+                 wd_ts=1.0, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -150,6 +151,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
             raise ValueError(f"muon-dana-f2g: store must be 'fp32' or 'bf16', got {store}")
         self.store = store                          # dtype of the captured layer vectors (products always in fp32/fp64)
         self.hmult = float(hidden_lr_mult)          # hidden-matrix step = lr * hmult * c_p (...); AdamW and weight decay use lr
+        # weight decay: d-muon's p <- p (1 - lr_t wd) (default), or ADana's log-time form
+        # p <- p (1 - wd s(t) / (1 + t / wd_ts)), s(t) = lr_t / peak lr (independent of the peak lr and of hmult)
+        self.lr0, self.wd_decaying, self.wd_ts = float(lr), bool(wd_decaying), float(wd_ts)
         # fixed schedule control: r_t = min(1, c0 (1 + t/delta)^-kappa) from the first step; the rule still runs (shadow)
         self.fixed = None if fixed is None else (float(fixed[0]), float(fixed[1]))
         self.r_rule = None
@@ -400,6 +404,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         for group in self.param_groups:
             group["step"] = group.get("step", 0) + 1
             lr, wd = group["lr"], group["weight_decay"]
+            decay = (wd * (lr / self.lr0) / (1.0 + tn / self.wd_ts)) if self.wd_decaying else lr * wd
             beta1, beta2 = group["adamw_betas"]
             eps = group["adamw_eps"]
             for p in group["params"]:
@@ -414,7 +419,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     u = zeropower_via_newtonschulz5(g.bfloat16(), steps=self.ns_steps).to(p.dtype)
                     st["u_prev"] = (u.clone() if u.dtype == torch.float64 else u.float().clone())
                     st["m"].mul_(1 - D).add_(u, alpha=D)
-                    p.mul_(1 - lr * wd)
+                    p.mul_(1 - decay)
                     p.add_(u.add_(st["m"], alpha=rmap.get(i, 0.0) / D), alpha=-lr * self.hmult * self._scale(p))
                 else:
                     if "adamw_exp_avg" not in st:
@@ -425,7 +430,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     b2.lerp_(g.square(), 1 - beta2)
                     step = group["step"]
                     scale = (1 - beta1 ** step) / (1 - beta2 ** step) ** 0.5
-                    p.mul_(1 - lr * wd)
+                    p.mul_(1 - decay)
                     p.add_(b1 / (eps + b2.sqrt()), alpha=-lr / scale)
         g0["f2g_t"] = tn
         return loss

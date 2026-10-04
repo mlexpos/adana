@@ -158,6 +158,19 @@ def test_fixed_schedule_control():
     assert "f2g/r_rule_shadow_mean" in o.diagnostics()
 
 
+def test_logtime_weight_decay():
+    """With r = 0 and zero gradients the step is pure decay: d-muon's (1 - lr wd) or ADana's (1 - wd s / (1 + t / ts))."""
+    for wd_decaying, factor in ((False, 1 - 0.05 * 0.01), (True, 1 - 0.01 * 1.0 / (1 + 1 / 3.0))):
+        model, names, params = _model()
+        o = _opt(params, names, warm=10 ** 9, wd_decaying=wd_decaying, wd_ts=3.0)
+        for p in params:
+            p.grad = torch.zeros_like(p)
+        before = [p.detach().clone() for p in params]
+        o.step()
+        for i, (p, b0) in enumerate(zip(params, before)):
+            assert torch.allclose(p.detach(), b0 * factor, atol=1e-12), (wd_decaying, names[i])
+
+
 def _train(o, model, params, steps, seed=1):
     torch.manual_seed(seed)
     losses = []
