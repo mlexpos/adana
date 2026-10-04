@@ -32,6 +32,7 @@ enoki:
     ademamix:             {a: 4.51,    b: 6.71e+3, d: -0.503}
     ademamix-decaying-wd: {a: 7.28,    b: 8.43e+3, d: -0.525}
     d-muon:               {a: 2.19,    b: 5.64e+4, d: -0.417}
+    muon-dana-f2g:        {a: 2.19,    b: 5.64e+4, d: -0.417}   # = d-muon until fitted
     # adana-slq: PLACEHOLDER (= ADana kappa=0.85) until fitted from the momentum-reloaded sweeps
     adana-slq:            {a: 2.25e+1, b: 1.22e+5, d: -0.618}
   lr_formula_512:

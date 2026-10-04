@@ -33,6 +33,7 @@ from optim.adana import ADana
 from optim.adana_slq import ADanaSLQ
 from optim.soap_dana_slq import SOAPDanaSLQ
 from optim.muon_dana_slq import MuonDanaSLQ
+from optim.muon_dana_f2g import MuonDanaF2G
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.adamw_decaying_wd import AdamWDecayingWD
 from optim.ademamix_decaying_wd import AdEMAMix_DecayingWD
@@ -255,6 +256,14 @@ def build_optimizer(args, model, group_specs):
             group_specs, lr=args.lr, delta=args.delta, weight_decay=args.weight_decay,
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, beta2=args.beta2, ns_steps=args.muon_ns_steps,
             matched_rms=args.matched_adamw_rms, polar_floor=args.slq_polar_floor, **slq_kw(),
+        ),
+        # d-muon with its hidden-matrix momentum replaced by DANA momentum set by the F2g rule (src/optim/muon_dana_f2g.py)
+        "muon-dana-f2g": lambda: MuonDanaF2G(
+            group_specs, lr=args.lr, delta=args.delta, weight_decay=args.weight_decay,
+            adamw_betas=(args.beta1, args.beta2), adamw_eps=1e-8, ns_steps=args.muon_ns_steps,
+            matched_rms=args.matched_adamw_rms, c=args.f2g_c, R=args.f2g_R, geo=args.f2g_geo, k=args.f2g_k,
+            seqs=args.f2g_seqs, chunk=args.f2g_chunk, nse=args.f2g_nse, warm=args.f2g_warm, polar=args.f2g_polar,
+            polar_floor=args.slq_polar_floor,
         ),
         # SOAP's preconditioner with the SLQ-budgeted DANA momentum in LaProp order (see src/optim/soap_dana_slq.py)
         "soap-dana-slq": lambda: SOAPDanaSLQ(

@@ -272,7 +272,11 @@ def train(
         if hasattr(opt, "needs_refresh") and opt.needs_refresh():
             raw_for_slq = distributed_backend.get_raw_model(not_compiled_model)
             opt.refresh(raw_for_slq, x, y)
-            if distributed_backend.is_master_process():
+            if hasattr(opt, "refresh_message"):
+                msg = opt.refresh_message()
+                if msg and distributed_backend.is_master_process():
+                    print(msg)
+            elif distributed_backend.is_master_process():
                 lr_ = opt.last_refresh
                 print(f"[adana-slq] refresh t={lr_['t']}: m={lr_['m_used']:.0f} gap={lr_['gap']:.3f} "
                       f"lam_max={lr_['lam_max']:.3g} T_eff={opt.teff:.1f} N={opt.N:.4g} S={opt.S:.4g} "

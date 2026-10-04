@@ -1,0 +1,176 @@
+"""CPU unit tests for muon-dana-f2g.  Run from the repo root:  python tests/test_muon_dana_f2g.py"""
+import math
+import os
+import sys
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from optim.muon import zeropower_via_newtonschulz5                       # noqa: E402
+from optim.muon_dana_f2g import MuonDanaF2G, dns, h_seq, h_tok, kappa, lanczos, rule_r   # noqa: E402
+from tests.test_soap_dana_slq import TinyQKV                             # noqa: E402
+
+torch.set_default_dtype(torch.float64)
+
+
+def _model(V=11, seed=0):
+    torch.manual_seed(seed)
+    m = TinyQKV(V=V)
+    with torch.no_grad():
+        ln = m.transformer.h[0].ln_1
+        ln.weight.uniform_(0.5, 1.5); ln.bias.uniform_(-0.5, 0.5)
+    names = [n for n, _ in m.named_parameters()]
+    params = [p for _, p in m.named_parameters()]
+    return m, names, params
+
+
+def _opt(params, names, **kw):
+    groups = [dict(params=params, param_names=names)]
+    return MuonDanaF2G(groups, lr=0.05, weight_decay=0.01, **kw)
+
+
+def _batch(B=8, T=6, V=11):
+    x = torch.randint(0, V, (B, T))
+    return x, (x + 1) % V
+
+
+def test_kappa_matches_lyapunov():
+    """kappa(h; r, Delta) = h^2 E[theta^2] / v for the per-mode DANA recursion (LaProp order, unit noise)."""
+    for h, D, eps, r in [(3.0, 0.05, 0.01, 0.0), (3.0, 0.05, 0.01, 0.4), (50.0, 0.01, 0.003, 1.0), (0.2, 0.2, 0.02, 0.7)]:
+        M = np.array([[1 - eps * h * (1 + r), -(eps * r / D) * (1 - D)], [D * h, 1 - D]])
+        w = np.array([-eps * (1 + r), D])
+        S = np.linalg.solve(np.eye(4) - np.kron(M, M), np.outer(w, w).ravel()).reshape(2, 2)
+        ref = h * h * S[0, 0]
+        got = float(kappa(np.array(h), D, eps, r))
+        assert abs(got - ref) < 1e-9 * abs(ref), (h, D, eps, r, got, ref)
+    # small eps h: kappa ~ eps h (Delta + r) / (2 Delta)
+    h, D, eps, r = 1.0, 0.1, 1e-4, 0.3
+    assert abs(float(kappa(np.array(h), D, eps, r)) / (eps * h * (D + r) / (2 * D)) - 1) < 1e-2
+
+
+def test_rule_limits():
+    w = np.array([[1.0, 0.1, 0.01, 0.0]]); tau = np.array([[0.3, 0.3, 0.4, 0.0]])
+    a0, eps, D = np.array([2.0]), np.array([0.01]), 0.05
+    r, K0 = rule_r(w, tau, a0, D, eps, np.array([0.0]), 0.2)
+    assert r[0] == 0.0                                           # E below the floor: no momentum
+    r, _ = rule_r(w, tau, a0, D, eps, np.array([1e9]), 0.2)
+    assert r[0] == 1.0                                           # huge excess: full momentum (stable here)
+    r, K0 = rule_r(w, tau, a0, D, eps, np.array([0.0]) + 3.0 * K0, 0.2)
+    assert 0.0 < r[0] < 1.0
+    # K(r) at the chosen r meets the target K0 + c (E - K0) = 1.4 K0
+    h = a0[0] * np.sqrt(w[0]); K = lambda rr: 0.5 * np.sum(np.where(tau[0] > 0, tau[0] * kappa(h, D, eps[0], rr), 0.0))
+    assert abs(K(r[0]) / (1.4 * K0[0]) - 1) < 1e-6
+
+
+def test_ns_jvp_matches_finite_differences():
+    torch.manual_seed(0)
+    G, E = torch.randn(6, 9), torch.randn(6, 9)
+    e = 1e-6
+    fd = (zeropower_via_newtonschulz5(G + e * E, 5) - zeropower_via_newtonschulz5(G - e * E, 5)) / (2 * e)
+    got = dns(G, E, 5)
+    assert torch.allclose(got, fd, atol=1e-6), float((got - fd).abs().max())
+
+
+def test_lanczos_quadrature_exact_at_full_dimension():
+    torch.manual_seed(0)
+    A = torch.randn(5, 4)
+    C = torch.randn(20, 20); H = C @ C.T / 20
+    op = lambda V: (H @ V.reshape(-1)).reshape(V.shape)
+    th, tau, m = lanczos(op, A, 20)
+    ev, Q = torch.linalg.eigh(H)
+    ref = float(((Q.T @ A.reshape(-1)) ** 2 @ ev.clamp_min(0).sqrt()))
+    assert abs(float(np.sum(tau * np.sqrt(np.maximum(th, 0)))) / ref - 1) < 1e-8
+    assert abs(float(np.sum(tau)) / float((A * A).sum()) - 1) < 1e-10
+
+
+def test_capture_and_gn_products():
+    """B^T X over a sequence is the gradient of that sequence's summed sampled-label loss; h_seq is the per-sequence
+    estimate (1/N) sum_a <S_a, U> S_a; h_tok and h_seq are symmetric PSD."""
+    model, names, params = _model()
+    o = _opt(params, names, seqs=4, chunk=2)
+    x, y = _batch()
+    torch.manual_seed(5)
+    X, B, seq, nseq, ntok = o._capture(model, x, y)
+    labels = torch.cat(o._last_labels)
+    j = 0                                                        # c_attn
+    W = o.plist[o.fidx[j]]
+    S = []
+    for a in range(nseq):
+        logits = model(x[a:a + 1], targets=y[a:a + 1], get_logits=True)["logits"]
+        loss = nn.functional.cross_entropy(logits.reshape(-1, logits.size(-1)), labels[a].reshape(-1), reduction="sum")
+        S.append(torch.autograd.grad(loss, W)[0])
+        Sa = B[j][seq == a].T @ X[j][seq == a]
+        assert torch.allclose(Sa, S[-1], atol=1e-10), float((Sa - S[-1]).abs().max())
+    U, V = torch.randn_like(W), torch.randn_like(W)
+    ref = sum(float((Sa * U).sum()) * Sa for Sa in S) / ntok
+    assert torch.allclose(h_seq(X[j], B[j], seq, nseq, U, ntok), ref, atol=1e-10)
+    for f in (lambda Z: h_seq(X[j], B[j], seq, nseq, Z, ntok), lambda Z: h_tok(X[j], B[j], Z, ntok)):
+        assert abs(float((V * f(U)).sum()) - float((U * f(V)).sum())) < 1e-10
+        assert float((U * f(U)).sum()) >= -1e-12
+
+
+def test_zero_r_is_momentum_free_muon_and_dmuon_adamw():
+    model, names, params = _model()
+    o = _opt(params, names, warm=10 ** 9)
+    x, y = _batch()
+    before = [p.detach().clone() for p in params]
+    out = model(x, targets=y); out["loss"].backward()
+    grads = [p.grad.detach().clone() for p in params]
+    o.step()
+    lr, wd, b1, b2, eps = 0.05, 0.01, 0.8, 0.999, 1e-8
+    for i, (p, p0, g) in enumerate(zip(params, before, grads)):
+        if o.use_muon[i]:
+            c = 0.2 * math.sqrt(max(p.shape[:2]))
+            u = zeropower_via_newtonschulz5(g.bfloat16(), 5).to(p.dtype)
+            ref = p0 * (1 - lr * wd) - lr * c * u                 # m = Delta u, but r = 0
+        else:
+            m1, m2 = (1 - b1) * g, (1 - b2) * g * g
+            scale = (1 - b1) / (1 - b2) ** 0.5
+            ref = p0 * (1 - lr * wd) - (lr / scale) * m1 / (eps + m2.sqrt())
+        assert torch.allclose(p.detach(), ref, atol=1e-12), names[i]
+    assert sum(o.use_muon) == 2                                   # c_attn and c_fc (wte / lm_head excluded)
+
+
+def _train(o, model, params, steps, seed=1):
+    torch.manual_seed(seed)
+    losses = []
+    for _ in range(steps):
+        x, y = _batch()
+        o.zero_grad()
+        out = model(x[:4], targets=y[:4]); (out["loss"] / 2).backward()
+        half = [p.grad.clone() if p.grad is not None else None for p in params]
+        out2 = model(x[4:], targets=y[4:]); (out2["loss"] / 2).backward()
+        o.set_split_stats(half, [p.grad for p in params])
+        if o.needs_refresh():
+            o.refresh(model, x, y)
+        o.step()
+        losses.append(float(out["loss"] + out2["loss"]) / 2)
+    return losses
+
+
+def test_smoke_with_refreshes_and_state_dict():
+    for polar in ("ns", "svd"):
+        model, names, params = _model()
+        o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, polar=polar)
+        losses = _train(o, model, params, 40)
+        assert all(np.isfinite(losses))
+        assert o.param_groups[0]["f2g_nref"] == 8 and o.param_groups[0]["f2g_nL"] >= 3
+        assert np.all((o.r >= 0) & (o.r <= 1))
+        d = o.diagnostics()
+        assert all(np.isfinite(v) for v in d.values()), d
+        sd = o.state_dict()
+        o2 = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, polar=polar)
+        o2.load_state_dict(sd)
+        assert o2.t == o.t == 40
+        assert torch.equal(o2.state[params[o.fidx[0]]]["f2g"], o.state[params[o.fidx[0]]]["f2g"])
+        assert losses[-1] < losses[0]
+
+
+if __name__ == "__main__":
+    for name, fn in list(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print(f"{name}: ok")

@@ -240,6 +240,12 @@ case "$OPT" in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt muon-dana-slq --delta $DELTA --beta2 0.999 --muon_ns_steps 5 --wd_decaying --wd_ts $WD_TS"
         ;;
+    muon-dana-f2g)
+        # d-muon (same c_p, weight decay and AdamW for wte / lm_head / gains) with the hidden-matrix momentum replaced by
+        # DANA momentum set by the F2g rule. Pass --f2g_* flags through.
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
+        OPT_FLAGS="--opt muon-dana-f2g --beta1 0.8 --beta2 0.999 --muon_ns_steps 5 --delta $DELTA"
+        ;;
     adamw)
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / ($LR * $ITERATIONS))")
         OPT_FLAGS="--opt adamw --beta1 0.9 --beta2 0.999"

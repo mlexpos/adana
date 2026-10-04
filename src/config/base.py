@@ -125,6 +125,7 @@ def parse_args(base_parser, args, namespace):
             "adana-slq",
             "soap-dana-slq",
             "muon-dana-slq",
+            "muon-dana-f2g",
             # Dana-Star family (with tau)
             "dana-star",
             "dana-star-mk4",
@@ -276,6 +277,17 @@ def parse_args(base_parser, args, namespace):
                         help="muon-dana-slq: singular-value floor / |G|_F in the polar derivative of the SLQ operator")
     parser.add_argument("--soap_fused_qkv", default=False, action="store_true",
                         help="soap-dana-slq: precondition the fused QKV matrix as one block (default: q, k, v split)")
+    # muon-dana-f2g: d-muon with its hidden-matrix momentum replaced by DANA + the F2g rule (src/optim/muon_dana_f2g.py)
+    parser.add_argument("--f2g_c", default=0.2, type=float, help="muon-dana-f2g: target fraction c of the rule")
+    parser.add_argument("--f2g_R", default=25, type=int, help="muon-dana-f2g: numerator period (steps)")
+    parser.add_argument("--f2g_geo", default=1.25, type=float, help="muon-dana-f2g: ratio of the geometric Lanczos times")
+    parser.add_argument("--f2g_k", default=40, type=int, help="muon-dana-f2g: Lanczos steps")
+    parser.add_argument("--f2g_seqs", default=16, type=int, help="muon-dana-f2g: sequences in the sampled-label pass")
+    parser.add_argument("--f2g_chunk", default=4, type=int, help="muon-dana-f2g: sequences per sampled-label forward")
+    parser.add_argument("--f2g_nse", default=2.0, type=float, help="muon-dana-f2g: standard errors subtracted from the drift power")
+    parser.add_argument("--f2g_warm", default=50, type=int, help="muon-dana-f2g: r = 0 before this step")
+    parser.add_argument("--f2g_polar", default="ns", choices=["ns", "svd"],
+                        help="muon-dana-f2g: derivative of the Newton-Schulz map (ns) or of the exact polar factor (svd)")
     parser.add_argument("--slq_clipsnr", default=False, action="store_true",
                         help="also apply the Dana-MK4 per-element SNR clip (uses --clipsnr)")
     parser.add_argument("--norm_type", default="linf", choices=["linf", "l2"])
