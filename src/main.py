@@ -265,7 +265,7 @@ def build_optimizer(args, model, group_specs):
             seqs=args.f2g_seqs, chunk=args.f2g_chunk, nse=args.f2g_nse, warm=args.f2g_warm, polar=args.f2g_polar,
             polar_floor=args.slq_polar_floor, store=args.f2g_store, hidden_lr_mult=args.f2g_hidden_lr_mult,
             fixed=(tuple(float(v) for v in args.f2g_fixed.split(",")) if args.f2g_fixed else None),
-            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts,
+            wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, rmax=args.f2g_rmax,
         ),
         # SOAP's preconditioner with the SLQ-budgeted DANA momentum in LaProp order (see src/optim/soap_dana_slq.py)
         "soap-dana-slq": lambda: SOAPDanaSLQ(

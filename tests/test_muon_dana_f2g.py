@@ -158,6 +158,24 @@ def test_fixed_schedule_control():
     assert "f2g/r_rule_shadow_mean" in o.diagnostics()
 
 
+def test_rmax_lifts_the_cap():
+    w = np.array([[1.0, 0.1, 0.01, 0.0]]); tau = np.array([[0.3, 0.3, 0.4, 0.0]])
+    a0, eps, D = np.array([2.0]), np.array([0.01]), 0.05
+    h = a0[0] * np.sqrt(w[0]); K = lambda rr: 0.5 * np.sum(np.where(tau[0] > 0, tau[0] * kappa(h, D, eps[0], rr), 0.0))
+    assert rule_r(w, tau, a0, D, eps, np.array([1e9]), 0.2)[0][0] == 1.0             # default: Nesterov cap
+    assert rule_r(w, tau, a0, D, eps, np.array([1e9]), 0.2, rmax=3.0)[0][0] == 3.0   # lifted
+    K0 = K(0.0); E = K0 + (K(2.0) - K0) / 0.2                                        # target K(2)
+    r = rule_r(w, tau, a0, D, eps, np.array([E]), 0.2, rmax=3.0)[0][0]
+    assert abs(r - 2.0) < 1e-6 and rule_r(w, tau, a0, D, eps, np.array([E]), 0.2)[0][0] == 1.0
+    model, names, params = _model()
+    o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, fixed=(2.5, 0.0), rmax=4.0)
+    _train(o, model, params, 8)
+    assert np.allclose(o.r, 2.5) and np.all(o.r_rule <= 4.0)                         # fixed r = 2.5 applied
+    o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, fixed=(2.5, 0.0))
+    _train(o, model, params, 8)
+    assert np.allclose(o.r, 1.0)                                                     # default still capped at 1
+
+
 def test_logtime_weight_decay():
     """With r = 0 and zero gradients the step is pure decay: d-muon's (1 - lr wd) or ADana's (1 - wd s / (1 + t / ts))."""
     for wd_decaying, factor in ((False, 1 - 0.05 * 0.01), (True, 1 - 0.01 * 1.0 / (1 + 1 / 3.0))):

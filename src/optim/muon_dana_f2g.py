@@ -51,8 +51,8 @@ def kappa(h, D, eps, r):
     return np.where(ok, h * Nn / np.where(ok, d1 * d2, 1.0), np.inf)
 
 
-def rule_r(w, tau, a0, D, eps, E, c, n_bis=30):
-    """r per matrix and K(0).  w, tau: (L, k); a0, eps, E: (L,)."""
+def rule_r(w, tau, a0, D, eps, E, c, n_bis=30, rmax=1.0):
+    """r per matrix (searched in [0, rmax]) and K(0).  w, tau: (L, k); a0, eps, E: (L,)."""
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         h = a0[:, None] * np.sqrt(np.maximum(w, 0.0))
         on = tau > 0
@@ -63,12 +63,12 @@ def rule_r(w, tau, a0, D, eps, E, c, n_bis=30):
         L = len(a0)
         K0 = K(np.zeros(L))
         tgt = K0 + c * np.maximum(E - K0, 0.0)
-        lo, hi = np.zeros(L), np.ones(L)
+        lo, hi = np.zeros(L), np.full(L, float(rmax))
         for _ in range(n_bis):
             mid = 0.5 * (lo + hi)
             ok = K(mid) <= tgt
             lo, hi = np.where(ok, mid, lo), np.where(ok, hi, mid)
-        r = np.where(K(np.ones(L)) <= tgt, 1.0, lo)
+        r = np.where(K(np.full(L, float(rmax))) <= tgt, float(rmax), lo)
         r = np.where(np.isfinite(K0) & (E > K0), r, 0.0)
     return r, K0
 
@@ -138,7 +138,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
                  polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, wd_decaying=False,
-                 wd_ts=1.0, log_dir=None):
+                 wd_ts=1.0, rmax=1.0, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -154,8 +154,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
         # weight decay: d-muon's p <- p (1 - lr_t wd) (default), or ADana's log-time form
         # p <- p (1 - wd s(t) / (1 + t / wd_ts)), s(t) = lr_t / peak lr (independent of the peak lr and of hmult)
         self.lr0, self.wd_decaying, self.wd_ts = float(lr), bool(wd_decaying), float(wd_ts)
-        # fixed schedule control: r_t = min(1, c0 (1 + t/delta)^-kappa) from the first step; the rule still runs (shadow)
+        # fixed schedule control: r_t = min(rmax, c0 (1 + t/delta)^-kappa) from the first step; the rule still runs (shadow)
         self.fixed = None if fixed is None else (float(fixed[0]), float(fixed[1]))
+        self.rmax = float(rmax)                     # cap on r for the rule and the fixed schedule (1 = Nesterov's g1 g3 = g2)
         self.r_rule = None
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.plist, self.pnames = [], []
@@ -380,7 +381,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         E = xb - self.nse * np.sqrt(np.maximum(Vb, 0.0) * rho / (2.0 - rho))
         eps = np.array([self._lr_of(self.plist[i])[0] * self.hmult * self._scale(self.plist[i]) for i in self.fidx])
         a0 = np.where(S > 0, np.maximum(Nb, 0.0) / np.maximum(S, 1e-300), 0.0)
-        r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c)
+        r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c, rmax=self.rmax)
         ready = tn >= self.warm and g0["f2g_n"] > 0 and g0["f2g_nL"] > 0
         self.E, self.K0, self.a0 = E, K0, a0
         r = np.where((Nb > 0) & (S > 0), r, 0.0)                 # no positive numerator yet: no floor known, no momentum
@@ -399,7 +400,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         if self.fixed is not None:
             c0, kap = self.fixed
             self.r_rule = self.r
-            self.r = np.full(len(self.fidx), min(1.0, c0 * (1.0 + tn / self.delta) ** (-kap)))
+            self.r = np.full(len(self.fidx), min(self.rmax, c0 * (1.0 + tn / self.delta) ** (-kap)))
         rmap = {self.fidx[j]: float(self.r[j]) for j in range(len(self.fidx))}
         for group in self.param_groups:
             group["step"] = group.get("step", 0) + 1
