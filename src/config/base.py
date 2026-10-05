@@ -293,6 +293,11 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--f2g_fixed", default="", type=str,
                         help="muon-dana-f2g control: 'c0,kappa' sets r_t = min(rmax, c0 (1+t/delta)^-kappa) instead of the rule "
                              "(the rule still runs and is logged as a shadow)")
+    parser.add_argument("--f2g_filt_x0", default=0.0, type=float,
+                        help="muon-dana-f2g momentum filter: > 0 applies psi = 1/(1+(eps a0 sqrt(w)/(x0 Delta))^2) to the DANA buffer "
+                             "in the K-FAC eigenbasis (w = products of factor eigenvalues); 0.02 is the toy optimum")
+    parser.add_argument("--f2g_filt_rate", default=0.3, type=float, help="muon-dana-f2g filter: EMA rate of the K-FAC factors per refresh")
+    parser.add_argument("--f2g_filt_every", default=2, type=int, help="muon-dana-f2g filter: refreshes between eigendecompositions")
     parser.add_argument("--f2g_rmax", default=1.0, type=float,
                         help="muon-dana-f2g: cap on r for the rule and --f2g_fixed (1 = Nesterov's g1 g3 = g2; not a stability edge)")
     parser.add_argument("--f2g_polar", default="ns", choices=["ns", "svd"],

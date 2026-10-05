@@ -51,14 +51,23 @@ def kappa(h, D, eps, r):
     return np.where(ok, h * Nn / np.where(ok, d1 * d2, 1.0), np.inf)
 
 
-def rule_r(w, tau, a0, D, eps, E, c, n_bis=30, rmax=1.0):
-    """r per matrix (searched in [0, rmax]) and K(0).  w, tau: (L, k); a0, eps, E: (L,)."""
+def filt_psi(h, eps, D, x0):
+    """momentum filter weight of a mode with gain h: 1 / (1 + (eps h / (x0 D))^2); x0 <= 0 means no filter."""
+    if x0 <= 0:
+        return np.ones_like(h)
+    return 1.0 / (1.0 + (eps * h / (x0 * D)) ** 2)
+
+
+def rule_r(w, tau, a0, D, eps, E, c, n_bis=30, rmax=1.0, x0=0.0):
+    """r per matrix (searched in [0, rmax]) and K(0).  w, tau: (L, k); a0, eps, E: (L,).  With x0 > 0 every Lanczos
+    node carries the filtered momentum r * psi(eps h / (x0 D)), h = a0 sqrt(w)."""
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         h = a0[:, None] * np.sqrt(np.maximum(w, 0.0))
         on = tau > 0
+        ps = filt_psi(h, eps[:, None], D, x0)
 
         def K(r):
-            return 0.5 * np.sum(np.where(on, tau * kappa(h, D, eps[:, None], r[:, None]), 0.0), axis=1)
+            return 0.5 * np.sum(np.where(on, tau * kappa(h, D, eps[:, None], r[:, None] * ps), 0.0), axis=1)
 
         L = len(a0)
         K0 = K(np.zeros(L))
@@ -138,7 +147,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
                  polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, wd_decaying=False,
-                 wd_ts=1.0, rmax=1.0, log_dir=None):
+                 wd_ts=1.0, rmax=1.0, filt_x0=0.0, filt_rate=0.3, filt_every=2, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -157,6 +166,11 @@ class MuonDanaF2G(torch.optim.Optimizer):
         # fixed schedule control: r_t = min(rmax, c0 (1 + t/delta)^-kappa) from the first step; the rule still runs (shadow)
         self.fixed = None if fixed is None else (float(fixed[0]), float(fixed[1]))
         self.rmax = float(rmax)                     # cap on r for the rule and the fixed schedule (1 = Nesterov's g1 g3 = g2)
+        # momentum filter (x0 > 0): m -> U [psi o (U^T m V)] V^T in the eigenbases of the K-FAC factors E[b b^T], E[x x^T]
+        # (sampled-label output gradients and inputs from the refresh capture, EMA rate filt_rate per refresh, eigenbases
+        # every filt_every refreshes); psi_ij = 1 / (1 + (eps a0 sqrt(g_i a_j) / (x0 Delta))^2), a0 the F2g gain constant
+        self.filt_x0, self.filt_rate, self.filt_every = float(filt_x0), float(filt_rate), int(filt_every)
+        self.psi_mean = None
         self.r_rule = None
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.plist, self.pnames = [], []
@@ -322,6 +336,8 @@ class MuonDanaF2G(torch.optim.Optimizer):
             Xj = X[j].float() if X[j].dtype == torch.bfloat16 else X[j]
             Bj = B[j].float() if B[j].dtype == torch.bfloat16 else B[j]
             X[j] = B[j] = None                              # free the stored copy as we go
+            if self.filt_x0 > 0:
+                self._factor_update(st, Xj, Bj, ntok)
             u = st["u_prev"].to(Xj.dtype)
             Hu = h_seq(Xj, Bj, seq, nseq, u, ntok)
             G = p.grad.to(Xj.dtype)
@@ -341,6 +357,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
                 del op
             del Xj, Bj, Hu, DH
         Ns = _mean_across_ranks_(Ns.to(x.device)).cpu() if _world() > 1 else Ns
+        if self.filt_x0 > 0 and g0["f2g_nref"] % self.filt_every == 0:
+            for i in self.fidx:
+                self._factor_eig(self._fstate(self.plist[i]))
         rho = max(1.0 - (1.0 - D) ** self.R, 1.0 / (g0["f2g_n"] + 1))
         for j, i in enumerate(self.fidx):
             st = self._fstate(self.plist[i])["f2g"]
@@ -354,6 +373,30 @@ class MuonDanaF2G(torch.optim.Optimizer):
         self.last_refresh = dict(t=tn, lanczos=bool(do_L), lanczos_m=float(np.mean(lanc)) if lanc else float("nan"),
                                  ntok=ntok, N_median=float(np.median(Ns.numpy())))
         del X, B, seq
+
+    def _factor_update(self, st, Xj, Bj, ntok):
+        A = _mean_across_ranks_(Xj.T @ Xj / ntok).float(); Gm = _mean_across_ranks_(Bj.T @ Bj / ntok).float()
+        if "filt_A" not in st:
+            st["filt_A"], st["filt_G"] = A, Gm
+        else:
+            st["filt_A"].mul_(1 - self.filt_rate).add_(A, alpha=self.filt_rate)
+            st["filt_G"].mul_(1 - self.filt_rate).add_(Gm, alpha=self.filt_rate)
+
+    def _factor_eig(self, st):
+        if "filt_A" not in st:
+            return
+        a, V = torch.linalg.eigh(st["filt_A"].double()); g, U = torch.linalg.eigh(st["filt_G"].double())
+        st["filt_U"], st["filt_V"] = U.float(), V.float()
+        st["filt_w"] = torch.outer(g.clamp_min(0.0), a.clamp_min(0.0)).float()       # K-FAC curvature of mode (i, j)
+
+    def _filtered(self, st, m, eps, a0, D):
+        """U [psi o (U^T m V)] V^T, or m itself before the first eigenbasis; also returns mean psi."""
+        if self.filt_x0 <= 0 or "filt_U" not in st or a0 <= 0:
+            return m, 1.0
+        U, V = st["filt_U"], st["filt_V"]
+        psi = 1.0 / (1.0 + (eps * a0 * st["filt_w"].sqrt() / (self.filt_x0 * D)) ** 2)
+        mt = U.T @ m.float() @ V
+        return (U @ (psi * mt) @ V.T).to(m.dtype), float(psi.mean())
 
     def refresh_message(self):
         lr_ = self.last_refresh
@@ -381,7 +424,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         E = xb - self.nse * np.sqrt(np.maximum(Vb, 0.0) * rho / (2.0 - rho))
         eps = np.array([self._lr_of(self.plist[i])[0] * self.hmult * self._scale(self.plist[i]) for i in self.fidx])
         a0 = np.where(S > 0, np.maximum(Nb, 0.0) / np.maximum(S, 1e-300), 0.0)
-        r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c, rmax=self.rmax)
+        r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c, rmax=self.rmax, x0=self.filt_x0)
         ready = tn >= self.warm and g0["f2g_n"] > 0 and g0["f2g_nL"] > 0
         self.E, self.K0, self.a0 = E, K0, a0
         r = np.where((Nb > 0) & (S > 0), r, 0.0)                 # no positive numerator yet: no floor known, no momentum
@@ -402,6 +445,8 @@ class MuonDanaF2G(torch.optim.Optimizer):
             self.r_rule = self.r
             self.r = np.full(len(self.fidx), min(self.rmax, c0 * (1.0 + tn / self.delta) ** (-kap)))
         rmap = {self.fidx[j]: float(self.r[j]) for j in range(len(self.fidx))}
+        jmap = {self.fidx[j]: j for j in range(len(self.fidx))}
+        psis = np.ones(len(self.fidx))
         for group in self.param_groups:
             group["step"] = group.get("step", 0) + 1
             lr, wd = group["lr"], group["weight_decay"]
@@ -421,7 +466,11 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     st["u_prev"] = (u.clone() if u.dtype == torch.float64 else u.float().clone())
                     st["m"].mul_(1 - D).add_(u, alpha=D)
                     p.mul_(1 - decay)
-                    p.add_(u.add_(st["m"], alpha=rmap.get(i, 0.0) / D), alpha=-lr * self.hmult * self._scale(p))
+                    eps_p = lr * self.hmult * self._scale(p)
+                    mf = st["m"]
+                    if self.filt_x0 > 0 and i in jmap:
+                        mf, psis[jmap[i]] = self._filtered(st, st["m"], eps_p, float(self.a0[jmap[i]]), D)
+                    p.add_(u.add_(mf, alpha=rmap.get(i, 0.0) / D), alpha=-eps_p)
                 else:
                     if "adamw_exp_avg" not in st:
                         st["adamw_exp_avg"] = torch.zeros_like(g)
@@ -434,6 +483,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     p.mul_(1 - decay)
                     p.add_(b1 / (eps + b2.sqrt()), alpha=-lr / scale)
         g0["f2g_t"] = tn
+        self.psi_mean = psis
         return loss
 
     # ---------------------------------------------------------------- logging
@@ -459,6 +509,8 @@ class MuonDanaF2G(torch.optim.Optimizer):
             logs[f"f2g_type/a0/{ty}"] = float(np.mean(self.a0[idx]))
             logs[f"f2g_type/Nbar/{ty}"] = float(np.mean(Nb[idx]))
             logs[f"f2g_type/xbar/{ty}"] = float(np.mean(xb[idx]))
+            if self.psi_mean is not None and self.filt_x0 > 0:
+                logs[f"f2g_type/psi/{ty}"] = float(np.mean(self.psi_mean[idx]))
         return logs
 
     def _save_diag(self):

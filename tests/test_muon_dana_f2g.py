@@ -176,6 +176,30 @@ def test_rmax_lifts_the_cap():
     assert np.allclose(o.r, 1.0)                                                     # default still capped at 1
 
 
+def test_filter_rule_and_step():
+    w = np.array([[1.0, 0.1, 0.01, 0.0]]); tau = np.array([[0.3, 0.3, 0.4, 0.0]])
+    a0, eps, D = np.array([2.0]), np.array([0.01]), 0.05
+    h = a0[0] * np.sqrt(w[0]); K = lambda rr: 0.5 * np.sum(np.where(tau[0] > 0, tau[0] * kappa(h, D, eps[0], rr), 0.0))
+    E = K(0.0) + (K(0.5) - K(0.0)) / 0.2
+    r0 = rule_r(w, tau, a0, D, eps, np.array([E]), 0.2)[0][0]
+    r1 = rule_r(w, tau, a0, D, eps, np.array([E]), 0.2, x0=0.02)[0][0]
+    assert abs(r0 - 0.5) < 1e-6 and r1 > r0                                          # filtered kernel is cheaper
+    # optimizer: identical to the unfiltered one until the first eigenbasis, then m is filtered in the K-FAC basis
+    model, names, params = _model()
+    o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, fixed=(1.0, 0.0), filt_x0=0.02, filt_every=1)
+    _train(o, model, params, 12)
+    st = o.state[o.plist[o.fidx[0]]]
+    assert "filt_U" in st and st["filt_w"].shape == st["m"].shape
+    assert o.psi_mean is not None and np.all((o.psi_mean > 0) & (o.psi_mean <= 1))
+    m = torch.randn_like(st["m"]); D = 8.0 / (8.0 + 12)
+    mf, pm = o._filtered(st, m, 0.05, 2.0, D)
+    U, V = st["filt_U"], st["filt_V"]
+    psi = 1.0 / (1.0 + (0.05 * 2.0 * st["filt_w"].sqrt() / (0.02 * D)) ** 2)
+    assert torch.allclose(mf, (U @ (psi * (U.T @ m.float() @ V)) @ V.T).to(m.dtype), atol=1e-6) and abs(pm - float(psi.mean())) < 1e-9
+    assert torch.allclose(o._filtered(st, m, 0.05, 2.0, 1e9)[0], m.float().to(m.dtype), atol=1e-5)   # Delta -> inf: psi -> 1
+    assert "f2g_type/psi/attn.c_q" in o.diagnostics() or any(k.startswith("f2g_type/psi/") for k in o.diagnostics())
+
+
 def test_logtime_weight_decay():
     """With r = 0 and zero gradients the step is pure decay: d-muon's (1 - lr wd) or ADana's (1 - wd s / (1 + t / ts))."""
     for wd_decaying, factor in ((False, 1 - 0.05 * 0.01), (True, 1 - 0.01 * 1.0 / (1 + 1 / 3.0))):
