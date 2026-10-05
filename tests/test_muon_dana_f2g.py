@@ -200,6 +200,23 @@ def test_filter_rule_and_step():
     assert "f2g_type/psi/attn.c_q" in o.diagnostics() or any(k.startswith("f2g_type/psi/") for k in o.diagnostics())
 
 
+def test_highpass_filter():
+    model, names, params = _model()
+    o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, fixed=(1.0, 0.0), filt_x0=1e-9, filt_every=1, filt_shape="hs")
+    _train(o, model, params, 12)
+    st = o.state[o.plist[o.fidx[0]]]; m = torch.randn_like(st["m"]); D = 8.0 / 20
+    mf, pm = o._filtered(st, m, 0.05, 2.0, D)                       # tiny cutoff: every mode with curvature passes
+    keep = (st["filt_w"] > 0).float()
+    U, V = st["filt_U"], st["filt_V"]
+    assert torch.allclose(mf, (U @ (keep * (U.T @ m.float() @ V)) @ V.T).to(m.dtype), atol=1e-5)
+    o.filt_x0 = 1e9                                                 # huge cutoff: nothing passes, no momentum
+    mf, pm = o._filtered(st, m, 0.05, 2.0, D)
+    assert pm == 0.0 and float(mf.abs().max()) == 0.0
+    o.filt_shape = "hp"; o.filt_x0 = 1.0
+    x = 0.05 * 2.0 * st["filt_w"].sqrt() / (1.0 * D)
+    assert abs(o._filtered(st, m, 0.05, 2.0, D)[1] - float((x * x / (1 + x * x)).mean())) < 1e-6
+
+
 def test_logtime_weight_decay():
     """With r = 0 and zero gradients the step is pure decay: d-muon's (1 - lr wd) or ADana's (1 - wd s / (1 + t / ts))."""
     for wd_decaying, factor in ((False, 1 - 0.05 * 0.01), (True, 1 - 0.01 * 1.0 / (1 + 1 / 3.0))):

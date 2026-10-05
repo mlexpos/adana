@@ -51,20 +51,32 @@ def kappa(h, D, eps, r):
     return np.where(ok, h * Nn / np.where(ok, d1 * d2, 1.0), np.inf)
 
 
-def filt_psi(h, eps, D, x0):
-    """momentum filter weight of a mode with gain h: 1 / (1 + (eps h / (x0 D))^2); x0 <= 0 means no filter."""
+def filt_fn(x, shape):
+    """filter weight as a function of x = eps h / (x0 Delta): 'lp' low-pass 1/(1+x^2) (keep slow modes), 'hs' Heaviside
+    1{x > 1} and 'hp' x^2/(1+x^2) (high-pass: keep fast modes; a mode with no curvature gets 0)."""
+    if shape == "lp":
+        return 1.0 / (1.0 + x * x)
+    if shape == "hs":
+        return (x * 0.0 + 1.0) * (x > 1.0)                           # keeps the dtype of x (numpy or torch)
+    if shape == "hp":
+        return x * x / (1.0 + x * x)
+    raise ValueError(f"muon-dana-f2g: filter shape must be lp, hs or hp, got {shape}")
+
+
+def filt_psi(h, eps, D, x0, shape="lp"):
+    """momentum filter weight of a mode with gain h; x0 <= 0 means no filter."""
     if x0 <= 0:
         return np.ones_like(h)
-    return 1.0 / (1.0 + (eps * h / (x0 * D)) ** 2)
+    return filt_fn(eps * h / (x0 * D), shape)
 
 
-def rule_r(w, tau, a0, D, eps, E, c, n_bis=30, rmax=1.0, x0=0.0):
+def rule_r(w, tau, a0, D, eps, E, c, n_bis=30, rmax=1.0, x0=0.0, shape="lp"):
     """r per matrix (searched in [0, rmax]) and K(0).  w, tau: (L, k); a0, eps, E: (L,).  With x0 > 0 every Lanczos
     node carries the filtered momentum r * psi(eps h / (x0 D)), h = a0 sqrt(w)."""
     with np.errstate(invalid="ignore", over="ignore", divide="ignore"):
         h = a0[:, None] * np.sqrt(np.maximum(w, 0.0))
         on = tau > 0
-        ps = filt_psi(h, eps[:, None], D, x0)
+        ps = filt_psi(h, eps[:, None], D, x0, shape)
 
         def K(r):
             return 0.5 * np.sum(np.where(on, tau * kappa(h, D, eps[:, None], r[:, None] * ps), 0.0), axis=1)
@@ -147,7 +159,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
                  polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, wd_decaying=False,
-                 wd_ts=1.0, rmax=1.0, filt_x0=0.0, filt_rate=0.3, filt_every=2, log_dir=None):
+                 wd_ts=1.0, rmax=1.0, filt_x0=0.0, filt_rate=0.3, filt_every=2, filt_shape="lp", log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -170,6 +182,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         # (sampled-label output gradients and inputs from the refresh capture, EMA rate filt_rate per refresh, eigenbases
         # every filt_every refreshes); psi_ij = 1 / (1 + (eps a0 sqrt(g_i a_j) / (x0 Delta))^2), a0 the F2g gain constant
         self.filt_x0, self.filt_rate, self.filt_every = float(filt_x0), float(filt_rate), int(filt_every)
+        self.filt_shape = str(filt_shape); filt_fn(np.zeros(1), self.filt_shape)        # validates the shape
         self.psi_mean = None
         self.r_rule = None
         self.log_dir = Path(log_dir) if log_dir is not None else None
@@ -394,7 +407,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         if self.filt_x0 <= 0 or "filt_U" not in st or a0 <= 0:
             return m, 1.0
         U, V = st["filt_U"], st["filt_V"]
-        psi = 1.0 / (1.0 + (eps * a0 * st["filt_w"].sqrt() / (self.filt_x0 * D)) ** 2)
+        psi = filt_fn(eps * a0 * st["filt_w"].sqrt() / (self.filt_x0 * D), self.filt_shape)
         mt = U.T @ m.float() @ V
         return (U @ (psi * mt) @ V.T).to(m.dtype), float(psi.mean())
 
@@ -424,7 +437,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         E = xb - self.nse * np.sqrt(np.maximum(Vb, 0.0) * rho / (2.0 - rho))
         eps = np.array([self._lr_of(self.plist[i])[0] * self.hmult * self._scale(self.plist[i]) for i in self.fidx])
         a0 = np.where(S > 0, np.maximum(Nb, 0.0) / np.maximum(S, 1e-300), 0.0)
-        r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c, rmax=self.rmax, x0=self.filt_x0)
+        r, K0 = rule_r(W, TAU, a0, D, eps, E, self.c, rmax=self.rmax, x0=self.filt_x0, shape=self.filt_shape)
         ready = tn >= self.warm and g0["f2g_n"] > 0 and g0["f2g_nL"] > 0
         self.E, self.K0, self.a0 = E, K0, a0
         r = np.where((Nb > 0) & (S > 0), r, 0.0)                 # no positive numerator yet: no floor known, no momentum

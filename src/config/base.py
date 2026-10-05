@@ -296,6 +296,9 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--f2g_filt_x0", default=0.0, type=float,
                         help="muon-dana-f2g momentum filter: > 0 applies psi = 1/(1+(eps a0 sqrt(w)/(x0 Delta))^2) to the DANA buffer "
                              "in the K-FAC eigenbasis (w = products of factor eigenvalues); 0.02 is the toy optimum")
+    parser.add_argument("--f2g_filt_shape", default="lp", choices=["lp", "hs", "hp"],
+                        help="muon-dana-f2g filter shape in x = eps a0 sqrt(w)/(x0 Delta): lp 1/(1+x^2) (low-pass), "
+                             "hs Heaviside 1{x>1} or hp x^2/(1+x^2) (high-pass: momentum only on high-curvature modes)")
     parser.add_argument("--f2g_filt_rate", default=0.3, type=float, help="muon-dana-f2g filter: EMA rate of the K-FAC factors per refresh")
     parser.add_argument("--f2g_filt_every", default=2, type=int, help="muon-dana-f2g filter: refreshes between eigendecompositions")
     parser.add_argument("--f2g_rmax", default=1.0, type=float,
