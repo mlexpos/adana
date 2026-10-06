@@ -279,6 +279,63 @@ def test_bf16_store_matches_fp32():
     assert np.allclose(w16[:, -1], w32[:, -1], rtol=3e-2)       # largest node
 
 
+def test_white_whitens_kronecker_noise():
+    """Pure-noise gradients with Kronecker covariance: the whitened raw-gradient buffer has unit-RMS entries, and the
+    spectral map has singular values <= 1 (linear below the cap)."""
+    model, names, params = _model()
+    o = _opt(params, names, warm=10 ** 9, white=0.5, white_vfl=0.0, white_every=5, white_rate=0.02, fixed=(0.0, 0.0))
+    torch.manual_seed(4)
+    cov = {}
+    for i in o.fidx:
+        m, n = params[i].shape
+        cov[i] = (torch.linspace(0.2, 5.0, m).sqrt(), torch.linspace(0.1, 3.0, n).sqrt())
+    for _ in range(300):
+        half, full = [None] * len(params), [None] * len(params)
+        for i in o.fidx:
+            a, b = cov[i]
+            g1 = a[:, None] * torch.randn(params[i].shape) * b[None, :]
+            g2 = a[:, None] * torch.randn(params[i].shape) * b[None, :]
+            full[i] = 0.5 * (g1 + g2); half[i] = 0.5 * g1
+        for q in params:
+            q.grad = None
+        for i in o.fidx:
+            params[i].grad = full[i].clone()
+        o.set_split_stats(half, full)
+        o.step()
+    for i in o.fidx:
+        st = o.state[params[i]]
+        UL, UR, el, er = (st[k].double() for k in ("w_UL", "w_UR", "w_el", "w_er"))
+        sd = (torch.outer(el / el.mean(), er / er.mean()) * float(st["w_s"])).sqrt()
+        X = UL @ ((UL.T @ st["w_mG"].double() @ UR) / sd) @ UR.T
+        rms = float(X.square().mean().sqrt())
+        assert 0.8 < rms < 1.25, (names[i], rms)
+    O = o._white_dirs(o.t + 1, 8.0 / (8.0 + o.t + 1))
+    for i, Oi in O.items():
+        assert float(torch.linalg.matrix_norm(Oi.double(), ord=2)) <= 1.0 + 1e-6
+    assert all(0.0 <= c <= 1.0 for c in o.capfrac.values())
+
+
+def test_white_training_and_state_dict():
+    model, names, params = _model()
+    o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, white=0.5, fixed=(1.0, 0.0), white_every=5)
+    losses = _train(o, model, params, 40)
+    assert all(np.isfinite(losses)) and losses[-1] < losses[0]
+    assert all("w_mG" in o.state[params[i]] and "w_UL" in o.state[params[i]] for i in o.fidx)
+    d = o.diagnostics()
+    assert "f2g/white_capfrac" in d and all(np.isfinite(v) for v in d.values()), d
+    o2 = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, white=0.5, fixed=(1.0, 0.0), white_every=5)
+    o2.load_state_dict(o.state_dict())
+    assert torch.equal(o2.state[params[o.fidx[0]]]["w_mG"], o.state[params[o.fidx[0]]]["w_mG"])
+    assert o2.param_groups[0]["f2g_cw"] == o.param_groups[0]["f2g_cw"] > 0
+    # r = 0: the whitened variant is momentum-free Muon, like the sign-SVD buffer variant
+    res = {}
+    for white in (0.0, 0.5):
+        model, names, params = _model()
+        o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, white=white, fixed=(0.0, 0.0))
+        res[white] = _train(o, model, params, 15)
+    assert np.allclose(res[0.0], res[0.5])
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

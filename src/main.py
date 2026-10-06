@@ -267,6 +267,7 @@ def build_optimizer(args, model, group_specs):
             fixed=(tuple(float(v) for v in args.f2g_fixed.split(",")) if args.f2g_fixed else None),
             wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, rmax=args.f2g_rmax,
             filt_x0=args.f2g_filt_x0, filt_rate=args.f2g_filt_rate, filt_every=args.f2g_filt_every, filt_shape=args.f2g_filt_shape,
+            white=args.f2g_white, white_vfl=args.f2g_white_vfl, white_rate=args.f2g_white_rate, white_every=args.f2g_white_every,
         ),
         # SOAP's preconditioner with the SLQ-budgeted DANA momentum in LaProp order (see src/optim/soap_dana_slq.py)
         "soap-dana-slq": lambda: SOAPDanaSLQ(

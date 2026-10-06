@@ -26,6 +26,18 @@ Rule, per hidden matrix:  r_t = sup{r in [0, 1]: K(r) <= K(0) + c (E - K(0))_+}.
     spectrum matters: a0 = Nbar / S_L makes sum_j tau_j h_j = Nbar whatever the scale of H_tok.
   r_t = 0 before step `warm` and before the first numerator.
 State per hidden matrix: the DANA buffer, u' and 2k + 5 scalars (in self.state[p], so checkpoints carry it).
+
+Whitened momentum (white = kappa_c > 0; ema-msign.tex, Definition "Whitened DANA momentum with a spectral cap"): the
+momentum averages RAW gradients and is read in the coordinates where the gradient noise is white,
+    mG <- (1 - Delta) mG + Delta g,     eta = g1 - g = (g1 - g2)/2   (the two half-batch means, from set_split_stats),
+    L, R <- EMA(eta eta^T), EMA(eta^T eta) at rate max(1/t, white_rate)   (noise shape; eigenbases every white_every steps),
+    s <- (1 - Delta)^2 s + Delta^2 mean(eta^2)                             (noise scale of the buffer, its own weights),
+    mt = U_L [(U_L^T mG U_R) / sd] U_R^T,  sd_kl^2 = max(s l_k r_l / (mean l mean r), vfl mean),
+    O = U min(kappa_c sv / nu, 1) V^T for mt = U diag(sv) V^T,  nu = (sqrt(rows) + sqrt(cols)) / 2,
+    p <- p (1 - lr wd) - lr c_p [u + (r_t / Delta_t) (sqrt(c_t) / kappa_c) O],   c_t = (1 - Delta)^2 c_{t-1} + Delta^2,
+with r_t from the rule or --f2g_fixed (then r is in whitened r-units: in the resolved, linear regime it matches the DANA
+ratio of the sign-SVD buffer).  Needs >= 2 micro-steps (split-half statistics).  The spectral map uses one batched
+eigendecomposition of the Gram matrices of the whitened buffers per step.
 """
 import math
 import time
@@ -159,7 +171,8 @@ class MuonDanaF2G(torch.optim.Optimizer):
     def __init__(self, params, lr=1e-3, delta=8.0, weight_decay=0.0, adamw_betas=(0.8, 0.999), adamw_eps=1e-8,
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
                  polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, wd_decaying=False,
-                 wd_ts=1.0, rmax=1.0, filt_x0=0.0, filt_rate=0.3, filt_every=2, filt_shape="lp", log_dir=None):
+                 wd_ts=1.0, rmax=1.0, filt_x0=0.0, filt_rate=0.3, filt_every=2, filt_shape="lp", white=0.0,
+                 white_vfl=0.01, white_rate=0.01, white_every=25, white_start=10, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -184,6 +197,10 @@ class MuonDanaF2G(torch.optim.Optimizer):
         self.filt_x0, self.filt_rate, self.filt_every = float(filt_x0), float(filt_rate), int(filt_every)
         self.filt_shape = str(filt_shape); filt_fn(np.zeros(1), self.filt_shape)        # validates the shape
         self.psi_mean = None
+        # whitened momentum (white = kappa_c > 0): raw-gradient buffer, noise-whitened, spectral cap at kappa_c sv / nu = 1
+        self.white, self.white_vfl, self.white_rate = float(white), float(white_vfl), float(white_rate)
+        self.white_every, self.white_start = int(white_every), int(white_start)
+        self.capfrac = None
         self.r_rule = None
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.plist, self.pnames = [], []
@@ -198,7 +215,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
         self.ftype = [self._type(self.pnames[i]) for i in self.fidx]
         g0 = self.param_groups[0]
         g0.setdefault("f2g_t", 0); g0.setdefault("f2g_n", 0); g0.setdefault("f2g_tL", 0.0)
-        g0.setdefault("f2g_nL", 0); g0.setdefault("f2g_nref", 0)
+        g0.setdefault("f2g_nL", 0); g0.setdefault("f2g_nref", 0); g0.setdefault("f2g_cw", 0.0)
         L = len(self.fidx)
         self.r = np.zeros(L); self.K0 = np.zeros(L); self.E = np.zeros(L); self.a0 = np.zeros(L)
         self.last_N = np.full(L, np.nan)
@@ -258,6 +275,30 @@ class MuonDanaF2G(torch.optim.Optimizer):
             st = self._fstate(self.plist[i])["f2g"]
             st[0] = (1 - rho) * float(st[0]) + rho * x[j]
             st[1] = (1 - rho) * float(st[1]) + rho * x[j] ** 2
+        if self.white > 0:
+            self._white_factors(half, full, tn, D)
+
+    def _white_factors(self, half, full, tn, D):
+        """noise shape (Kronecker factors of eta = g1 - g, eigenbases when due) and the buffer's noise scale s"""
+        rate = max(1.0 / tn, self.white_rate)
+        due = tn % self.white_every == 0 or (tn < self.white_every and (tn & (tn - 1)) == 0)     # powers of 2 early
+        for i in self.fidx:
+            h, f = half[i], full[i]
+            if h is None or f is None:
+                continue
+            st = self.state[self.plist[i]]
+            eta = (2.0 * h - f).float()
+            if "w_L" not in st:
+                st["w_L"] = eta @ eta.T; st["w_R"] = eta.T @ eta
+                st["w_s"] = torch.zeros((), dtype=torch.float64)
+            else:
+                st["w_L"].mul_(1 - rate).add_(eta @ eta.T, alpha=rate)
+                st["w_R"].mul_(1 - rate).add_(eta.T @ eta, alpha=rate)
+            st["w_s"].fill_((1 - D) ** 2 * float(st["w_s"]) + D * D * float(eta.square().mean()))
+            if due:
+                el, UL = torch.linalg.eigh(st["w_L"]); er, UR = torch.linalg.eigh(st["w_R"])
+                st["w_UL"], st["w_el"] = UL, el.clamp_min(1e-30 + 1e-12 * float(el.max()))
+                st["w_UR"], st["w_er"] = UR, er.clamp_min(1e-30 + 1e-12 * float(er.max()))
 
     # ---------------------------------------------------------------- refresh: numerator every R steps, Lanczos at geometric times
     def needs_refresh(self):
@@ -444,6 +485,43 @@ class MuonDanaF2G(torch.optim.Optimizer):
         return r if ready else np.zeros(L)
 
     @torch.no_grad()
+    def _white_dirs(self, tn, D):
+        """O = U min(kappa_c sv / nu, 1) V^T of the noise-whitened raw-gradient buffer, per hidden matrix (after the buffer
+        update); one batched eigendecomposition of the Gram matrices (smaller side) per Gram size."""
+        X = {}
+        for i in self.fidx:
+            p = self.plist[i]
+            if p.grad is None:
+                continue
+            st = self.state[p]
+            if "w_mG" not in st:
+                st["w_mG"] = torch.zeros_like(p, dtype=torch.float32)
+            st["w_mG"].mul_(1 - D).add_(p.grad.float(), alpha=D)
+            if tn < self.white_start or "w_UL" not in st:
+                continue
+            UL, UR, el, er = st["w_UL"], st["w_UR"], st["w_el"], st["w_er"]
+            sd2 = torch.outer(el / el.mean(), er / er.mean()) * max(float(st["w_s"]), 1e-30)
+            sd = sd2.clamp_min(self.white_vfl * float(sd2.mean())).sqrt()
+            X[i] = UL @ ((UL.T @ st["w_mG"] @ UR) / sd) @ UR.T
+        O, caps = {}, []
+        by = {}
+        for i, x in X.items():
+            by.setdefault(min(x.shape), []).append(i)
+        for _, idx in by.items():
+            gram = torch.stack([(X[i].T @ X[i]) if X[i].shape[0] >= X[i].shape[1] else (X[i] @ X[i].T) for i in idx])
+            ev, V = torch.linalg.eigh(gram.double())
+            sv = ev.clamp_min(0.0).sqrt()
+            for b, i in enumerate(idx):
+                m, n = X[i].shape
+                nu = 0.5 * (math.sqrt(m) + math.sqrt(n))
+                f = torch.minimum(torch.full_like(sv[b], self.white / nu), 1.0 / sv[b].clamp_min(1e-30))   # min(k s/nu, 1)/s
+                Vb, fb = V[b].float(), f.float()
+                O[i] = X[i] @ (Vb * fb) @ Vb.T if m >= n else (Vb * fb) @ Vb.T @ X[i]
+                caps.append(float((self.white * sv[b] / nu > 1.0).double().mean()))
+        self.capfrac = {i: c_ for i, c_ in zip([i for _, idx in by.items() for i in idx], caps)}
+        return O
+
+    @torch.no_grad()
     def step(self, closure=None):
         loss = None
         if closure is not None:
@@ -458,6 +536,11 @@ class MuonDanaF2G(torch.optim.Optimizer):
             self.r_rule = self.r
             self.r = np.full(len(self.fidx), min(self.rmax, c0 * (1.0 + tn / self.delta) ** (-kap)))
         rmap = {self.fidx[j]: float(self.r[j]) for j in range(len(self.fidx))}
+        Omap = {}
+        if self.white > 0:
+            g0["f2g_cw"] = (1 - D) ** 2 * float(g0["f2g_cw"]) + D * D
+            Omap = self._white_dirs(tn, D)
+            wfac = math.sqrt(g0["f2g_cw"]) / self.white
         jmap = {self.fidx[j]: j for j in range(len(self.fidx))}
         psis = np.ones(len(self.fidx))
         for group in self.param_groups:
@@ -481,6 +564,11 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     p.mul_(1 - decay)
                     eps_p = lr * self.hmult * self._scale(p)
                     mf = st["m"]
+                    if self.white > 0:                          # whitened raw-gradient momentum (zero until O exists)
+                        if i in Omap:
+                            u.add_(Omap[i].to(u.dtype), alpha=rmap.get(i, 0.0) / D * wfac)
+                        p.add_(u, alpha=-eps_p)
+                        continue
                     if self.filt_x0 > 0 and i in jmap:
                         mf, psis[jmap[i]] = self._filtered(st, st["m"], eps_p, float(self.a0[jmap[i]]), D)
                     p.add_(u.add_(mf, alpha=rmap.get(i, 0.0) / D), alpha=-eps_p)
@@ -524,6 +612,12 @@ class MuonDanaF2G(torch.optim.Optimizer):
             logs[f"f2g_type/xbar/{ty}"] = float(np.mean(xb[idx]))
             if self.psi_mean is not None and self.filt_x0 > 0:
                 logs[f"f2g_type/psi/{ty}"] = float(np.mean(self.psi_mean[idx]))
+            if self.white > 0 and self.capfrac:
+                cf_ = [self.capfrac[self.fidx[j]] for j in idx if self.fidx[j] in self.capfrac]
+                if cf_:
+                    logs[f"f2g_type/capfrac/{ty}"] = float(np.mean(cf_))
+        if self.white > 0 and self.capfrac:
+            logs["f2g/white_capfrac"] = float(np.mean(list(self.capfrac.values())))
         return logs
 
     def _save_diag(self):

@@ -301,6 +301,13 @@ def parse_args(base_parser, args, namespace):
                              "hs Heaviside 1{x>1} or hp x^2/(1+x^2) (high-pass: momentum only on high-curvature modes)")
     parser.add_argument("--f2g_filt_rate", default=0.3, type=float, help="muon-dana-f2g filter: EMA rate of the K-FAC factors per refresh")
     parser.add_argument("--f2g_filt_every", default=2, type=int, help="muon-dana-f2g filter: refreshes between eigendecompositions")
+    parser.add_argument("--f2g_white", default=0.0, type=float,
+                        help="muon-dana-f2g: > 0 replaces the sign-SVD DANA buffer by the noise-whitened raw-gradient buffer with "
+                             "spectral cap min(kappa_c s/nu, 1) (kappa_c = this value; 0.5 puts the cap at the noise edge); "
+                             "momentum step (r/Delta) (sqrt(c_t)/kappa_c) O.  Needs acc_steps >= 2")
+    parser.add_argument("--f2g_white_vfl", default=0.01, type=float, help="muon-dana-f2g whitening: noise-variance floor (x mean)")
+    parser.add_argument("--f2g_white_rate", default=0.01, type=float, help="muon-dana-f2g whitening: EMA rate of the noise factors")
+    parser.add_argument("--f2g_white_every", default=25, type=int, help="muon-dana-f2g whitening: steps between eigendecompositions")
     parser.add_argument("--f2g_rmax", default=1.0, type=float,
                         help="muon-dana-f2g: cap on r for the rule and --f2g_fixed (1 = Nesterov's g1 g3 = g2; not a stability edge)")
     parser.add_argument("--f2g_polar", default="ns", choices=["ns", "svd"],
