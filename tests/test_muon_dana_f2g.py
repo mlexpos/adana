@@ -336,6 +336,34 @@ def test_white_training_and_state_dict():
     assert np.allclose(res[0.0], res[0.5])
 
 
+def test_white_buffer_ignores_gradient_clipping():
+    """The whitened buffer takes the unclipped gradient from set_split_stats: scaling p.grad after it (as gradient clipping
+    does) leaves the buffer and the whitened momentum direction exactly unchanged."""
+    out = []
+    for clip in (1.0, 0.3):
+        model, names, params = _model()
+        o = _opt(params, names, warm=10 ** 9, white=0.5, white_every=5, fixed=(1.0, 0.0))
+        torch.manual_seed(4)
+        for _ in range(30):
+            half, full = [None] * len(params), [None] * len(params)
+            for i in o.fidx:
+                g1, g2 = torch.randn(params[i].shape) + 0.3, torch.randn(params[i].shape) + 0.3
+                full[i] = 0.5 * (g1 + g2); half[i] = 0.5 * g1
+            for q in params:
+                q.grad = None
+            for i in o.fidx:
+                params[i].grad = full[i].clone()
+            o.set_split_stats(half, full)
+            for i in o.fidx:
+                params[i].grad.mul_(clip)                       # gradient clipping happens after the split statistics
+            o.step()
+        O = o._white_dirs(o.t + 1, 8.0 / (8.0 + o.t + 1))
+        out.append(([o.state[params[i]]["w_mG"].clone() for i in o.fidx], [O[i].clone() for i in o.fidx]))
+    (m1, O1), (m2, O2) = out
+    assert all(torch.equal(a_, b_) for a_, b_ in zip(m1, m2))
+    assert all(torch.allclose(a_, b_, atol=1e-12) for a_, b_ in zip(O1, O2))
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

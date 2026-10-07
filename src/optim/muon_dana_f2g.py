@@ -30,6 +30,9 @@ State per hidden matrix: the DANA buffer, u' and 2k + 5 scalars (in self.state[p
 Whitened momentum (white = kappa_c > 0; ema-msign.tex, Definition "Whitened DANA momentum with a spectral cap"): the
 momentum averages RAW gradients and is read in the coordinates where the gradient noise is white,
     mG <- (1 - Delta) mG + Delta g,     eta = g1 - g = (g1 - g2)/2   (the two half-batch means, from set_split_stats),
+    g the UNCLIPPED full gradient (set_split_stats runs before gradient clipping; the noise factors are unclipped too, so
+    clipping must not enter the buffer: it would shrink the whitened buffer below its noise edge and weaken the step;
+    the cap bounds the step instead),
     L, R <- EMA(eta eta^T), EMA(eta^T eta) at rate max(1/t, white_rate)   (noise shape; eigenbases every white_every steps),
     s <- (1 - Delta)^2 s + Delta^2 mean(eta^2)                             (noise scale of the buffer, its own weights),
     mt = U_L [(U_L^T mG U_R) / sd] U_R^T,  sd_kl^2 = max(s l_k r_l / (mean l mean r), vfl mean),
@@ -288,6 +291,9 @@ class MuonDanaF2G(torch.optim.Optimizer):
                 continue
             st = self.state[self.plist[i]]
             eta = (2.0 * h - f).float()
+            if "w_mG" not in st:
+                st["w_mG"] = torch.zeros_like(f, dtype=torch.float32)
+            st["w_mG"].mul_(1 - D).add_(f.float(), alpha=D)            # raw buffer of UNCLIPPED full gradients
             if "w_L" not in st:
                 st["w_L"] = eta @ eta.T; st["w_R"] = eta.T @ eta
                 st["w_s"] = torch.zeros((), dtype=torch.float64)
@@ -486,18 +492,15 @@ class MuonDanaF2G(torch.optim.Optimizer):
 
     @torch.no_grad()
     def _white_dirs(self, tn, D):
-        """O = U min(kappa_c sv / nu, 1) V^T of the noise-whitened raw-gradient buffer, per hidden matrix (after the buffer
-        update); one batched eigendecomposition of the Gram matrices (smaller side) per Gram size."""
+        """O = U min(kappa_c sv / nu, 1) V^T of the noise-whitened raw-gradient buffer (updated in set_split_stats), per hidden
+        matrix; one batched eigendecomposition of the Gram matrices (smaller side) per Gram size."""
         X = {}
         for i in self.fidx:
             p = self.plist[i]
             if p.grad is None:
                 continue
             st = self.state[p]
-            if "w_mG" not in st:
-                st["w_mG"] = torch.zeros_like(p, dtype=torch.float32)
-            st["w_mG"].mul_(1 - D).add_(p.grad.float(), alpha=D)
-            if tn < self.white_start or "w_UL" not in st:
+            if tn < self.white_start or "w_UL" not in st or "w_mG" not in st:   # buffer: set_split_stats (unclipped)
                 continue
             UL, UR, el, er = st["w_UL"], st["w_UR"], st["w_el"], st["w_er"]
             sd2 = torch.outer(el / el.mean(), er / er.mean()) * max(float(st["w_s"]), 1e-30)
