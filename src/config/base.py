@@ -305,6 +305,11 @@ def parse_args(base_parser, args, namespace):
                         help="muon-dana-f2g: > 0 replaces the sign-SVD DANA buffer by the noise-whitened raw-gradient buffer with "
                              "spectral cap min(kappa_c s/nu, 1) (kappa_c = this value; 0.5 puts the cap at the noise edge); "
                              "momentum step (r/Delta) (sqrt(c_t)/kappa_c) O.  Needs acc_steps >= 2")
+    parser.add_argument("--f2g_rawbuf", default="none", choices=["none", "msign", "ramp"],
+                        help="muon-dana-f2g: momentum from the raw (unwhitened, unclipped) gradient buffer mG: msign(mG), or the "
+                             "ramp U min(k s/tau, 1) V^T with tau the buffer's noise edge (top singular value of the half-batch "
+                             "noise, buffer-weighted); step (r/Delta) sqrt(c_t) O.  Needs acc_steps >= 2")
+    parser.add_argument("--f2g_ramp_k", default=1.0, type=float, help="muon-dana-f2g ramp: cap at sv = tau / k (1: at the noise edge)")
     parser.add_argument("--f2g_white_vfl", default=0.01, type=float, help="muon-dana-f2g whitening: noise-variance floor (x mean)")
     parser.add_argument("--f2g_white_rate", default=0.01, type=float, help="muon-dana-f2g whitening: EMA rate of the noise factors")
     parser.add_argument("--f2g_white_every", default=25, type=int, help="muon-dana-f2g whitening: steps between eigendecompositions")

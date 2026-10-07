@@ -41,6 +41,13 @@ momentum averages RAW gradients and is read in the coordinates where the gradien
 with r_t from the rule or --f2g_fixed (then r is in whitened r-units: in the resolved, linear regime it matches the DANA
 ratio of the sign-SVD buffer).  Needs >= 2 micro-steps (split-half statistics).  The spectral map uses one batched
 eigendecomposition of the Gram matrices of the whitened buffers per step.
+
+Raw-buffer momentum without whitening (rawbuf = "msign" or "ramp"): the same unclipped raw-gradient buffer mG, and
+    msign:  O = msign(mG)                                     (algorithm (B) of ema-msign.tex)
+    ramp:   O = U min(ramp_k sv / tau_t, 1) V^T,  mG = U diag(sv) V^T,  tau_t the buffer's noise edge in raw coordinates,
+            tau_t^2 = (1 - Delta)^2 tau_{t-1}^2 + Delta^2 sigma_max(eta_t)^2  (top singular value of the half-batch noise by
+            warm-started power iteration; buffer weights as s above)
+    p <- p (1 - lr wd) - lr c_p [u + (r_t / Delta_t) sqrt(c_t) O]      (the reduction gamma = eps r sqrt(c) / Delta)
 """
 import math
 import time
@@ -175,7 +182,8 @@ class MuonDanaF2G(torch.optim.Optimizer):
                  ns_steps=5, matched_rms=0.2, c=0.2, R=25, geo=1.25, k=40, seqs=16, chunk=4, nse=2.0, warm=50,
                  polar="ns", polar_floor=2e-3, store="fp32", hidden_lr_mult=1.0, fixed=None, wd_decaying=False,
                  wd_ts=1.0, rmax=1.0, filt_x0=0.0, filt_rate=0.3, filt_every=2, filt_shape="lp", white=0.0,
-                 white_vfl=0.01, white_rate=0.01, white_every=25, white_start=10, log_dir=None):
+                 white_vfl=0.01, white_rate=0.01, white_every=25, white_start=10, rawbuf="none", ramp_k=1.0,
+                 ramp_iters=4, log_dir=None):
         defaults = dict(lr=lr, weight_decay=weight_decay, adamw_betas=adamw_betas, adamw_eps=adamw_eps)
         super().__init__(params, defaults)
         self.delta, self.ns_steps, self.matched_rms = float(delta), int(ns_steps), float(matched_rms)
@@ -203,6 +211,11 @@ class MuonDanaF2G(torch.optim.Optimizer):
         # whitened momentum (white = kappa_c > 0): raw-gradient buffer, noise-whitened, spectral cap at kappa_c sv / nu = 1
         self.white, self.white_vfl, self.white_rate = float(white), float(white_vfl), float(white_rate)
         self.white_every, self.white_start = int(white_every), int(white_start)
+        if rawbuf not in ("none", "msign", "ramp"):
+            raise ValueError(f"muon-dana-f2g: rawbuf must be none, msign or ramp, got {rawbuf}")
+        if rawbuf != "none" and self.white > 0:
+            raise ValueError("muon-dana-f2g: --f2g_rawbuf and --f2g_white are exclusive")
+        self.rawbuf, self.ramp_k, self.ramp_iters = rawbuf, float(ramp_k), int(ramp_iters)
         self.capfrac = None
         self.r_rule = None
         self.log_dir = Path(log_dir) if log_dir is not None else None
@@ -280,6 +293,35 @@ class MuonDanaF2G(torch.optim.Optimizer):
             st[1] = (1 - rho) * float(st[1]) + rho * x[j] ** 2
         if self.white > 0:
             self._white_factors(half, full, tn, D)
+        elif self.rawbuf != "none":
+            self._raw_buffer(half, full, tn, D)
+
+    def _raw_buffer(self, half, full, tn, D):
+        """raw buffer of UNCLIPPED full gradients; for the ramp also the buffer's noise edge tau_t (power iteration on eta)"""
+        for i in self.fidx:
+            h, f = half[i], full[i]
+            if h is None or f is None:
+                continue
+            st = self.state[self.plist[i]]
+            if "w_mG" not in st:
+                st["w_mG"] = torch.zeros_like(f, dtype=torch.float32)
+            st["w_mG"].mul_(1 - D).add_(f.float(), alpha=D)
+            if self.rawbuf == "ramp":
+                eta = (2.0 * h - f).float()
+                v = st.get("r_v")
+                if v is None:
+                    v = torch.randn(eta.shape[1], device=eta.device, dtype=eta.dtype)
+                    st["r_tau2"] = torch.zeros((), dtype=torch.float64)
+                v = v / v.norm().clamp_min(1e-30)
+                sig = torch.zeros((), device=eta.device)
+                for _ in range(self.ramp_iters):
+                    w_ = eta @ v
+                    w_ = w_ / w_.norm().clamp_min(1e-30)
+                    v = eta.T @ w_
+                    sig = v.norm()
+                    v = v / sig.clamp_min(1e-30)
+                st["r_v"] = v
+                st["r_tau2"].fill_((1 - D) ** 2 * float(st["r_tau2"]) + D * D * float(sig) ** 2)
 
     def _white_factors(self, half, full, tn, D):
         """noise shape (Kronecker factors of eta = g1 - g, eigenbases when due) and the buffer's noise scale s"""
@@ -525,6 +567,36 @@ class MuonDanaF2G(torch.optim.Optimizer):
         return O
 
     @torch.no_grad()
+    def _raw_dirs(self, tn, D):
+        """momentum directions from the raw buffer: msign(mG), or the ramp U min(ramp_k sv / tau, 1) V^T"""
+        O, caps, X, tau = {}, {}, {}, {}
+        for i in self.fidx:
+            p = self.plist[i]
+            st = self.state[p]
+            if p.grad is None or tn < self.white_start or "w_mG" not in st:
+                continue
+            if self.rawbuf == "msign":
+                O[i] = zeropower_via_newtonschulz5(st["w_mG"].bfloat16(), steps=self.ns_steps).float()
+            elif float(st.get("r_tau2", 0.0)) > 0:
+                X[i], tau[i] = st["w_mG"], math.sqrt(float(st["r_tau2"]))
+        by = {}
+        for i, x in X.items():
+            by.setdefault(min(x.shape), []).append(i)
+        for _, idx in by.items():
+            gram = torch.stack([(X[i].T @ X[i]) if X[i].shape[0] >= X[i].shape[1] else (X[i] @ X[i].T) for i in idx])
+            ev, V = torch.linalg.eigh(gram.double())
+            sv = ev.clamp_min(0.0).sqrt()
+            for b, i in enumerate(idx):
+                m, n = X[i].shape
+                f = torch.minimum(torch.full_like(sv[b], self.ramp_k / tau[i]), 1.0 / sv[b].clamp_min(1e-30))   # min(k s/tau,1)/s
+                Vb, fb = V[b].float(), f.float()
+                O[i] = X[i] @ (Vb * fb) @ Vb.T if m >= n else (Vb * fb) @ Vb.T @ X[i]
+                caps[i] = float((self.ramp_k * sv[b] / tau[i] > 1.0).double().mean())
+        if self.rawbuf == "ramp":
+            self.capfrac = caps
+        return O
+
+    @torch.no_grad()
     def step(self, closure=None):
         loss = None
         if closure is not None:
@@ -544,6 +616,10 @@ class MuonDanaF2G(torch.optim.Optimizer):
             g0["f2g_cw"] = (1 - D) ** 2 * float(g0["f2g_cw"]) + D * D
             Omap = self._white_dirs(tn, D)
             wfac = math.sqrt(g0["f2g_cw"]) / self.white
+        elif self.rawbuf != "none":
+            g0["f2g_cw"] = (1 - D) ** 2 * float(g0["f2g_cw"]) + D * D
+            Omap = self._raw_dirs(tn, D)
+            wfac = math.sqrt(g0["f2g_cw"])
         jmap = {self.fidx[j]: j for j in range(len(self.fidx))}
         psis = np.ones(len(self.fidx))
         for group in self.param_groups:
@@ -567,7 +643,7 @@ class MuonDanaF2G(torch.optim.Optimizer):
                     p.mul_(1 - decay)
                     eps_p = lr * self.hmult * self._scale(p)
                     mf = st["m"]
-                    if self.white > 0:                          # whitened raw-gradient momentum (zero until O exists)
+                    if self.white > 0 or self.rawbuf != "none":  # raw-gradient momentum (zero until O exists)
                         if i in Omap:
                             u.add_(Omap[i].to(u.dtype), alpha=rmap.get(i, 0.0) / D * wfac)
                         p.add_(u, alpha=-eps_p)
@@ -615,11 +691,11 @@ class MuonDanaF2G(torch.optim.Optimizer):
             logs[f"f2g_type/xbar/{ty}"] = float(np.mean(xb[idx]))
             if self.psi_mean is not None and self.filt_x0 > 0:
                 logs[f"f2g_type/psi/{ty}"] = float(np.mean(self.psi_mean[idx]))
-            if self.white > 0 and self.capfrac:
+            if (self.white > 0 or self.rawbuf == "ramp") and self.capfrac:
                 cf_ = [self.capfrac[self.fidx[j]] for j in idx if self.fidx[j] in self.capfrac]
                 if cf_:
                     logs[f"f2g_type/capfrac/{ty}"] = float(np.mean(cf_))
-        if self.white > 0 and self.capfrac:
+        if (self.white > 0 or self.rawbuf == "ramp") and self.capfrac:
             logs["f2g/white_capfrac"] = float(np.mean(list(self.capfrac.values())))
         return logs
 

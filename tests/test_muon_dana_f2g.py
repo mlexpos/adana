@@ -364,6 +364,50 @@ def test_white_buffer_ignores_gradient_clipping():
     assert all(torch.allclose(a_, b_, atol=1e-12) for a_, b_ in zip(O1, O2))
 
 
+def test_rawbuf_msign_and_ramp():
+    """msign: O = msign of the raw buffer; ramp: on pure noise the edge estimate tau matches the buffer noise's top singular
+    value and nothing is capped; both train, and neither feels gradient clipping."""
+    model, names, params = _model()
+    o = _opt(params, names, warm=10 ** 9, rawbuf="ramp", fixed=(1.0, 0.0), ramp_iters=8)
+    torch.manual_seed(4)
+    cov = {i: (torch.linspace(0.2, 5.0, params[i].shape[0]).sqrt(), torch.linspace(0.1, 3.0, params[i].shape[1]).sqrt()) for i in o.fidx}
+    rat = {i: [] for i in o.fidx}
+    for t in range(500):
+        half, full = [None] * len(params), [None] * len(params)
+        for i in o.fidx:
+            a, b = cov[i]
+            g1 = a[:, None] * torch.randn(params[i].shape) * b[None, :]; g2 = a[:, None] * torch.randn(params[i].shape) * b[None, :]
+            full[i] = 0.5 * (g1 + g2); half[i] = 0.5 * g1
+        for q in params:
+            q.grad = None
+        for i in o.fidx:
+            params[i].grad = full[i].clone()
+        o.set_split_stats(half, full)
+        o.step()
+        if t >= 200:                                    # tiny test matrices: single top singular values scatter ~20%
+            for i in o.fidx:
+                st = o.state[params[i]]
+                rat[i].append(float(torch.linalg.matrix_norm(st["w_mG"].double(), ord=2)) / math.sqrt(float(st["r_tau2"])))
+    for i in o.fidx:
+        assert 0.85 < np.mean(rat[i]) < 1.1, (names[i], np.mean(rat[i]))
+    assert max(o.capfrac.values()) < 0.1
+    O = o._raw_dirs(o.t + 1, 8.0 / (8.0 + o.t + 1))
+    for Oi in O.values():
+        assert float(torch.linalg.matrix_norm(Oi.double(), ord=2)) <= 1.0 + 1e-6
+    for mode in ("msign", "ramp"):
+        model, names, params = _model()
+        o = _opt(params, names, R=5, warm=5, k=6, seqs=4, chunk=2, rawbuf=mode, fixed=(1.0, 0.0))
+        losses = _train(o, model, params, 30)
+        assert all(np.isfinite(losses)) and losses[-1] < losses[0], (mode, losses[0], losses[-1])
+        if mode == "msign":
+            i = o.fidx[0]
+            O = o._raw_dirs(o.t + 1, 0.1)
+            ref = zeropower_via_newtonschulz5(o.state[params[i]]["w_mG"].bfloat16(), 5).float()
+            assert torch.allclose(O[i], ref)
+        d = o.diagnostics()
+        assert all(np.isfinite(v) for v in d.values()), d
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
