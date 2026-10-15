@@ -37,6 +37,23 @@ def test_first_step():
         assert torch.allclose(p.detach(), want, rtol=1e-6, atol=1e-12), n
 
 
+def test_first_step_adamw_plain():
+    """plain='adamw': the non-hidden tensors take d-muon's AdamW step (bias-corrected first step = va lr sign-like g/|g|)."""
+    V = 10001
+    model, names, params = _model(V=V)
+    o = HybridSLQ([{"params": params, "param_names": names}], lr=0.01, msign_lr=0.003, va=2.0, plain="adamw")
+    x = torch.randint(0, V, (4, 6)); y = (x + 1) % V
+    o.zero_grad(); model(x, targets=y)["loss"].backward()
+    before = [p.detach().clone() for p in params]
+    grads = [p.grad.clone() for p in params]
+    o.step()
+    for n, p, b, g, um in zip(names, params, before, grads, o.use_muon):
+        if not um:
+            a1, a2 = 0.2 * g, 0.001 * g * g
+            want = b - 0.01 * 2.0 * (a1 / (a2.sqrt() + 1e-8)) / (0.2 / 0.001 ** 0.5)
+            assert torch.allclose(p.detach(), want, rtol=1e-6, atol=1e-12), n
+
+
 def test_no_muon_tensors_is_adana_slq():
     """With no tensor on the msign path and va = 1, hybrid-slq is adana-slq step for step (same rule, refreshes, moments)."""
     kw = dict(lr=0.02, s=0.5, alloc="waterfill", m_max=12, probes=1, slq_batch=8, first_refresh=2, teff=1.0, batch_seqs=8)

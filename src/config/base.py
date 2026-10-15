@@ -280,6 +280,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--hyb_msign_lr", default=0.0, type=float,
                         help="hybrid-slq: peak LR of the msign step on the hidden matrices (--lr is SLQ-ADana's gamma0)")
     parser.add_argument("--hyb_beta", default=0.95, type=float, help="hybrid-slq: Nesterov buffer of the msign step")
+    parser.add_argument("--hyb_plain", default="rms", choices=["rms", "adamw"],
+                        help="hybrid-slq: plain step of the non-hidden tensors: ADana's RMS step or d-muon's AdamW (--beta1/--beta2)")
     parser.add_argument("--hyb_va", default=1.0, type=float,
                         help="hybrid-slq: plain step of the non-hidden tensors, in units of gamma0 (1 = SLQ-ADana's)")
     parser.add_argument("--soap_fused_qkv", default=False, action="store_true",

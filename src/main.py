@@ -262,7 +262,7 @@ def build_optimizer(args, model, group_specs):
         "hybrid-slq": lambda: HybridSLQ(
             group_specs, lr=args.lr, msign_lr=args.hyb_msign_lr, beta=args.hyb_beta, va=args.hyb_va, delta=args.delta,
             weight_decay=args.weight_decay, wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, ns_steps=args.muon_ns_steps,
-            matched_rms=args.matched_adamw_rms, **slq_kw(),
+            matched_rms=args.matched_adamw_rms, plain=args.hyb_plain, adam_betas=(args.beta1, args.beta2), **slq_kw(),
         ),
         # d-muon with its hidden-matrix momentum replaced by DANA momentum set by the F2g rule (src/optim/muon_dana_f2g.py)
         "muon-dana-f2g": lambda: MuonDanaF2G(

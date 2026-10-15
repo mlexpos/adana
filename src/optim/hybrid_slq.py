@@ -12,6 +12,8 @@ log-time rate Delta_t = delta / (delta + t) and the LR schedule s(t) = group lr 
   every other tensor:
       theta <- theta - s(t) gamma0 [ va g + A_T m ] / (sqrt(v) + eps)
   (+ ADana's log-time weight decay on every tensor, as adana-slq)
+  plain = 'adamw': the non-hidden tensors' plain term is d-muon's AdamW direction instead, va gamma0 a1_hat / (sqrt(a2_hat) + eps)
+  with its own moments (betas 0.8 / 0.999, bias-corrected); va gamma0 = d-muon's lr gives d-muon's full plain step everywhere.
 
 gamma0 = lr is SLQ-ADana's own peak LR: it sets both the momentum gain and the SLQ threshold, N_T(Delta) = tr P_T f(H_z),
 f(x) = gamma0 x / (gamma0 x + Delta), H_z = r GN r, r = (sqrt(v) + eps)^{-1/2}.  A_T = ratio_T / Delta_t is ADanaSLQ's rule
@@ -31,10 +33,14 @@ from .muon import zeropower_via_newtonschulz5
 
 class HybridSLQ(ADanaSLQ):
     def __init__(self, params, lr=1.0, msign_lr=0.0, beta=0.95, va=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0,
-                 wd_decaying=False, wd_ts=1.0, ns_steps=5, matched_rms=0.2, **slq_kw):
+                 wd_decaying=False, wd_ts=1.0, ns_steps=5, matched_rms=0.2, plain="rms", adam_betas=(0.8, 0.999),
+                 **slq_kw):
         super().__init__(params, lr=lr, delta=delta, epsilon=epsilon, weight_decay=weight_decay, clipsnr=None,
                          wd_decaying=wd_decaying, wd_ts=wd_ts, **slq_kw)
+        if plain not in ("rms", "adamw"):
+            raise ValueError(f"hybrid-slq: plain step '{plain}' (rms | adamw)")
         self.msign_lr, self.beta, self.va = float(msign_lr), float(beta), float(va)
+        self.plain, self.adam_betas = plain, tuple(float(b) for b in adam_betas)
         self.ns_steps, self.matched_rms = int(ns_steps), float(matched_rms)
         self.use_muon = [p.ndim >= 2 and p.size(0) < 10000 for p in self.plist]
 
@@ -66,6 +72,8 @@ class HybridSLQ(ADanaSLQ):
                     st["v"] = torch.zeros_like(p)
                     if self.use_muon[i]:
                         st["buf"] = torch.zeros_like(p)
+                    elif self.plain == "adamw":
+                        st["a1"] = torch.zeros_like(p); st["a2"] = torch.zeros_like(p)
                 st["step"] += 1
                 step = st["step"]
                 g = p.grad
@@ -79,6 +87,11 @@ class HybridSLQ(ADanaSLQ):
                     st["buf"].mul_(self.beta).add_(g)
                     u = zeropower_via_newtonschulz5(g.add(st["buf"], alpha=self.beta).bfloat16(), steps=self.ns_steps)
                     p.add_(u.to(p.dtype), alpha=-g2 * hmul * self._scale(p))
+                elif self.plain == "adamw":           # d-muon's AdamW direction (bias-corrected), at va gamma0
+                    b1, b2 = self.adam_betas
+                    st["a1"].lerp_(g, 1 - b1); st["a2"].lerp_(g * g, 1 - b2)
+                    sc = (1 - b1 ** step) / (1 - b2 ** step) ** 0.5
+                    p.add_(st["a1"] / (st["a2"].sqrt() + eps), alpha=-g2 * self.va / sc)
                 else:
                     p.add_(g * norm, alpha=-g2 * self.va)
                 p.add_(mom, alpha=-g2 * float(self.A[i]))
