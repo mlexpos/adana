@@ -242,6 +242,12 @@ case "$OPT" in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt muon-dana-slq --delta $DELTA --beta2 0.999 --muon_ns_steps 5 --wd_decaying --wd_ts $WD_TS"
         ;;
+    hybrid-slq)
+        # SLQ-ADana (--lr = its gamma0; moments, log-time WD, --slq_* flags as adana-slq) with d-muon's step on the hidden
+        # matrices at peak --hyb_msign_lr (Nesterov buffer --hyb_beta, Moonlight scale).
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
+        OPT_FLAGS="--opt hybrid-slq --delta $DELTA --muon_ns_steps 5 --wd_decaying --wd_ts $WD_TS"
+        ;;
     muon-dana-f2g)
         # d-muon (same c_p, weight decay and AdamW for wte / lm_head / gains) with the hidden-matrix momentum replaced by
         # DANA momentum set by the F2g rule. Pass --f2g_* flags through.

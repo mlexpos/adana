@@ -1,0 +1,99 @@
+"""hybrid-slq: SLQ-ADana (src/optim/adana_slq.py) with the plain term of the hidden matrices replaced by d-muon's step.
+
+The ladder study (dana-lyapunov experiments/report/hybrid_ladder) found that, on a bias-dominated problem, the plain step
+and the long momentum do different jobs: a small spectral (msign) step for the fast directions, and SLQ-ADana's
+stability-budgeted long momentum, in Adam coordinates, for the slow ones.  Per tensor T, with ADana's moments m, v at the
+log-time rate Delta_t = delta / (delta + t) and the LR schedule s(t) = group lr / lr:
+
+  hidden matrices (p.ndim >= 2 and p.size(0) < 10000: every block matrix, not wte / lm_head):
+      buf <- beta buf + g,   u = c msign(g + beta buf)       (d-muon's Nesterov buffer and Moonlight scale c = matched_rms
+                                                              sqrt(max(A, B)); msign = 5 quintic Newton-Schulz steps, bf16)
+      theta <- theta - s(t) [ eta_h u + gamma0 A_T m / (sqrt(v) + eps) ]
+  every other tensor:
+      theta <- theta - s(t) gamma0 [ va g + A_T m ] / (sqrt(v) + eps)
+  (+ ADana's log-time weight decay on every tensor, as adana-slq)
+
+gamma0 = lr is SLQ-ADana's own peak LR: it sets both the momentum gain and the SLQ threshold, N_T(Delta) = tr P_T f(H_z),
+f(x) = gamma0 x / (gamma0 x + Delta), H_z = r GN r, r = (sqrt(v) + eps)^{-1/2}.  A_T = ratio_T / Delta_t is ADanaSLQ's rule
+(global, waterfill, ...) unchanged: the buffer m is the EMA of the raw gradient in both methods, so the estimator inputs
+(split statistics, |m_T|_z^2, the quadrature) are those of adana-slq.  eta_h is the peak of the msign step (hyb_msign_lr);
+va = 1 gives the Adam-treated tensors exactly SLQ-ADana's step.  With eta_h = 0 and va = 1 this is adana-slq on the
+non-hidden tensors and pure long momentum on the hidden ones; with A_T = 0 it is d-muon's hidden step (without its AdamW
+first moment elsewhere).
+"""
+import math
+
+import torch
+
+from .adana_slq import ADanaSLQ
+from .muon import zeropower_via_newtonschulz5
+
+
+class HybridSLQ(ADanaSLQ):
+    def __init__(self, params, lr=1.0, msign_lr=0.0, beta=0.95, va=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0,
+                 wd_decaying=False, wd_ts=1.0, ns_steps=5, matched_rms=0.2, **slq_kw):
+        super().__init__(params, lr=lr, delta=delta, epsilon=epsilon, weight_decay=weight_decay, clipsnr=None,
+                         wd_decaying=wd_decaying, wd_ts=wd_ts, **slq_kw)
+        self.msign_lr, self.beta, self.va = float(msign_lr), float(beta), float(va)
+        self.ns_steps, self.matched_rms = int(ns_steps), float(matched_rms)
+        self.use_muon = [p.ndim >= 2 and p.size(0) < 10000 for p in self.plist]
+
+    def _scale(self, p):
+        return self.matched_rms * math.sqrt(max(p.shape[:2]))
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        self.t += 1
+        self._compute_ratio(self.delta / (self.delta + self.t))
+        hmul = self.msign_lr / self.lr                     # msign peak relative to gamma0 (the group lr carries s(t) gamma0)
+        for group in self.param_groups:
+            g2 = group["lr"]
+            schedule_factor = g2 / self.lr
+            wd = group["weight_decay"]
+            eps = group["epsilon"]
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                i = self.pidx[id(p)]
+                st = self.state[p]
+                if len(st) == 0:
+                    st["step"] = 0
+                    st["m"] = torch.zeros_like(p)
+                    st["v"] = torch.zeros_like(p)
+                    if self.use_muon[i]:
+                        st["buf"] = torch.zeros_like(p)
+                st["step"] += 1
+                step = st["step"]
+                g = p.grad
+                Dm = self.delta / (self.delta + step)
+                st["m"].lerp_(g, Dm)
+                st["v"].mul_(1 - Dm).addcmul_(g, g, value=Dm)
+                norm = torch.sqrt(st["v"]).add_(eps).reciprocal_()
+                mom = st["m"] * norm
+                st["mz2"] = (st["m"] * mom).sum()
+                if self.use_muon[i]:
+                    st["buf"].mul_(self.beta).add_(g)
+                    u = zeropower_via_newtonschulz5(g.add(st["buf"], alpha=self.beta).bfloat16(), steps=self.ns_steps)
+                    p.add_(u.to(p.dtype), alpha=-g2 * hmul * self._scale(p))
+                else:
+                    p.add_(g * norm, alpha=-g2 * self.va)
+                p.add_(mom, alpha=-g2 * float(self.A[i]))
+                if self.wd_decaying:
+                    wd_factor = -wd / (1 + step / self.wd_ts) * schedule_factor
+                else:
+                    wd_factor = -wd * schedule_factor
+                p.mul_(1 + wd_factor)
+        for i, p in enumerate(self.plist):
+            if "mz2" in self.state.get(p, {}):
+                self.mz2[i] = float(self.state[p]["mz2"])
+        return loss
+
+    def diagnostics(self):
+        logs = super().diagnostics()
+        logs["hyb/msign_lr"] = self.msign_lr
+        logs["hyb/msign_over_gamma0"] = self.msign_lr / self.lr
+        return logs

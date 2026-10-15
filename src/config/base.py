@@ -126,6 +126,7 @@ def parse_args(base_parser, args, namespace):
             "soap-dana-slq",
             "muon-dana-slq",
             "muon-dana-f2g",
+            "hybrid-slq",
             # Dana-Star family (with tau)
             "dana-star",
             "dana-star-mk4",
@@ -275,6 +276,12 @@ def parse_args(base_parser, args, namespace):
                              "for non-diagonal preconditioners)")
     parser.add_argument("--slq_polar_floor", default=2e-3, type=float,
                         help="muon-dana-slq: singular-value floor / |G|_F in the polar derivative of the SLQ operator")
+    # hybrid-slq: SLQ-ADana with d-muon's step as the plain term of the hidden matrices (src/optim/hybrid_slq.py)
+    parser.add_argument("--hyb_msign_lr", default=0.0, type=float,
+                        help="hybrid-slq: peak LR of the msign step on the hidden matrices (--lr is SLQ-ADana's gamma0)")
+    parser.add_argument("--hyb_beta", default=0.95, type=float, help="hybrid-slq: Nesterov buffer of the msign step")
+    parser.add_argument("--hyb_va", default=1.0, type=float,
+                        help="hybrid-slq: plain step of the non-hidden tensors, in units of gamma0 (1 = SLQ-ADana's)")
     parser.add_argument("--soap_fused_qkv", default=False, action="store_true",
                         help="soap-dana-slq: precondition the fused QKV matrix as one block (default: q, k, v split)")
     # muon-dana-f2g: d-muon with its hidden-matrix momentum replaced by DANA + the F2g rule (src/optim/muon_dana_f2g.py)
