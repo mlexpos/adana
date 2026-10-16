@@ -52,6 +52,9 @@ if [ "$DSTAR_CLUSTER" = "auto" ]; then
         rorqual*|rg*)
             DSTAR_CLUSTER="rorqual"
             ;;
+        trig*|trillium*)
+            DSTAR_CLUSTER="trillium"
+            ;;
         math*|slurm*)
             DSTAR_CLUSTER="math-slurm"
             ;;
@@ -75,6 +78,12 @@ case "$DSTAR_CLUSTER" in
     fir)
         module load arrow/21.0.0 2>/dev/null || true
         module load python/3.13 2>/dev/null || true
+        source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
+        ;;
+    trillium)
+        # python/3.13 must be named in full; the arrow modules pull python back to 3.11 (pyarrow comes from the venv instead)
+        module load StdEnv/2023 2>/dev/null || true
+        module load python/3.13.2 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     rorqual)
