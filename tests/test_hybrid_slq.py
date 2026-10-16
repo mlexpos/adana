@@ -108,6 +108,37 @@ def test_cyclic_waves():
                 assert abs(o.A[i] - want / 0.5) < 1e-9
 
 
+def test_switch_waves():
+    """cyc = 2: per-tensor caps (small tensors 0) until S/N stays < 1 for max(1, .02 T) steps after .02 T; then the
+    amplifications freeze (r = r_end t_ref / t) and forward waves wte -> h.0 -> lm_head run over [t*, T)."""
+    import optim.adana_slq as AS
+    model, names, params = _model(V=11)
+    T = 60
+    o = HybridSLQ([{"params": params, "param_names": names}], lr=0.01, msign_lr=0.01, cyc=2, cyc_T=T)
+    L = len(o.plist)
+    orig = AS.ADanaSLQ._compute_ratio
+    def stub(self, D):                                         # rule = 1 everywhere; the budget binds from t = 10 on
+        self.q = {}; self.ratio = np.ones(L); self.NT = np.ones(L); self.S = 100.0 if self.t < 10 else 0.5; self.A = self.ratio / D
+    AS.ADanaSLQ._compute_ratio = stub
+    try:
+        big = o.cgroup >= 0
+        for t in range(T):
+            o.t = t
+            o._compute_ratio(0.5)
+            if t < 11:                                         # switch fires after 1 step of S/N < 1 (W = max(1, 1.2) -> 1.2)
+                assert np.allclose(o.ratio[big], 1.0) and np.allclose(o.ratio[~big], 0.0), t
+        ts = o.tstar
+        assert 10 <= ts <= 12, ts
+        stg = (T - ts) / 3
+        t = int(ts + 2.5 * stg)                                # last stage: lm_head active; wte, h.0 frozen
+        o.t = t; o._compute_ratio(0.5)
+        g = o.cgroup
+        assert np.allclose(o.ratio[g == 2], 1.0)
+        assert np.all(o.ratio[g == 0] < 1.0) and np.all(o.ratio[g == 1] < 1.0) and np.allclose(o.ratio[~big], 0.0)
+    finally:
+        AS.ADanaSLQ._compute_ratio = orig
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):

@@ -29,6 +29,10 @@ the large tensors take turns in groups wte (+ wpe) -> block 0 -> ... -> block L-
 active on [k T/G, (k+1) T/G) (G = L + 2, T = cyc_T iterations): it runs at r^rule, switched on by a linear ramp over 10% of a stage;
 when its stage ends at t_k it decays as min{r_end t_k / t, r^rule(t)} (r ~ 1/t holds its amplification r/Delta fixed); later groups
 are off.  small_off = True (non-cyclic): every large tensor at its own cap, small tensors off.
+cyc = 2 ("switch waves"): every large tensor at its own cap (small tensors off) while the shared budget is slack; at t*, the first
+step at which S / sum_T N_T stays < 1 for 2% of the run (after 2% warmup), every amplification r_T/Delta is frozen (r_T = r_end
+t_ref / t, capped by its rule) and forward waves pass the right to grow over G equal stages of [t*, T): the active group ramps
+(10% of a stage) from its frozen tail to its rule, then freezes again.  Identical to small_off when the budget never binds.
 """
 import math
 import re
@@ -58,6 +62,7 @@ class HybridSLQ(ADanaSLQ):
         self.cgroup = self._cyc_groups()
         self.NG = int(self.cgroup.max()) + 1 if (self.cgroup >= 0).any() else 1
         self.rend = np.zeros(len(self.plist))
+        self.tref = np.ones(len(self.plist)); self.tstar = -1.0; self.swc = 0; self._last_t = -1
         self.ns_steps, self.matched_rms = int(ns_steps), float(matched_rms)
         self.use_muon = [p.ndim >= 2 and p.size(0) < 10000 for p in self.plist]
 
@@ -86,7 +91,26 @@ class HybridSLQ(ADanaSLQ):
             return
         rule = self.ratio.copy()
         big = self.cgroup >= 0
-        if self.cyc:
+        if self.cyc == 2:
+            t, T = float(self.t), float(self.cyc_T)
+            if self.t != self._last_t:                         # count optimizer steps (refresh() also calls this)
+                SN = self.S / max(float(np.maximum(self.NT, 1e-2)[big].sum()), 1e-12)
+                self.swc = self.swc + 1 if (SN < 1.0 and t > 0.02 * T) else 0
+                self._last_t = self.t
+                if self.tstar < 0 and self.swc >= max(1.0, 0.02 * T):
+                    self.tstar = t
+            if self.tstar < 0:
+                r = np.where(big, rule, 0.0)
+                self.rend = r; self.tref = np.full(len(r), max(t, 1.0))
+            else:
+                stg = max(T - self.tstar, 1.0) / self.NG
+                act = big & (self.cgroup == math.floor((t - self.tstar) / stg))
+                tail = np.minimum(self.rend * self.tref / max(t, 1.0), rule)
+                up = tail + (rule - tail) * np.clip((t - self.tstar - self.cgroup * stg) / max(0.1 * stg, 1.0), 0.0, 1.0)
+                r = np.where(act, up, np.where(big, tail, 0.0))
+                self.rend = np.where(act, r, self.rend); self.tref = np.where(act, max(t, 1.0), self.tref)
+            self.ratio = r
+        elif self.cyc:
             stage = self.cyc_T / self.NG
             t = float(self.t)
             k = math.floor(t / stage)
@@ -166,6 +190,8 @@ class HybridSLQ(ADanaSLQ):
         logs = super().diagnostics()
         logs["hyb/msign_lr"] = self.msign_lr
         logs["hyb/msign_over_gamma0"] = self.msign_lr / self.lr
-        if self.cyc:
+        if self.cyc == 2:
+            logs["hyb/tstar"] = self.tstar
+        elif self.cyc:
             logs["hyb/cyc_stage"] = math.floor(self.t / (self.cyc_T / self.NG))
         return logs
