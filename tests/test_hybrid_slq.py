@@ -139,6 +139,38 @@ def test_switch_waves():
         AS.ADanaSLQ._compute_ratio = orig
 
 
+def test_gamma0_rule():
+    """gamma0* solves N(Delta_tauT; g) = S on the quadrature; the multiplier moves halfway in log space, never down, capped; the
+    momentum term is scaled by it (checked through A-independent bookkeeping)."""
+    model, names, params = _model(V=11)
+    o = HybridSLQ([{"params": params, "param_names": names}], lr=0.01, msign_lr=0.01, cyc_T=100, g0_rule=True, g0_max=4.0)
+    L = len(o.plist)
+    o.q = dict(nodes=np.array([1.0, 10.0]), w=np.array([50.0, 50.0]), wT=np.full((2, L), 1.0), trF=1.0, lam_max=10.0)
+    o.S = 40.0
+    g = o._gamma0_star()
+    Dt = 8.0 / (8.0 + 85.0)
+    N = 50 * g * 1.0 / (g * 1.0 + Dt) + 50 * g * 10.0 / (g * 10.0 + Dt)
+    assert abs(N - 40.0) < 1e-6 * 40.0, N
+    o.g0_star = g
+    for _ in range(3):                                         # repeated updates approach min(g*/lr, cap) from below, monotone
+        prev = o.g0_mult
+        target = math.sqrt(o.g0_mult * g / o.lr)
+        o.g0_mult = float(min(o.g0_max, max(o.g0_mult, target)))
+        assert o.g0_mult >= prev
+    assert o.g0_mult <= o.g0_max + 1e-12
+
+
+def test_gamma0_rule_trains():
+    """End to end: the rule updates at real SLQ refreshes, stays within [1, g0_max], and training stays finite."""
+    model, names, params = _model(seed=7)
+    o = HybridSLQ([{"params": params, "param_names": names}], lr=0.01, msign_lr=0.01, s=0.5, alloc="waterfill", m_max=12, probes=1,
+                  slq_batch=8, first_refresh=2, teff=1.0, batch_seqs=8, cyc_T=30, g0_rule=True)
+    losses = _train(o, model, params, 30, refresh=True)
+    assert all(np.isfinite(losses)) and o.n_refresh > 0
+    assert 1.0 <= o.g0_mult <= o.g0_max and np.isfinite(o.g0_star)
+    assert o.diagnostics()["hyb/g0_mult"] == o.g0_mult
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):

@@ -285,6 +285,11 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--hyb_cyc", default=0, type=int, choices=[-1, 0, 1, 2],
                         help="hybrid-slq: cyclic waves wte -> blocks -> lm_head (1) or reversed (-1), each at its own noise cap; "
                              "2 = per-tensor caps until the shared budget binds, then frozen amplifications + forward waves")
+    parser.add_argument("--hyb_g0_rule", default=False, action="store_true",
+                        help="hybrid-slq: set gamma0 online so the noise budget lasts to tau T: sup{g: N(Delta_tauT; g) <= S}")
+    parser.add_argument("--hyb_g0_tau", default=0.85, type=float, help="hybrid-slq gamma0 rule: late fraction tau of the run")
+    parser.add_argument("--hyb_g0_tmax", default=0.6, type=float, help="hybrid-slq gamma0 rule: last update at this fraction")
+    parser.add_argument("--hyb_g0_max", default=4.0, type=float, help="hybrid-slq gamma0 rule: max multiple of the starting --lr")
     parser.add_argument("--hyb_small_off", default=False, action="store_true",
                         help="hybrid-slq: no long momentum on small tensors (norms, biases); large tensors at their own cap")
     parser.add_argument("--hyb_va", default=1.0, type=float,
