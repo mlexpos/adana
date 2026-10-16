@@ -15,6 +15,13 @@ cd "$ADANA_DIR"
 source scripts/config.sh
 
 export WANDB_MODE=offline
+# $HOME is read-only on trillium compute nodes: every cache goes to scratch
+export XDG_CACHE_HOME="$SCRATCH/.cache"
+export TRITON_CACHE_DIR="$SCRATCH/.cache/triton"
+export TORCHINDUCTOR_CACHE_DIR="$SCRATCH/.cache/inductor"
+export MPLCONFIGDIR="$SCRATCH/.cache/matplotlib"
+export WANDB_CACHE_DIR="$SCRATCH/.cache/wandb" WANDB_CONFIG_DIR="$SCRATCH/.config/wandb"
+mkdir -p "$TRITON_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR" "$MPLCONFIGDIR" "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR"
 export TIKTOKEN_CACHE_DIR="${TIKTOKEN_CACHE_DIR:-$HOME/tiktoken_cache}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 
