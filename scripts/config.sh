@@ -81,9 +81,9 @@ case "$DSTAR_CLUSTER" in
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     trillium)
-        # python/3.13 must be named in full; the arrow modules pull python back to 3.11 (pyarrow comes from the venv instead)
+        # arrow/17.0.0 brings python/3.11.5 and pyarrow (the wheelhouse has no pyarrow for 3.13; loading gcc first breaks pyarrow)
         module load StdEnv/2023 2>/dev/null || true
-        module load python/3.13.2 2>/dev/null || true
+        module load arrow/17.0.0 2>/dev/null || true
         source "$HOME/danastarenv/bin/activate" 2>/dev/null || true
         ;;
     rorqual)
