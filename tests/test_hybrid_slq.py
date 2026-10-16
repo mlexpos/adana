@@ -82,6 +82,32 @@ def test_trains_with_refresh():
     assert d["hyb/msign_over_gamma0"] == 1.0
 
 
+def test_cyclic_waves():
+    """Groups wte -> h.0 -> lm_head (G = 3, T = 12, stage 4): the active group follows the rule (= 1 here) after a one-step ramp,
+    finished groups decay as r_end t_k / t, later groups and small tensors (norms, biases) are 0; cyc = -1 reverses the order."""
+    model, names, params = _model(V=11)
+    for cyc, order in ((1, ("wte", "h.0", "lm_head")), (-1, ("lm_head", "h.0", "wte"))):
+        o = HybridSLQ([{"params": params, "param_names": names}], lr=0.01, msign_lr=0.01, cyc=cyc, cyc_T=12, s=1e9, batch_seqs=8)
+        L = len(o.plist)
+        o.q = dict(nodes=np.array([1.0]), w=np.array([1.0]), wT=np.full((1, L), 1e-3), trF=1.0, lam_max=1.0)
+        grp = {n: next((k for k, key in enumerate(order) if key in n), None) for n in names}
+        for t in range(12):
+            o.t = t
+            o._compute_ratio(0.5)
+            for i, n in enumerate(names):
+                g = grp[n] if params[i].ndim >= 2 else None
+                if g is None:
+                    want = 0.0
+                elif t < 4 * g:
+                    want = 0.0
+                elif t < 4 * (g + 1):
+                    want = 0.0 if t == 4 * g else 1.0
+                else:
+                    want = 4 * (g + 1) / t
+                assert abs(o.ratio[i] - want) < 1e-9, (cyc, t, n, o.ratio[i], want)
+                assert abs(o.A[i] - want / 0.5) < 1e-9
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):

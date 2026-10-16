@@ -282,6 +282,10 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--hyb_beta", default=0.95, type=float, help="hybrid-slq: Nesterov buffer of the msign step")
     parser.add_argument("--hyb_plain", default="rms", choices=["rms", "adamw"],
                         help="hybrid-slq: plain step of the non-hidden tensors: ADana's RMS step or d-muon's AdamW (--beta1/--beta2)")
+    parser.add_argument("--hyb_cyc", default=0, type=int, choices=[-1, 0, 1],
+                        help="hybrid-slq: cyclic waves wte -> blocks -> lm_head (1) or reversed (-1), each at its own noise cap")
+    parser.add_argument("--hyb_small_off", default=False, action="store_true",
+                        help="hybrid-slq: no long momentum on small tensors (norms, biases); large tensors at their own cap")
     parser.add_argument("--hyb_va", default=1.0, type=float,
                         help="hybrid-slq: plain step of the non-hidden tensors, in units of gamma0 (1 = SLQ-ADana's)")
     parser.add_argument("--soap_fused_qkv", default=False, action="store_true",
