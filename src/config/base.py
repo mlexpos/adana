@@ -290,6 +290,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--hyb_g0_tau", default=0.85, type=float, help="hybrid-slq gamma0 rule: late fraction tau of the run")
     parser.add_argument("--hyb_g0_tmax", default=0.6, type=float, help="hybrid-slq gamma0 rule: last update at this fraction")
     parser.add_argument("--hyb_g0_max", default=4.0, type=float, help="hybrid-slq gamma0 rule: max multiple of the starting --lr")
+    parser.add_argument("--hyb_subset", default="all", choices=["all", "large", "boundary", "hidden"],
+                        help="hybrid-slq: water-filling restricted to a tensor subset (large = no norms/biases; boundary = wte/wpe + lm_head; hidden = block matrices)")
     parser.add_argument("--hyb_small_off", default=False, action="store_true",
                         help="hybrid-slq: no long momentum on small tensors (norms, biases); large tensors at their own cap")
     parser.add_argument("--hyb_va", default=1.0, type=float,

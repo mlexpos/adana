@@ -52,7 +52,7 @@ from .muon import zeropower_via_newtonschulz5
 class HybridSLQ(ADanaSLQ):
     def __init__(self, params, lr=1.0, msign_lr=0.0, beta=0.95, va=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0,
                  wd_decaying=False, wd_ts=1.0, ns_steps=5, matched_rms=0.2, plain="rms", adam_betas=(0.8, 0.999),
-                 cyc=0, cyc_T=0, small_off=False, g0_rule=False, g0_tau=0.85, g0_tmax=0.6, g0_max=4.0, **slq_kw):
+                 cyc=0, cyc_T=0, small_off=False, g0_rule=False, g0_tau=0.85, g0_tmax=0.6, g0_max=4.0, subset="all", **slq_kw):
         if cyc:
             slq_kw["alloc"] = "independent"                    # waves run every tensor at its own noise cap
             if cyc_T <= 0:
@@ -72,6 +72,13 @@ class HybridSLQ(ADanaSLQ):
         self.g0_mult = 1.0; self.g0_star = float("nan")
         if self.g0_rule and cyc_T <= 0:
             raise ValueError("hybrid-slq: the gamma0 rule needs cyc_T (the number of iterations)")
+        if subset not in ("all", "large", "boundary", "hidden"):
+            raise ValueError(f"hybrid-slq: subset '{subset}' (all | large | boundary | hidden)")
+        self.subset = subset
+        L1 = self.NG - 1                                   # wave groups: 0 = wte/wpe, 1..L = blocks, L + 1 = lm_head
+        self.smask = {"all": np.ones(len(self.plist), bool), "large": self.cgroup >= 0,
+                      "boundary": (self.cgroup == 0) | (self.cgroup == L1),
+                      "hidden": (self.cgroup >= 1) & (self.cgroup < L1)}[subset]
         self.ns_steps, self.matched_rms = int(ns_steps), float(matched_rms)
         self.use_muon = [p.ndim >= 2 and p.size(0) < 10000 for p in self.plist]
 
@@ -124,6 +131,15 @@ class HybridSLQ(ADanaSLQ):
             super()._compute_ratio(D)
         finally:
             self.lr = lr0
+        if self.subset != "all" and self.q is not None and self.n_split > 0 and not (self.cyc or self.small_off):
+            # water-filling restricted to a tensor subset (task-vs-method ablation): the whole budget S goes to the subset
+            m = self.smask; NTc = np.maximum(self.NT, 1e-2)
+            r = np.zeros(len(self.plist))
+            if m.any():
+                r[m] = self._waterfill(np.maximum(self.G[m], 0.0) / NTc[m], NTc[m], self.S, leftover=self.leftover)
+            self.ratio = np.minimum(r, self.cap); self.afrac = self.ratio * NTc / max(self.S, 1e-30)
+            self.A = self.ratio / D
+            return
         if self.q is None or not (self.cyc or self.small_off):
             return
         rule = self.ratio.copy()

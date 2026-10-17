@@ -171,6 +171,24 @@ def test_gamma0_rule_trains():
     assert o.diagnostics()["hyb/g0_mult"] == o.g0_mult
 
 
+def test_subset():
+    """subset = boundary / hidden: water-filling over that subset only; every other tensor gets ratio 0, the subset spends <= S."""
+    for sub in ("boundary", "hidden", "large"):
+        model, names, params = _model(seed=11)
+        o = HybridSLQ([{"params": params, "param_names": names}], lr=0.01, msign_lr=0.01, s=0.5, alloc="waterfill", m_max=12, probes=1,
+                      slq_batch=8, first_refresh=2, teff=1.0, batch_seqs=8, subset=sub)
+        losses = _train(o, model, params, 12, refresh=True)
+        assert all(np.isfinite(losses)) and o.n_refresh > 0
+        m = o.smask
+        assert m.any() and not m.all(), sub
+        assert np.all(o.ratio[~m] == 0.0), sub
+        assert float(o.ratio[m] @ np.maximum(o.NT[m], 1e-2)) <= o.S * (1 + 1e-6) + 1e-9, sub
+        if sub == "boundary":
+            assert all(("wte" in n or "wpe" in n or "lm_head" in n) for n, mm in zip(o.pnames, m) if mm)
+        if sub == "hidden":
+            assert all((".h." in n and "wte" not in n and "lm_head" not in n) for n, mm in zip(o.pnames, m) if mm)
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):
