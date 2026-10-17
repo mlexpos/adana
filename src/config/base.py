@@ -292,6 +292,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--hyb_g0_max", default=4.0, type=float, help="hybrid-slq gamma0 rule: max multiple of the starting --lr")
     parser.add_argument("--hyb_subset", default="all", choices=["all", "large", "boundary", "hidden"],
                         help="hybrid-slq: water-filling restricted to a tensor subset (large = no norms/biases; boundary = wte/wpe + lm_head; hidden = block matrices)")
+    parser.add_argument("--hyb_sketch", default=0, type=int,
+                        help="hybrid-slq split buffers for the coherent-signal check: 0 off, 1 full copies, F > 1 Kronecker CountSketch (F^2 compression)")
     parser.add_argument("--hyb_small_off", default=False, action="store_true",
                         help="hybrid-slq: no long momentum on small tensors (norms, biases); large tensors at their own cap")
     parser.add_argument("--hyb_va", default=1.0, type=float,

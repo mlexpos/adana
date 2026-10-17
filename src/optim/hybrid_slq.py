@@ -52,7 +52,8 @@ from .muon import zeropower_via_newtonschulz5
 class HybridSLQ(ADanaSLQ):
     def __init__(self, params, lr=1.0, msign_lr=0.0, beta=0.95, va=1.0, delta=8.0, epsilon=1e-8, weight_decay=0.0,
                  wd_decaying=False, wd_ts=1.0, ns_steps=5, matched_rms=0.2, plain="rms", adam_betas=(0.8, 0.999),
-                 cyc=0, cyc_T=0, small_off=False, g0_rule=False, g0_tau=0.85, g0_tmax=0.6, g0_max=4.0, subset="all", **slq_kw):
+                 cyc=0, cyc_T=0, small_off=False, g0_rule=False, g0_tau=0.85, g0_tmax=0.6, g0_max=4.0, subset="all", sketch=0,
+                 **slq_kw):
         if cyc:
             slq_kw["alloc"] = "independent"                    # waves run every tensor at its own noise cap
             if cyc_T <= 0:
@@ -80,6 +81,11 @@ class HybridSLQ(ADanaSLQ):
                       "boundary": (self.cgroup == 0) | (self.cgroup == L1),
                       "hidden": (self.cgroup >= 1) & (self.cgroup < L1)}[subset]
         self.Wb, self.Cb = 0.0, 0.0                         # buffer weight sums W = sum w_k, C = sum w_k^2 (m, v share the rate)
+        # split buffers (EMAs of the two half-batch gradients, from set_split_stats): coherent signal <mA, mB>/W^2, sampling noise
+        # |mA - mB|^2/(4C).  sketch = F > 1: Kronecker CountSketch S(G) = H_r G H_c^T (k1 = ceil(n/F), k2 = ceil(m/F), F^2 compression
+        # of the matrices; one sketch per shape, fixed seed); sketch = 1: full copies; 0: off.  Vectors are kept in full.
+        self.sk_F = int(sketch); self.sk_maps = {}; self.smA = [None] * len(self.plist); self.smB = [None] * len(self.plist)
+        self.sk_W, self.sk_C = 0.0, 0.0
         self.ns_steps, self.matched_rms = int(ns_steps), float(matched_rms)
         self.use_muon = [p.ndim >= 2 and p.size(0) < 10000 for p in self.plist]
 
@@ -242,6 +248,46 @@ class HybridSLQ(ADanaSLQ):
                 self.mz2[i] = float(self.state[p]["mz2"])
         return loss
 
+    def _sk(self, G):
+        if self.sk_F <= 1 or G.ndim < 2:
+            return G.float().clone()
+        G2 = G.float().reshape(G.shape[0], -1); n, m = G2.shape
+        key = (n, m, G2.device)
+        if key not in self.sk_maps:
+            gen = torch.Generator().manual_seed(1_000_003 * n + m)
+            k1, k2 = -(-n // self.sk_F), -(-m // self.sk_F)
+            sgn = lambda size: (torch.randint(0, 2, (size,), generator=gen) * 2 - 1).to(G2.device, G2.dtype)
+            self.sk_maps[key] = (torch.randint(0, k1, (n,), generator=gen).to(G2.device), sgn(n),
+                                 torch.randint(0, k2, (m,), generator=gen).to(G2.device), sgn(m), k1, k2)
+        hr, sr, hc, sc, k1, k2 = self.sk_maps[key]
+        A = torch.zeros(k1, m, device=G2.device, dtype=G2.dtype).index_add_(0, hr, G2 * sr[:, None])
+        return torch.zeros(k2, k1, device=G2.device, dtype=G2.dtype).index_add_(0, hc, (A * sc[None, :]).t().contiguous()).t()
+
+    @torch.no_grad()
+    def set_split_stats(self, half, full):
+        super().set_split_stats(half, full)
+        if self.sk_F <= 0:
+            return
+        D = self.delta / (self.delta + self.t + 1)          # the rate of the step that follows (m, v use the same)
+        self.sk_W = (1 - D) * self.sk_W + D; self.sk_C = (1 - D) ** 2 * self.sk_C + D * D
+        for i, (h, f) in enumerate(zip(half, full)):
+            if h is None or f is None:
+                continue
+            s1, s2 = self._sk(2.0 * h), self._sk(2.0 * (f.float() - h.float()))
+            if self.smA[i] is None:
+                self.smA[i], self.smB[i] = torch.zeros_like(s1), torch.zeros_like(s2)
+            self.smA[i].lerp_(s1, D); self.smB[i].lerp_(s2, D)
+
+    def split_buffer_stats(self):
+        L = len(self.plist); cs, cn = np.full(L, np.nan), np.full(L, np.nan)
+        if self.sk_F <= 0 or self.sk_W <= 0:
+            return cs, cn
+        for i in range(L):
+            if self.smA[i] is not None:
+                cs[i] = float((self.smA[i] * self.smB[i]).sum()) / self.sk_W ** 2
+                cn[i] = float(((self.smA[i] - self.smB[i]) ** 2).sum()) / (4 * self.sk_C)
+        return cs, cn
+
     @torch.no_grad()
     def buffer_snr(self):
         """Per-tensor SNR at the training batch from the long-momentum buffers alone (user, 2026-10-16).  m, v are EMAs of g and g^2
@@ -267,6 +313,8 @@ class HybridSLQ(ADanaSLQ):
         self.last_refresh.update(b)
         self.last_refresh["split_snr"] = 4.0 * self.eX / np.maximum(self.eD, 1e-30)     # per-tensor training-split SNR (EMA)
         self.last_refresh["bsnr_total"] = float(np.nansum(b["bsig"]) / max(np.nansum(b["bnoi"]), 1e-30))
+        if self.sk_F > 0:
+            self.last_refresh["sk_csig"], self.last_refresh["sk_cnoi"] = self.split_buffer_stats()
         super()._save_diag()
 
     def diagnostics(self):

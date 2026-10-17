@@ -264,7 +264,7 @@ def build_optimizer(args, model, group_specs):
             weight_decay=args.weight_decay, wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, ns_steps=args.muon_ns_steps,
             matched_rms=args.matched_adamw_rms, plain=args.hyb_plain, adam_betas=(args.beta1, args.beta2),
             cyc=args.hyb_cyc, cyc_T=args.iterations, small_off=args.hyb_small_off, g0_rule=args.hyb_g0_rule,
-            g0_tau=args.hyb_g0_tau, g0_tmax=args.hyb_g0_tmax, g0_max=args.hyb_g0_max, subset=args.hyb_subset, **slq_kw(),
+            g0_tau=args.hyb_g0_tau, g0_tmax=args.hyb_g0_tmax, g0_max=args.hyb_g0_max, subset=args.hyb_subset, sketch=args.hyb_sketch, **slq_kw(),
         ),
         # d-muon with its hidden-matrix momentum replaced by DANA momentum set by the F2g rule (src/optim/muon_dana_f2g.py)
         "muon-dana-f2g": lambda: MuonDanaF2G(

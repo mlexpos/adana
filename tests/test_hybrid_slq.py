@@ -208,6 +208,35 @@ def test_buffer_snr():
         assert abs(b["bsnr_raw"][i] / true - 1) < 0.15, (names[i], b["bsnr_raw"][i], true)
 
 
+def test_split_buffers_sketch():
+    """sketch = 1: <mA, mB>/W^2 and |mA - mB|^2/(4C) from fed half gradients match a hand computation; sketch = 4: the Kronecker
+    sketch is linear (so sketched EMAs = sketch of the EMAs) and preserves a large inner product within a few percent."""
+    model, names, params = _model(seed=9)
+    gen = torch.Generator().manual_seed(1)
+    for F in (1, 4):
+        o = HybridSLQ([{"params": params, "param_names": names}], lr=1e-14, msign_lr=0.0, va=1e-12, sketch=F)
+        hA = [torch.zeros_like(p) for p in params]; hB = [torch.zeros_like(p) for p in params]; W = C = 0.0
+        for t in range(40):
+            h = [torch.randn(q.shape, generator=gen) for q in params]; f = [hh + torch.randn(hh.shape, generator=gen) for hh in h]
+            D = o.delta / (o.delta + o.t + 1); W = (1 - D) * W + D; C = (1 - D) ** 2 * C + D * D
+            for i in range(len(params)):
+                hA[i].lerp_(2 * h[i], D); hB[i].lerp_(2 * (f[i] - h[i]), D)
+            o.set_split_stats(h, f)
+            for p in params:
+                p.grad = torch.zeros_like(p)
+            o.step()
+        cs, cn = o.split_buffer_stats()
+        for i, p in enumerate(params):
+            if F == 1 or p.ndim < 2:
+                assert abs(cs[i] - float((hA[i] * hB[i]).sum()) / W ** 2) < 1e-6 * (1 + abs(cs[i])), names[i]
+                assert abs(cn[i] / (float(((hA[i] - hB[i]) ** 2).sum()) / (4 * C)) - 1) < 1e-6, names[i]
+            else:
+                assert torch.allclose(o._sk(hA[i] + hB[i]), o._sk(hA[i]) + o._sk(hB[i]), atol=1e-5), names[i]
+    big = torch.randn(512, 256, generator=gen); other = big + 2 * torch.randn(512, 256, generator=gen)
+    est = float((o._sk(big) * o._sk(other)).sum()); true = float((big * other).sum())
+    assert abs(est / true - 1) < 0.05, (est, true)
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):
