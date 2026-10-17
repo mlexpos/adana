@@ -189,6 +189,25 @@ def test_subset():
             assert all((".h." in n and "wte" not in n and "lm_head" not in n) for n, mm in zip(o.pnames, m) if mm)
 
 
+def test_buffer_snr():
+    """At (effectively) fixed parameters with gradients g = mu + sigma xi, the buffer estimate recovers |mu|^2 / (sigma^2 size)."""
+    model, names, params = _model(seed=5)
+    o = HybridSLQ([{"params": params, "param_names": names}], lr=1e-14, msign_lr=0.0, va=1e-12)
+    gen = torch.Generator().manual_seed(0)
+    mus = [torch.randn(p.shape, generator=gen) * 0.3 for p in params]
+    sig = 1.0
+    for _ in range(3000):
+        for p, mu in zip(params, mus):
+            p.grad = mu + sig * torch.randn(p.shape, generator=gen)
+        o.step()
+    b = o.buffer_snr()
+    for i, (p, mu) in enumerate(zip(params, mus)):
+        if p.numel() < 500:
+            continue
+        true = float((mu * mu).sum()) / (sig * sig * p.numel())
+        assert abs(b["bsnr_raw"][i] / true - 1) < 0.15, (names[i], b["bsnr_raw"][i], true)
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):

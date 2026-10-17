@@ -79,6 +79,7 @@ class HybridSLQ(ADanaSLQ):
         self.smask = {"all": np.ones(len(self.plist), bool), "large": self.cgroup >= 0,
                       "boundary": (self.cgroup == 0) | (self.cgroup == L1),
                       "hidden": (self.cgroup >= 1) & (self.cgroup < L1)}[subset]
+        self.Wb, self.Cb = 0.0, 0.0                         # buffer weight sums W = sum w_k, C = sum w_k^2 (m, v share the rate)
         self.ns_steps, self.matched_rms = int(ns_steps), float(matched_rms)
         self.use_muon = [p.ndim >= 2 and p.size(0) < 10000 for p in self.plist]
 
@@ -188,6 +189,8 @@ class HybridSLQ(ADanaSLQ):
             with torch.enable_grad():
                 loss = closure()
         self.t += 1
+        Dm = self.delta / (self.delta + self.t)
+        self.Wb = (1 - Dm) * self.Wb + Dm; self.Cb = (1 - Dm) ** 2 * self.Cb + Dm * Dm
         self._compute_ratio(self.delta / (self.delta + self.t))
         hmul = self.msign_lr / self.lr                     # msign peak relative to gamma0 (the group lr carries s(t) gamma0)
         for group in self.param_groups:
@@ -238,6 +241,33 @@ class HybridSLQ(ADanaSLQ):
             if "mz2" in self.state.get(p, {}):
                 self.mz2[i] = float(self.state[p]["mz2"])
         return loss
+
+    @torch.no_grad()
+    def buffer_snr(self):
+        """Per-tensor SNR at the training batch from the long-momentum buffers alone (user, 2026-10-16).  m, v are EMAs of g and g^2
+        with the same weights w_k; E m^2 = W^2 mu^2 + C sigma^2, E v = W (mu^2 + sigma^2), so sum mu^2 = (M2 - (C/W) V)/(W^2 - C) and
+        sum sigma^2 = V/W - sum mu^2 (sigma^2 the batch-gradient variance: SNR = B / B_noise).  Returns raw and Adam-metric (1/sqrt v)
+        per-tensor SNR and the raw signal / noise sums."""
+        L = len(self.plist); W, C = self.Wb, self.Cb
+        sig_r, noi_r, sig_z, noi_z = (np.full(L, np.nan) for _ in range(4))
+        if W <= 0 or W * W - C <= 0:
+            return dict(bsnr_raw=sig_r, bsnr_z=sig_z, bsig=sig_r, bnoi=noi_r)
+        for i, p in enumerate(self.plist):
+            st = self.state.get(p, {})
+            if "m" not in st:
+                continue
+            m, v = st["m"].float(), st["v"].float(); wz = 1.0 / (torch.sqrt(v) + self.epsilon)
+            for (M2, V), (so, no) in (((float((m * m).sum()), float(v.sum())), (sig_r, noi_r)),
+                                      ((float((m * m * wz).sum()), float((v * wz).sum())), (sig_z, noi_z))):
+                so[i] = (M2 - (C / W) * V) / (W * W - C); no[i] = V / W - so[i]
+        return dict(bsnr_raw=sig_r / np.maximum(noi_r, 1e-30), bsnr_z=sig_z / np.maximum(noi_z, 1e-30), bsig=sig_r, bnoi=noi_r)
+
+    def _save_diag(self):
+        b = self.buffer_snr()
+        self.last_refresh.update(b)
+        self.last_refresh["split_snr"] = 4.0 * self.eX / np.maximum(self.eD, 1e-30)     # per-tensor training-split SNR (EMA)
+        self.last_refresh["bsnr_total"] = float(np.nansum(b["bsig"]) / max(np.nansum(b["bnoi"]), 1e-30))
+        super()._save_diag()
 
     def diagnostics(self):
         logs = super().diagnostics()
