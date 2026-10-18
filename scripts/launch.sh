@@ -248,6 +248,13 @@ case "$OPT" in
         WEIGHT_DECAY=$(python3 -c "print($OMEGA / $WD_TS)")
         OPT_FLAGS="--opt hybrid-slq --delta $DELTA --beta1 0.8 --beta2 0.999 --muon_ns_steps 5 --wd_decaying --wd_ts $WD_TS"
         ;;
+    hybrid-v3)
+        # the ladder study's version-3 hybrid (src/optim/hybrid_v3.py): d-muon's msign step on the hidden matrices (--hyb_msign_lr) and
+        # AdamW elsewhere (va gamma0 = d-muon's lr: pass --hyb_va), long momentum on the hidden matrices only, --lr = gamma0; d-muon's
+        # constant weight decay (p *= 1 - s(t) omega / N, as d-muon's lr x wd = omega / N), not ADana's log-time decay.
+        WEIGHT_DECAY=$(python3 -c "print($OMEGA / $ITERATIONS)")
+        OPT_FLAGS="--opt hybrid-v3 --delta $DELTA --beta1 0.8 --beta2 0.999 --muon_ns_steps 5 --hyb_plain adamw"
+        ;;
     muon-dana-f2g)
         # d-muon (same c_p, weight decay and AdamW for wte / lm_head / gains) with the hidden-matrix momentum replaced by
         # DANA momentum set by the F2g rule. Pass --f2g_* flags through.

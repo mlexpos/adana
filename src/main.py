@@ -35,6 +35,7 @@ from optim.soap_dana_slq import SOAPDanaSLQ
 from optim.muon_dana_slq import MuonDanaSLQ
 from optim.muon_dana_f2g import MuonDanaF2G
 from optim.hybrid_slq import HybridSLQ
+from optim.hybrid_v3 import HybridV3
 from optim.dana_star_mk4 import DANA_STAR_MK4
 from optim.adamw_decaying_wd import AdamWDecayingWD
 from optim.ademamix_decaying_wd import AdEMAMix_DecayingWD
@@ -265,6 +266,13 @@ def build_optimizer(args, model, group_specs):
             matched_rms=args.matched_adamw_rms, plain=args.hyb_plain, adam_betas=(args.beta1, args.beta2),
             cyc=args.hyb_cyc, cyc_T=args.iterations, small_off=args.hyb_small_off, g0_rule=args.hyb_g0_rule,
             g0_tau=args.hyb_g0_tau, g0_tmax=args.hyb_g0_tmax, g0_max=args.hyb_g0_max, subset=args.hyb_subset, sketch=args.hyb_sketch, **slq_kw(),
+        ),
+        # the ladder study's version-3 hybrid: measured projected excess fraction, one global ratio (src/optim/hybrid_v3.py)
+        "hybrid-v3": lambda: HybridV3(
+            group_specs, lr=args.lr, msign_lr=args.hyb_msign_lr, beta=args.hyb_beta, va=args.hyb_va, delta=args.delta,
+            weight_decay=args.weight_decay, wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, ns_steps=args.muon_ns_steps,
+            matched_rms=args.matched_adamw_rms, plain=args.hyb_plain, adam_betas=(args.beta1, args.beta2),
+            kernel=args.v3_kernel, mdamp=args.v3_mdamp, cbatch=args.v3_cbatch, k_lz=args.v3_k_lz, lz_eps=args.v3_lz_eps, meas_from=args.v3_meas_from, **slq_kw(),
         ),
         # d-muon with its hidden-matrix momentum replaced by DANA momentum set by the F2g rule (src/optim/muon_dana_f2g.py)
         "muon-dana-f2g": lambda: MuonDanaF2G(

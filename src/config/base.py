@@ -127,6 +127,7 @@ def parse_args(base_parser, args, namespace):
             "muon-dana-slq",
             "muon-dana-f2g",
             "hybrid-slq",
+            "hybrid-v3",
             # Dana-Star family (with tau)
             "dana-star",
             "dana-star-mk4",
@@ -296,6 +297,13 @@ def parse_args(base_parser, args, namespace):
                         help="hybrid-slq split buffers for the coherent-signal check: 0 off, 1 full copies, F > 1 Kronecker CountSketch (F^2 compression)")
     parser.add_argument("--hyb_small_off", default=False, action="store_true",
                         help="hybrid-slq: no long momentum on small tensors (norms, biases); large tensors at their own cap")
+    # hybrid-v3: the ladder study's version-3 rule (src/optim/hybrid_v3.py); hybrid-slq's --hyb_* and --slq_* flags also apply
+    parser.add_argument("--v3_kernel", default="slq", choices=["slq", "msign"], help="hybrid-v3: noise kernel of the floor rule")
+    parser.add_argument("--v3_mdamp", default=1.0, type=float, help="hybrid-v3: ridge m of the projected excess, delta_z = m Delta_t / gamma0")
+    parser.add_argument("--v3_cbatch", default=64, type=int, help="hybrid-v3: curvature batch (sequences; Richardson against its first half)")
+    parser.add_argument("--v3_k_lz", default=128, type=int, help="hybrid-v3: max Lanczos steps of the excess form")
+    parser.add_argument("--v3_lz_eps", default=0.01, type=float, help="hybrid-v3: stop when the excess form moves < eps over 16 steps")
+    parser.add_argument("--v3_meas_from", default=32, type=int, help="hybrid-v3: first step with the excess form (rho-hat = 1 before)")
     parser.add_argument("--hyb_va", default=1.0, type=float,
                         help="hybrid-slq: plain step of the non-hidden tensors, in units of gamma0 (1 = SLQ-ADana's)")
     parser.add_argument("--soap_fused_qkv", default=False, action="store_true",

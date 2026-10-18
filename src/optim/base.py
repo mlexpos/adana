@@ -271,7 +271,19 @@ def train(
 
         if hasattr(opt, "needs_refresh") and opt.needs_refresh():
             raw_for_slq = distributed_backend.get_raw_model(not_compiled_model)
-            opt.refresh(raw_for_slq, x, y)
+            if getattr(opt, "cbatch", 0):
+                # hybrid-v3: the step's training loss (tau / P) and a curvature batch from a stream the training never sees
+                # (the validation reader; every evaluation resets it to step 0, so evaluations and training data are unchanged)
+                opt.last_loss = float(loss.detach()) * cfg.acc_steps
+
+                def curv(n):
+                    xs, ys = [], []
+                    while sum(t.shape[0] for t in xs) < n:
+                        xv, yv = get_batch(val_reader, device=cfg.device); xs.append(xv); ys.append(yv)
+                    return torch.cat(xs)[:n], torch.cat(ys)[:n]
+                opt.refresh(raw_for_slq, x, y, curv=curv)
+            else:
+                opt.refresh(raw_for_slq, x, y)
             if hasattr(opt, "refresh_message"):
                 msg = opt.refresh_message()
                 if msg and distributed_backend.is_master_process():
