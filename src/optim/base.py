@@ -277,10 +277,14 @@ def train(
                 opt.last_loss = float(loss.detach()) * cfg.acc_steps
 
                 def curv(n):
+                    # n sequences for this rank; the validation reader is identical on every rank, so draw world x n and take this
+                    # rank's slice (distinct curvature sequences per GPU; the GN products are averaged across ranks)
+                    ws = dist.get_world_size() if (dist.is_available() and dist.is_initialized()) else 1
+                    rk = dist.get_rank() if ws > 1 else 0
                     xs, ys = [], []
-                    while sum(t.shape[0] for t in xs) < n:
+                    while sum(t.shape[0] for t in xs) < n * ws:
                         xv, yv = get_batch(val_reader, device=cfg.device); xs.append(xv); ys.append(yv)
-                    return torch.cat(xs)[:n], torch.cat(ys)[:n]
+                    return torch.cat(xs)[rk * n:(rk + 1) * n], torch.cat(ys)[rk * n:(rk + 1) * n]
                 opt.refresh(raw_for_slq, x, y, curv=curv)
             else:
                 opt.refresh(raw_for_slq, x, y)
