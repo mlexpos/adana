@@ -331,22 +331,22 @@ def effective_tokens(model, params, x, y, generator=None):
     B, T = y.shape
     valid = (y >= 0).float()
 
-    def grad_w(wts):
+    def sqdist(wa, wb):
+        # |g_A - g_B|^2 = |grad(L_A - L_B)|^2 (the gradient is linear): one backward and one set of gradients in memory
         with torch.enable_grad(), torch.autocast(device_type=x.device.type, enabled=False):
             logits = model(x, targets=y, get_logits=True)["logits"].float()
             ce = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1).clamp_min(0),
                                                    reduction="none").view(B, T)
-            loss = (ce * wts).sum() / wts.sum().clamp_min(1.0)
-            return torch.autograd.grad(loss, params, allow_unused=True)
-
-    def sqdist(ga, gb):
-        return sum(float(((a - b).double() ** 2).sum()) for a, b in zip(ga, gb) if a is not None and b is not None)
+            del logits
+            loss = (ce * wa).sum() / wa.sum().clamp_min(1.0) - (ce * wb).sum() / wb.sum().clamp_min(1.0)
+            gd = torch.autograd.grad(loss, params, allow_unused=True)
+        return sum(float((d.double() ** 2).sum()) for d in gd if d is not None)
 
     half = B // 2
     wA = torch.zeros(B, T, device=x.device); wA[:half] = 1.0
-    E_seq = sqdist(grad_w(wA * valid), grad_w((1 - wA) * valid))
+    E_seq = sqdist(wA * valid, (1 - wA) * valid)
     perm = torch.randperm(B * T, device=x.device, generator=generator)
     mA = torch.zeros(B * T, device=x.device); mA[perm[: B * T // 2]] = 1.0
     mA = mA.view(B, T)
-    E_tok = sqdist(grad_w(mA * valid), grad_w((1 - mA) * valid))
+    E_tok = sqdist(mA * valid, (1 - mA) * valid)
     return float(T * E_tok / max(E_seq, 1e-30)), E_seq, E_tok
