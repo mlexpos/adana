@@ -323,24 +323,36 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
 
 
 # ------------------------------------------------------------------ token correlation length (effective tokens / sequence)
-def effective_tokens(model, params, x, y, generator=None):
+def effective_tokens(model, params, x, y, generator=None, chunk=2):
     """T_eff = T' E_tok / E_seq, with E the squared distance between the gradients of two random halves of the batch,
     split by SEQUENCES (E_seq) or by TOKENS (E_tok, balanced random mask).  The signal cancels in both differences;
     E_seq / E_tok = Var(sum_t g_it) / (T' Var(g_it)) is the number of mutually correlated tokens, so independent tokens
-    give T_eff = T' and fully correlated sequences give T_eff = 1."""
+    give T_eff = T' and fully correlated sequences give T_eff = 1.
+    |g_A - g_B|^2 = |grad(L_A - L_B)|^2 (the gradient is linear), and L_A - L_B is a sum over sequences: the gradient is
+    accumulated over chunks of `chunk` sequences, so one set of gradients and one chunk's fp32 activations are in memory."""
     B, T = y.shape
     valid = (y >= 0).float()
 
     def sqdist(wa, wb):
-        # |g_A - g_B|^2 = |grad(L_A - L_B)|^2 (the gradient is linear): one backward and one set of gradients in memory
-        with torch.enable_grad(), torch.autocast(device_type=x.device.type, enabled=False):
-            logits = model(x, targets=y, get_logits=True)["logits"].float()
-            ce = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y.view(-1).clamp_min(0),
-                                                   reduction="none").view(B, T)
-            del logits
-            loss = (ce * wa).sum() / wa.sum().clamp_min(1.0) - (ce * wb).sum() / wb.sum().clamp_min(1.0)
-            gd = torch.autograd.grad(loss, params, allow_unused=True)
-        return sum(float((d.double() ** 2).sum()) for d in gd if d is not None)
+        na, nb = wa.sum().clamp_min(1.0), wb.sum().clamp_min(1.0)
+        acc = None
+        for i in range(0, B, chunk):
+            sl = slice(i, min(i + chunk, B))
+            with torch.enable_grad(), torch.autocast(device_type=x.device.type, enabled=False):
+                logits = model(x[sl], targets=y[sl], get_logits=True)["logits"].float()
+                ce = torch.nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), y[sl].reshape(-1).clamp_min(0),
+                                                       reduction="none").view(-1, T)
+                del logits
+                loss = (ce * wa[sl]).sum() / na - (ce * wb[sl]).sum() / nb
+                gd = torch.autograd.grad(loss, params, allow_unused=True)
+            if acc is None:
+                acc = [d.detach().clone() if d is not None else None for d in gd]
+            else:
+                for a, d in zip(acc, gd):
+                    if a is not None and d is not None:
+                        a.add_(d)
+            del gd, loss, ce
+        return sum(float((a.double() ** 2).sum()) for a in acc if a is not None)
 
     half = B // 2
     wA = torch.zeros(B, T, device=x.device); wA[:half] = 1.0
