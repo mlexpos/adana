@@ -2,8 +2,8 @@
 
 The update is hybrid-slq's (src/optim/hybrid_slq.py): d-muon's msign step on the hidden matrices, d-muon's AdamW on every other
 tensor (plain = 'adamw', va gamma0 = d-muon's lr), and ADana's long momentum with gain kappa_t = s(t) gamma0 r_t / Delta_t.  The
-hidden msign matrices carry the long momentum (mom = 'hidden'), or the hidden matrices plus wte and lm_head (mom = 'hidden+terminal');
-biases and norms never.  What changes is the momentum floor rule:
+hidden msign matrices carry the long momentum (mom = 'hidden'), the hidden matrices plus wte and lm_head (mom = 'hidden+terminal'),
+or every tensor (mom = 'all': also the norm gains, a third block under the SLQ kernel, exact for their AdamW step).  What changes is the momentum floor rule:
 
     r_t = min{1, s_b B_eff rho-hat / K(Delta_t)}        (one global ratio)
 
@@ -46,20 +46,22 @@ class HybridV3(HybridSLQ):
         self.r_rho, self.r_tau = float(r_rho), float(r_tau)
         self.meas_from = int(meas_from)                     # first step with the excess form; before it rho-hat = 1 (where it is clipped early)
         self.hid = np.array(self.use_muon, bool)
-        # tensors with the long momentum: the hidden msign matrices, and with mom = 'hidden+terminal' also wte and lm_head (AdamW plain
-        # step); norms and biases never.  The kernel adds over blocks, each at its own plain step's relaxation rate.
-        if mom not in ("hidden", "hidden+terminal"):
-            raise ValueError(f"hybrid-v3: mom '{mom}' (hidden | hidden+terminal)")
+        # tensors with the long momentum: the hidden msign matrices, with mom = 'hidden+terminal' also wte and lm_head (AdamW plain
+        # step), with mom = 'all' also every remaining tensor (the norm gains).  The kernel adds over blocks, each at its own plain
+        # step's relaxation rate.
+        if mom not in ("hidden", "hidden+terminal", "all"):
+            raise ValueError(f"hybrid-v3: mom '{mom}' (hidden | hidden+terminal | all)")
         import re as _re
         base = [_re.sub(r"^(module\.|_orig_mod\.)+", "", n) for n in self.pnames]
         self.term = np.array([(("wte" in n) or ("lm_head" in n)) and p.ndim >= 2 for n, p in zip(base, self.plist)], bool)
         self.mom_mode = mom
         if split not in ("global", "independent"):
             raise ValueError(f"hybrid-v3: split '{split}' (global | independent)")
-        self.split = split          # 'independent': the hidden block and wte + lm_head each take min{1, S / K_block} (same S, rho-hat)
-        self.r_hid = self.r_term = 0.0
-        self.mom = self.hid | self.term if mom == "hidden+terminal" else self.hid.copy()
-        self.K_hid = self.K_term = float("nan")
+        self.split = split          # 'independent': the hidden block, wte + lm_head and the gains each take min{1, S / K_block} (same S, rho-hat)
+        self.gain = ~self.hid & ~self.term
+        self.r_hid = self.r_term = self.r_gain = 0.0
+        self.mom = {"hidden": self.hid.copy(), "hidden+terminal": self.hid | self.term, "all": np.ones(len(self.plist), bool)}[mom]
+        self.K_hid = self.K_term = self.K_gain = float("nan")
         hp = [p for p, h in zip(self.plist, self.hid) if h]
         self.N_W = min(min(p.shape[:2]) for p in hp)
         self.c_W = sum(p.numel() * self._scale(p) for p in hp) / sum(p.numel() for p in hp)
@@ -96,10 +98,11 @@ class HybridV3(HybridSLQ):
             # the SLQ refresh saved its record before the excess form existed: replace it with one that carries the v3 measurement,
             # the kernel and the ratio after it (slq_diag.npz: one row per refresh)
             self.last_refresh.update({f"v3_{k}": v for k, v in self.meas.items() if k != "t"})
-            self.last_refresh.update(v3_K=float(self.N), v3_S=float(self.S), v3_r=float(self.ratio[self.mom][0]) if self.mom.any() else 0.0,
+            self.last_refresh.update(v3_K=float(self.N), v3_S=float(self.S), v3_r=self.r_hid,
                                      v3_nu=float(getattr(self, "nu", float("nan"))), v3_sbar=self.sbar,
                                      v3_K_hid=self.K_hid, v3_K_term=self.K_term, v3_bnr=float(self.bnr), v3_mu_k64=float(self.mu),
-                                     v3_r_hid=self.r_hid, v3_r_term=self.r_term)
+                                     v3_r_hid=self.r_hid, v3_r_term=self.r_term,
+                                     v3_K_gain=self.K_gain, v3_r_gain=self.r_gain)
             self.history.pop()
             self._save_diag()
 
@@ -179,7 +182,7 @@ class HybridV3(HybridSLQ):
 
     V3KEYS = ("v3_E_c", "v3_E_half", "v3_E_delta", "v3_rich_gap", "v3_lz_m", "v3_tau_raw", "v3_tau", "v3_tau_over_P", "v3_rho_raw", "v3_rho",
               "v3_delta_z", "v3_P", "v3_seconds", "v3_K", "v3_S", "v3_r", "v3_nu", "v3_sbar", "v3_K_hid", "v3_K_term", "v3_bnr",
-              "v3_mu_k64", "v3_r_hid", "v3_r_term")
+              "v3_mu_k64", "v3_r_hid", "v3_r_term", "v3_K_gain", "v3_r_gain")
 
     def _save_diag(self):
         # every row of slq_diag.npz carries the same v3 fields (NaN at refreshes without the excess form): the saver takes its keys
@@ -203,9 +206,10 @@ class HybridV3(HybridSLQ):
             nu = self.msign_lr * self.sfac * self.c_W * math.sqrt(self.bb_fac * Be * self.sbar / (self.N_W * max(self.tau, 1e-30)))
             self.nu = nu
             self.K_hid = float(np.sum(wh * g * th / (D + nu * np.sqrt(th))))
-        tm = self.mom & ~self.hid
+        tm, gm = self.mom & self.term, self.mom & self.gain
         self.K_term = slq(wT[:, tm].sum(axis=1)) if tm.any() else 0.0
-        return self.K_hid + self.K_term
+        self.K_gain = slq(wT[:, gm].sum(axis=1)) if gm.any() else 0.0
+        return self.K_hid + self.K_term + self.K_gain
 
     def _compute_ratio(self, D):
         self.Delta = D
@@ -220,13 +224,16 @@ class HybridV3(HybridSLQ):
         K = max(self._kernel(D), 1e-12)
         Be = self.batch_seqs * max(self.teff, 1.0)
         self.S = self.s * Be * self.rho; self.N = K
-        tm = self.mom & ~self.hid
-        if self.split == "independent" and tm.any():
+        tm, gm = self.mom & self.term, self.mom & self.gain
+        if self.split == "independent" and (tm.any() or gm.any()):
             # each block against the same budget: the hidden block's momentum is not throttled by the large terminal kernel
-            self.r_hid = min(self.cap, self.S / max(self.K_hid, 1e-12)); self.r_term = min(self.cap, self.S / max(self.K_term, 1e-12))
-            self.ratio = np.where(self.hid, self.r_hid, np.where(tm, self.r_term, 0.0))
+            rb = lambda Kb: min(self.cap, self.S / max(Kb, 1e-12))
+            self.r_hid = rb(self.K_hid); self.r_term = rb(self.K_term) if tm.any() else 0.0
+            self.r_gain = rb(self.K_gain) if gm.any() else 0.0
+            self.ratio = np.where(self.hid, self.r_hid, np.where(tm, self.r_term, np.where(gm, self.r_gain, 0.0)))
         else:
-            r = min(self.cap, self.S / K); self.r_hid = r; self.r_term = r if tm.any() else 0.0
+            r = min(self.cap, self.S / K); self.r_hid = r
+            self.r_term = r if tm.any() else 0.0; self.r_gain = r if gm.any() else 0.0
             self.ratio = np.where(self.mom, r, 0.0)
         self.A = self.ratio / D
 
@@ -241,7 +248,7 @@ class HybridV3(HybridSLQ):
             return f"[hybrid-v3] refresh t={self.t}: SLQ only (no halves or curvature batch yet)"
         return (f"[hybrid-v3] refresh t={q['t']}: E_c {q['E_c']:.4g} E_half {q['E_half']:.4g} -> E_delta {q['E_delta']:.4g} (rich gap "
                 f"{q['rich_gap']:.2f}, lz m {q['lz_m']}) tau/P {q['tau_over_P']:.3f} rho {q['rho_raw']:.4f} -> {q['rho']:.4f} "
-                f"T_eff {self.teff:.0f} K {self.N:.4g} S {self.S:.4g} r {float(self.ratio[self.mom][0]) if self.mom.any() else 0:.4g} "
+                f"T_eff {self.teff:.0f} K {self.N:.4g} S {self.S:.4g} r {self.r_hid:.4g} (term {self.r_term:.3g}, gain {self.r_gain:.3g}) "
                 f"delta_z {q['delta_z']:.3g} ({q['seconds']:.0f}s + SLQ {self.last_refresh.get('seconds', 0):.0f}s)")
 
     def diagnostics(self):
@@ -249,9 +256,9 @@ class HybridV3(HybridSLQ):
         for k, v in self.meas.items():
             if isinstance(v, (int, float)):
                 logs[f"v3/{k}"] = float(v)
-        logs["v3/r"] = float(self.ratio[self.mom][0]) if self.mom.any() else 0.0
+        logs["v3/r"] = self.r_hid
         logs["v3/K"] = float(self.N); logs["v3/S"] = float(self.S); logs["v3/K_hid"] = self.K_hid; logs["v3/K_term"] = self.K_term
-        logs["v3/r_hid"] = self.r_hid; logs["v3/r_term"] = self.r_term
+        logs["v3/r_hid"] = self.r_hid; logs["v3/r_term"] = self.r_term; logs["v3/r_gain"] = self.r_gain; logs["v3/K_gain"] = self.K_gain
         logs["v3/bnr"] = float(self.bnr); logs["v3/mu_k64"] = float(self.mu)
         if self.kernel == "msign":
             logs["v3/nu"] = float(getattr(self, "nu", float("nan")))

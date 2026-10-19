@@ -304,7 +304,7 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--v3_k_lz", default=128, type=int, help="hybrid-v3: max Lanczos steps of the excess form")
     parser.add_argument("--v3_lz_eps", default=0.01, type=float, help="hybrid-v3: stop when the excess form moves < eps over 16 steps")
     parser.add_argument("--v3_meas_from", default=32, type=int, help="hybrid-v3: first step with the excess form (rho-hat = 1 before)")
-    parser.add_argument("--v3_mom", default="hidden", choices=["hidden", "hidden+terminal"],
+    parser.add_argument("--v3_mom", default="hidden", choices=["hidden", "hidden+terminal", "all"],
                         help="hybrid-v3: tensors with the long momentum (+terminal: wte and lm_head, SLQ kernel for their AdamW step)")
     parser.add_argument("--v3_split", default="global", choices=["global", "independent"],
                         help="hybrid-v3 with +terminal: one ratio for all (global) or min{1, S/K_block} per block (independent)")
