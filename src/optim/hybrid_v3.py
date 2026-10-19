@@ -117,12 +117,17 @@ class HybridV3(HybridSLQ):
         R = self._slq_r()
         z = lambda g: [torch.zeros_like(p) if gi is None else r * gi for p, r, gi in zip(self.plist, R, g)]
         zA, zB = z(self.gA), z(self.gB)
+        self.gA = self.gB = None                             # the halves are not needed past z (memory: two parameter-sized vectors)
         h = xc.shape[0] // 2
         was = model.training; model.eval()
         mk = lambda a, b: GaussNewtonOperator(model, names, self.plist, xc[a:b], yc[a:b], r=R, mode=self.gn_mode, chunk=self.gn_chunk,
                                               cache=False)
         op1, op2 = mk(0, h), mk(h, xc.shape[0])
-        Hfull = lambda v: [0.5 * (a_ + b_) for a_, b_ in zip(op1(v), op2(v))]
+        def Hfull(v):
+            out = op1(v)
+            for a_, b_ in zip(out, op2(v)):
+                a_.add_(b_).mul_(0.5)
+            return out
         D = self.delta / (self.delta + self.t + 1); g0 = self.lr * self.g0_mult
         dz = self.mdamp * D / g0
         E, m = self._bilinear([Hfull, op1], zA, zB, dz)
@@ -147,10 +152,19 @@ class HybridV3(HybridSLQ):
                          tau=self.tau, tau_over_P=self.tq, rho_raw=raw, rho=self.rho, delta_z=dz, P=P, seconds=time.time() - t0)
 
     def _bilinear(self, ops, za, zb, dz):
-        """<za, (H + dz)^-1 zb> for each operator H in ops, by Lanczos recurrences from zb run in lockstep (no reorthogonalization,
-        c_j = <za, v_j> accumulated on the fly); stops when every estimate changes by < lz_eps over 16 steps."""
+        """<za, (H + dz)^-1 zb> for each operator H in ops, by a Lanczos recurrence from zb per operator (no reorthogonalization,
+        c_j = <za, v_j> accumulated on the fly); each stops when its estimate changes by < lz_eps over 16 steps.  The recurrences
+        run one after the other, so only one holds its vectors at a time; returns the estimates and the largest step count."""
+        E, ms = [], []
+        for op in ops:
+            e, m = self._bilinear1(op, za, zb, dz)
+            E.append(e[0]); ms.append(m)
+        return E, max(ms)
+
+    def _bilinear1(self, op, za, zb, dz):
         bn = math.sqrt(max(float(_dot(zb, zb)), 1e-300))
-        st = [dict(v=[x / bn for x in zb], vp=None, bp=0.0, al=[], be=[], c=[], hist=[]) for _ in ops]
+        st = [dict(v=[x / bn for x in zb], vp=None, bp=0.0, al=[], be=[], c=[], hist=[])]
+        ops = [op]
 
         def est(s):
             T = np.diag(s["al"]) + np.diag(s["be"][:-1], 1) + np.diag(s["be"][:-1], -1)

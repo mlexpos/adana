@@ -149,12 +149,9 @@ class GaussNewtonOperator:
         if self.mode == "jvp":
             out = self._call_jvp(d)
             if self.world > 1:
-                flat = torch.cat([o.reshape(-1) for o in out])
-                dist.all_reduce(flat)
-                flat /= self.world
-                k = 0
-                for o in out:
-                    n = o.numel(); o.copy_(flat[k:k + n].view_as(o)); k += n
+                for o in out:                                # per tensor: no flat copy of the whole product
+                    dist.all_reduce(o)
+                    o /= self.world
             return _apply_r(self.r, out) if self.r is not None else out
         dn = math.sqrt(float(_dot(d, d)))
         out = [torch.zeros_like(p) for p in self.params]
