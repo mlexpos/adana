@@ -57,6 +57,8 @@ where $m_{t+1}$ and $v_{t+1}$ are the usual first and second moment estimates wi
 | **Dana-Star** | + $\tau$ estimator for robustness to sparse gradients | [`src/optim/dana_star_mk4.py`](src/optim/dana_star_mk4.py) | [`jax/optimizers.py`](jax/optimizers.py#L69) |
 | **Dana-Star-MK4** | Both SNR clipping and $\tau$ estimator | [`src/optim/dana_star_mk4.py`](src/optim/dana_star_mk4.py) | [`jax/optimizers.py`](jax/optimizers.py#L572) |
 
+**Hybrid.** `--opt hybrid-v1` runs d-muon's orthogonalized step with ADana's long momentum on top, scheduled by a Lanczos-measured noise budget; see [HYBRID.md](HYBRID.md).
+
 ## Getting started
 
 See [QUICKSTART.md](QUICKSTART.md) for installation, data preparation, and training instructions.

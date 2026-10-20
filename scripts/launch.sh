@@ -96,6 +96,7 @@ while [[ $# -gt 0 ]]; do
         --iterations_to_run) ITERATIONS_TO_RUN="$2"; shift 2 ;;
         --z_loss_coeff)     Z_LOSS_COEFF="$2"; shift 2 ;;
         --wd_logtime)       WD_LOGTIME=1; shift ;;
+        --hyb_g0_div)       HYB_G0_DIV="$2"; shift 2 ;;
         *)                  EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
@@ -124,6 +125,10 @@ if [ -z "$ARCH" ] || [ -z "$OPT" ] || [ -z "$HEADS" ]; then
     echo "  --iterations_to_run <N> Max iterations per SLURM job (for restart)"
     echo "  --no_compile            Disable torch.compile"
     echo "  --no_wandb              Disable wandb logging"
+    echo ""
+    echo "  --opt hybrid-v1         The hybrid (d-muon step + ADana long momentum, version 1, global allocation) with its"
+    echo "                          defaults; --lr sets d-muon's rate L (default: the AdamW formula), gamma0 = L / --hyb_g0_div"
+    echo "                          (default 64).  Any --hyb_* / --slq_* flag passed after it overrides the default."
     exit 1
 fi
 
@@ -134,6 +139,8 @@ fi
 # NOTE: batch_size * acc_steps is the global effective batch; the distributed
 # backend divides this across GPUs internally (see get_adjusted_args_for_process).
 GLOBAL_BATCH=$((BATCH_SIZE * ACC_STEPS))
+# hybrid-v1 takes its rates from the AdamW formula (its plain steps run at d-muon's rate, which is AdamW's formula rate at batch 512)
+SCALE_OPT="$OPT"; [ "$OPT" = "hybrid-v1" ] && SCALE_OPT="adamw"
 
 SCALING_OUTPUT=$(python3 -c "
 import importlib.util, os
@@ -142,7 +149,7 @@ mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
 dims = mod.compute_dimensions('$ARCH', $HEADS)
-lr = mod.compute_lr('$ARCH', '$OPT', dims['non_emb_params'], kappa=$KAPPA, batch_size=$GLOBAL_BATCH)
+lr = mod.compute_lr('$ARCH', '$SCALE_OPT', dims['non_emb_params'], kappa=$KAPPA, batch_size=$GLOBAL_BATCH)
 
 print(f\"N_HEAD={dims['n_head']}\")
 print(f\"N_LAYER={dims['n_layer']}\")
@@ -163,6 +170,22 @@ elif [ -z "${LR:-}" ]; then
     echo "ERROR: No LR formula found for optimizer '$OPT' in scaling rules."
     echo "Please provide --lr explicitly."
     exit 1
+fi
+
+# =============================================================================
+# hybrid-v1: the version-1 hybrid with the global allocation (hybrid_ladder report), as one method
+# =============================================================================
+# d-muon's msign step on the hidden matrices and d-muon's AdamW (0.8 / 0.999) on every other tensor, both at L (= LR above:
+# --lr, or the AdamW batch-512 formula, which is d-muon's tuned rate from 12 heads up; 2L at 6-8 heads); ADana's long momentum
+# on every tensor at gain gamma0 = L / HYB_G0_DIV (default 64) with one global ratio min{1, s_b B_eff mu / N(Delta)}
+# (s_b 1/4, mu the gradient-noise fraction at k' 64, N the SLQ kernel); the gamma0 rule (only ever raises gamma0); ADana's
+# log-time weight decay.  The defaults go first, so any --hyb_* / --slq_* flag on the command line overrides them.
+if [ "$OPT" = "hybrid-v1" ]; then
+    HYB_L="$LR"; HYB_G0_DIV="${HYB_G0_DIV:-64}"
+    LR=$(python3 -c "print($HYB_L / $HYB_G0_DIV)")
+    EXTRA_ARGS=(--hyb_msign_lr "$HYB_L" --hyb_plain adamw --hyb_va "$HYB_G0_DIV" --slq_s 0.25 --slq_kprime 64 --slq_alloc global
+                --slq_chunk 1 --slq_no_cache --hyb_g0_rule "${EXTRA_ARGS[@]}")
+    OPT="hybrid-slq"
 fi
 
 # Compute iterations (Chinchilla-optimal: tokens = 20 * total_params)
