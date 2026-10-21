@@ -130,11 +130,6 @@ class HybridV3(HybridSLQ):
             return out
         D = self.delta / (self.delta + self.t + 1); g0 = self.lr * self.g0_mult
         dz = self.mdamp * D / g0
-        E, m = self._bilinear([Hfull, op1], zA, zB, dz)
-        if was:
-            model.train()
-        Ec, Eh = E
-        Ed = 2 * Ec - Eh                                     # Richardson: bias ~ 1/c
         teff = max(self.teff, 1.0); neff = 0.5 * self.batch_seqs * teff
         d2 = float(_dot([a_ - b_ for a_, b_ in zip(zA, zB)], [a_ - b_ for a_, b_ in zip(zA, zB)]))
         trH = max(self.q["trF"], 1e-30)
@@ -143,23 +138,52 @@ class HybridV3(HybridSLQ):
         tq = tau_raw / max(P, 1e-30)
         self.tq = tq if self.tq is None else (1 - self.r_tau) * self.tq + self.r_tau * tq
         self.tau = self.tq * P
-        raw = float(np.clip(Ed / max(self.tau, 1e-30), 0.0, 1.0))
-        self.rho = raw if self.rho is None else (1 - self.r_rho) * self.rho + self.r_rho * raw
+
+        # a reading is rejected when a recurrence did not converge within k_lz steps, an estimate is not finite, or |E_delta| exceeds
+        # 10 tau (rho > 10 is not an excess fraction).  The recurrence is not reorthogonalised, so it needs accurate products: with
+        # TF32's ~1e-3 relative rounding it returns ~1e30 once lambda_max / delta_z is large (24-28 heads, late training), while
+        # products accurate to 1e-5 keep it within 0.1% (synthetic PSD test).  A rejected TF32 reading is redone in fp32 on the
+        # same curvature batch; if that is rejected too, rho-hat keeps its previous value.
+        def solve():
+            E, m, conv = self._bilinear([Hfull, op1], zA, zB, dz)
+            Ed = 2 * E[0] - E[1]                             # Richardson: bias ~ 1/c
+            bad = (not conv) or (not all(math.isfinite(e) for e in E)) or abs(Ed) > 10.0 * max(self.tau, 1e-30)
+            return E, Ed, m, bad
+        E, Ed, m, reject = solve()
+        retried = False
+        if reject and torch.backends.cuda.matmul.allow_tf32:
+            prev = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
+            torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = False
+            try:
+                E, Ed, m, reject = solve()
+            finally:
+                torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = prev
+            retried = True
+        if was:
+            model.train()
+        Ec, Eh = E
+        if reject:
+            raw = float("nan")
+            self.rho = 1.0 if self.rho is None else self.rho
+        else:
+            raw = float(np.clip(Ed / max(self.tau, 1e-30), 0.0, 1.0))
+            self.rho = raw if self.rho is None else (1 - self.r_rho) * self.rho + self.r_rho * raw
         hv = [torch.sqrt(self.state[p]["v"]).mean() for p, hd in zip(self.plist, self.hid) if hd and "v" in self.state.get(p, {})]
         hn = [p.numel() for p, hd in zip(self.plist, self.hid) if hd and "v" in self.state.get(p, {})]
         self.sbar = float(sum(float(a_) * n for a_, n in zip(hv, hn)) / max(sum(hn), 1)) + self.epsilon
         self.meas = dict(t=self.t, E_c=Ec, E_half=Eh, E_delta=Ed, rich_gap=abs(Ec - Eh) / max(abs(Ed), 1e-30), lz_m=m, tau_raw=tau_raw,
-                         tau=self.tau, tau_over_P=self.tq, rho_raw=raw, rho=self.rho, delta_z=dz, P=P, seconds=time.time() - t0)
+                         tau=self.tau, tau_over_P=self.tq, rho_raw=raw, rho=self.rho, delta_z=dz, P=P, reject=float(reject), fp32_retry=float(retried),
+                         seconds=time.time() - t0)
 
     def _bilinear(self, ops, za, zb, dz):
         """<za, (H + dz)^-1 zb> for each operator H in ops, by a Lanczos recurrence from zb per operator (no reorthogonalization,
         c_j = <za, v_j> accumulated on the fly); each stops when its estimate changes by < lz_eps over 16 steps.  The recurrences
         run one after the other, so only one holds its vectors at a time; returns the estimates and the largest step count."""
-        E, ms = [], []
+        E, ms, conv = [], [], True
         for op in ops:
-            e, m = self._bilinear1(op, za, zb, dz)
-            E.append(e[0]); ms.append(m)
-        return E, max(ms)
+            e, m, c = self._bilinear1(op, za, zb, dz)
+            E.append(e[0]); ms.append(m); conv = conv and c
+        return E, max(ms), conv
 
     def _bilinear1(self, op, za, zb, dz):
         bn = math.sqrt(max(float(_dot(zb, zb)), 1e-300))
@@ -169,8 +193,9 @@ class HybridV3(HybridSLQ):
         def est(s):
             T = np.diag(s["al"]) + np.diag(s["be"][:-1], 1) + np.diag(s["be"][:-1], -1)
             th, Q = np.linalg.eigh(T)
-            return bn * float(np.array(s["c"]) @ (Q @ (Q[0] / np.maximum(th + dz, 1e-30))))
-        m = 0
+            th = np.maximum(th, 0.0)                         # the GN operator is PSD: negative Ritz values are rounding (TF32)
+            return bn * float(np.array(s["c"]) @ (Q @ (Q[0] / (th + dz))))
+        m = 0; done = False
         for m in range(1, self.k_lz + 1):
             for op, s in zip(ops, st):
                 s["c"].append(float(_dot(za, s["v"])))
@@ -192,11 +217,11 @@ class HybridV3(HybridSLQ):
                         done = False
                 if done:
                     break
-        return [est(s) for s in st], m
+        return [est(s) for s in st], m, done
 
     V3KEYS = ("v3_E_c", "v3_E_half", "v3_E_delta", "v3_rich_gap", "v3_lz_m", "v3_tau_raw", "v3_tau", "v3_tau_over_P", "v3_rho_raw", "v3_rho",
               "v3_delta_z", "v3_P", "v3_seconds", "v3_K", "v3_S", "v3_r", "v3_nu", "v3_sbar", "v3_K_hid", "v3_K_term", "v3_bnr",
-              "v3_mu_k64", "v3_r_hid", "v3_r_term", "v3_K_gain", "v3_r_gain")
+              "v3_mu_k64", "v3_r_hid", "v3_r_term", "v3_K_gain", "v3_r_gain", "v3_reject", "v3_fp32_retry")
 
     def _save_diag(self):
         # every row of slq_diag.npz carries the same v3 fields (NaN at refreshes without the excess form): the saver takes its keys
