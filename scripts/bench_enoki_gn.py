@@ -6,6 +6,11 @@ Trains a few ADana steps (bf16 autocast) for a realistic preconditioner r = (sqr
 today: forward-mode AD, fp32, TF32 off, math attention, chunks of 2 sequences):
     jvp  fp32 / tf32, chunk 2 / 8           (jvp forces the math SDPA backend: fp32 attention matrices in memory)
     fd   fp32 / tf32, chunk 2 / 8           (central differences of the logits, then one reverse pass: default attention)
+    jvpt fp32 / tf32, chunk 2 / 8           (jvp with the fused Triton attention tangent, src/optim/attn_jvp.py; reverse pass and
+                                             primal through memory-efficient SDPA)
+A variant is mode:prec:chunk[:c], c = cache the primal and the reverse closure per chunk (GaussNewtonOperator cache=True) instead of
+recomputing them with activation checkpointing (the production runs use --slq_no_cache).  --profile VARIANT prints the torch
+profiler's kernel table for one product of that variant.
 Reported per variant: seconds per product, microseconds per token, ratio to the training step's cost per token, peak memory,
 relative error |Hu - Hu_ref| / |Hu_ref|, and the relative error of the Rayleigh quotient <u, Hu>.  A short SLQ (m = 32, 2 probes) in
 the reference and in the fastest accurate variant compares N(Delta) = tr f(H_z), f = g x / (g x + Delta), at a few Delta.
@@ -41,6 +46,7 @@ ap.add_argument("--reps", type=int, default=3)
 ap.add_argument("--variants", default="jvp:fp32:2,jvp:tf32:2,jvp:tf32:8,fd:fp32:2,fd:tf32:2,fd:tf32:8")
 ap.add_argument("--slq_m", type=int, default=32)
 ap.add_argument("--Ds", default="1e-2,3e-3,1e-3", help="Delta values for N(Delta)")
+ap.add_argument("--profile", default="", help="variant to profile (one product, torch.profiler kernel table)")
 ap.add_argument("--ckpt", default=None, help="main.pt of a trained run: weights and its optimizer's v (r = (sqrt v + eps)^-1/2)")
 a = ap.parse_args()
 dev = "cuda"
@@ -140,6 +146,7 @@ else:
                 l_ = model(x_, targets=y_)["loss"]
             opt.zero_grad(); l_.backward(); opt.step()
     r = [(torch.sqrt(opt.state[p]["v"]) + 1e-8).rsqrt() for p in params]
+opt.state.clear(); vck = None; torch.cuda.empty_cache()  # the products need the memory (fp64 reference at 24 heads)
 x, y = batch(a.slq_batch)
 ntok = a.slq_batch * 2048
 model.eval()
@@ -149,7 +156,11 @@ u = [torch.randn(p.shape, device=dev, generator=gen) for p in params]
 
 def set_prec(prec):
     """fp32 / tf32 / fp64 for the next products (fp64: the model, r and u are converted to double and back afterwards)."""
-    tf = prec == "tf32"
+    tf = prec in ("tf32", "tf32a3")                     # tf32a3: TF32 matmuls, attention tangent in Triton's 3xTF32 (~fp32)
+    if prec == "tf32a3":
+        os.environ["SLQ_ATTN_PREC"] = "tf32x3"
+    else:
+        os.environ.pop("SLQ_ATTN_PREC", None)
     torch.backends.cuda.matmul.allow_tf32 = tf; torch.backends.cudnn.allow_tf32 = tf
     dt = torch.float64 if prec == "fp64" else torch.float32
     model.to(dt)
@@ -160,11 +171,11 @@ Ds = [float(x) for x in a.Ds.split(",")]
 ref = None
 rows = []
 for v in a.variants.split(","):
-    mode, prec, ch = v.split(":"); ch = int(ch)
+    mode, prec, ch, *cc = v.split(":"); ch = int(ch); cache = cc == ["c"]
     rv, uv = set_prec(prec)
     torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
     try:
-        op = GaussNewtonOperator(model, names, params, x, y, r=rv, mode=mode, chunk=ch, cache=False)
+        op = GaussNewtonOperator(model, names, params, x, y, r=rv, mode=mode, chunk=ch, cache=cache)
         t, Hu = sync_time(lambda: op(uv), a.reps)
     except torch.OutOfMemoryError:
         print(f"  {v:14s} out of memory"); model.float(); continue
@@ -191,4 +202,16 @@ for v in a.variants.split(","):
     if len(rows) > 1:
         line += "  (x ref " + " ".join(f"{n / n0:.3f}" for n, n0 in zip(Nv, rows[0][3])) + ")"
     print(line + f"  [SLQ {time.time() - t0:.0f} s]", flush=True)
+    model.float()
+
+from torch.profiler import ProfilerActivity, profile  # noqa: E402
+for pv in [p_ for p_ in a.profile.split(",") if p_]:
+    mode, prec, ch, *cc = pv.split(":")
+    rv, uv = set_prec(prec)
+    op = GaussNewtonOperator(model, names, params, x, y, r=rv, mode=mode, chunk=int(ch), cache=cc == ["c"])
+    op(uv); torch.cuda.synchronize()
+    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+        op(uv); torch.cuda.synchronize()
+    print(f"profile of one product, {pv}:")
+    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30, max_name_column_width=70))
     model.float()
