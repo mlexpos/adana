@@ -267,14 +267,23 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--slq_no_aitken", default=False, action="store_true",
                         help="disable the Aitken correction")
     parser.add_argument("--slq_teff", default="auto", type=str, help="'auto' or a fixed T_eff (tokens per sequence)")
-    parser.add_argument("--slq_gn", default="jvp", choices=["jvp", "fd"],
-                        help="Gauss-Newton products: exact forward-mode AD (math SDPA) or central finite differences")
+    parser.add_argument("--slq_gn", default="jvp", choices=["jvp", "jvpt", "fd"],
+                        help="Gauss-Newton products: exact forward-mode AD (math SDPA), forward-mode AD with the fused Triton "
+                             "attention tangent (src/optim/attn_jvp.py), or central finite differences")
     parser.add_argument("--slq_chunk", default=2, type=int, help="sequences per Gauss-Newton product chunk")
     parser.add_argument("--slq_no_cache", default=False, action="store_true",
                         help="recompute the reverse pass per product instead of caching it (less memory, ~30%% slower)")
     parser.add_argument("--slq_tf32", default=False, action="store_true",
                         help="run the SLQ refresh with TF32 matmuls (behaviour before 2026-10-01; breaks the quadrature "
                              "for non-diagonal preconditioners)")
+    parser.add_argument("--slq_fp32_floor", default=0.0, type=float,
+                        help="with --slq_tf32: run a refresh in fp32 when theta*/(2^-11 lam_max) < this (lam_max of the previous "
+                             "refresh, theta* = Delta at the next refresh / gamma0); 2 is safe on 24h Enoki; 0 = never")
+    parser.add_argument("--slq_refresh_sched", default=None, type=str,
+                        help="refresh ratios by step, 'r1@t1,r2@t2,...,rK' (ratio r1 until t1, ..., rK after); overrides "
+                             "--slq_refresh_ratio, e.g. '2@128,1.189@2048,1.414'")
+    parser.add_argument("--slq_aitken_strict", default=False, action="store_true",
+                        help="Aitken-extrapolate N only over a clearly geometric tail of the Gauss estimates")
     parser.add_argument("--slq_polar_floor", default=2e-3, type=float,
                         help="muon-dana-slq: singular-value floor / |G|_F in the polar derivative of the SLQ operator")
     # hybrid-slq: SLQ-ADana with d-muon's step as the plain term of the hidden matrices (src/optim/hybrid_slq.py)
@@ -303,6 +312,8 @@ def parse_args(base_parser, args, namespace):
     parser.add_argument("--v3_cbatch", default=64, type=int, help="hybrid-v3: curvature batch (sequences; Richardson against its first half)")
     parser.add_argument("--v3_k_lz", default=128, type=int, help="hybrid-v3: max Lanczos steps of the excess form")
     parser.add_argument("--v3_lz_eps", default=0.01, type=float, help="hybrid-v3: stop when the excess form moves < eps over 16 steps")
+    parser.add_argument("--v3_rho_fixed", default=-1.0, type=float,
+                        help="hybrid-v3: version 0 when >= 0: rho-hat held at this value; no excess form, curvature batch or split-half stats")
     parser.add_argument("--v3_meas_from", default=32, type=int, help="hybrid-v3: first step with the excess form (rho-hat = 1 before)")
     parser.add_argument("--v3_mom", default="hidden", choices=["hidden", "hidden+terminal", "all"],
                         help="hybrid-v3: tensors with the long momentum (+terminal: wte and lm_head, SLQ kernel for their AdamW step)")

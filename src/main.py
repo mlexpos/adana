@@ -90,7 +90,8 @@ def build_optimizer(args, model, group_specs):
             gn_chunk=args.slq_chunk, gn_cache=not args.slq_no_cache, type_frac=args.slq_type_frac,
             reject_gap=args.slq_reject_gap, depth_ratio=args.slq_depth_ratio,
             teff=args.slq_teff, gn_mode=args.slq_gn, batch_seqs=args.batch_size * args.acc_steps * getattr(args, "world_size", 1),
-            slq_tf32=args.slq_tf32,
+            slq_tf32=args.slq_tf32, fp32_floor=args.slq_fp32_floor, refresh_sched=args.slq_refresh_sched,
+            aitken_strict=args.slq_aitken_strict,
         )
 
     def _adamw():
@@ -272,7 +273,7 @@ def build_optimizer(args, model, group_specs):
             group_specs, lr=args.lr, msign_lr=args.hyb_msign_lr, beta=args.hyb_beta, va=args.hyb_va, delta=args.delta,
             weight_decay=args.weight_decay, wd_decaying=args.wd_decaying, wd_ts=args.wd_ts, ns_steps=args.muon_ns_steps,
             matched_rms=args.matched_adamw_rms, plain=args.hyb_plain, adam_betas=(args.beta1, args.beta2),
-            kernel=args.v3_kernel, mdamp=args.v3_mdamp, cbatch=args.v3_cbatch, k_lz=args.v3_k_lz, lz_eps=args.v3_lz_eps, meas_from=args.v3_meas_from, mom=args.v3_mom, split=args.v3_split, **slq_kw(),
+            kernel=args.v3_kernel, mdamp=args.v3_mdamp, cbatch=args.v3_cbatch, k_lz=args.v3_k_lz, lz_eps=args.v3_lz_eps, meas_from=args.v3_meas_from, mom=args.v3_mom, split=args.v3_split, rho_fixed=args.v3_rho_fixed, **slq_kw(),
         ),
         # d-muon with its hidden-matrix momentum replaced by DANA momentum set by the F2g rule (src/optim/muon_dana_f2g.py)
         "muon-dana-f2g": lambda: MuonDanaF2G(

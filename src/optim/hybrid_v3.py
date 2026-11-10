@@ -37,7 +37,7 @@ from .slq_torch import GaussNewtonOperator, _dot
 
 
 class HybridV3(HybridSLQ):
-    def __init__(self, params, kernel="slq", mdamp=1.0, cbatch=64, k_lz=128, lz_eps=0.01, r_rho=0.5, r_tau=0.3, meas_from=32, mom="hidden", split="global", **kw):
+    def __init__(self, params, kernel="slq", mdamp=1.0, cbatch=64, k_lz=128, lz_eps=0.01, r_rho=0.5, r_tau=0.3, meas_from=32, mom="hidden", split="global", rho_fixed=None, **kw):
         kw["alloc"] = "global"; kw["plain"] = kw.get("plain", "adamw")
         super().__init__(params, **kw)
         if kernel not in ("slq", "msign"):
@@ -45,6 +45,12 @@ class HybridV3(HybridSLQ):
         self.kernel, self.mdamp, self.cbatch, self.k_lz, self.lz_eps = kernel, float(mdamp), int(cbatch), int(k_lz), float(lz_eps)
         self.r_rho, self.r_tau = float(r_rho), float(r_tau)
         self.meas_from = int(meas_from)                     # first step with the excess form; before it rho-hat = 1 (where it is clipped early)
+        # version 0 (rho_fixed = 1): rho-hat held fixed, r = min{1, s_b B_eff rho_fixed / K}.  No excess form, no curvature batch and
+        # no split-half statistics (the trainer skips them when split_stats is False): only the SLQ quadrature and T_eff are measured.
+        self.rho_fixed = None if rho_fixed is None or rho_fixed < 0 else float(rho_fixed)
+        self.split_stats = self.rho_fixed is None
+        if self.rho_fixed is not None:
+            self.cbatch = 0
         self.hid = np.array(self.use_muon, bool)
         # tensors with the long momentum: the hidden msign matrices, with mom = 'hidden+terminal' also wte and lm_head (AdamW plain
         # step), with mom = 'all' also every remaining tensor (the norm gains).  The kernel adds over blocks, each at its own plain
@@ -81,13 +87,16 @@ class HybridV3(HybridSLQ):
         for k in self.V3KEYS:
             self.last_refresh.pop(k, None)
         super().refresh(model, x, y)                         # SLQ quadrature (kernel nodes, tr H_z) and T_eff
-        if self.t < self.meas_from:
+        if self.rho_fixed is not None:
+            self.rho = self.rho_fixed
+            self.meas = {"t": self.t, "rho": self.rho_fixed}
+        elif self.t < self.meas_from:
             # early refreshes: the SLQ kernel only.  The excess form is expensive there (lambda_max ~1e7 near initialization) and
             # rho-hat is clipped at 1 anyway (bench: Enoki 12h, t = 4, 8 cost 11 min each), so the rule runs at rho-hat = 1.
             self.rho = 1.0 if self.rho is None else self.rho
         elif curv is not None and self.gA is not None and self.q is not None:
             prev = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
-            torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = self.slq_tf32
+            torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = self.tf32_now   # the SLQ refresh's precision
             try:
                 self._measure(model, curv)
             finally:
@@ -283,6 +292,10 @@ class HybridV3(HybridSLQ):
 
     def refresh_message(self):
         q = self.meas
+        if self.rho_fixed is not None:
+            return (f"[hybrid-v0] refresh t={self.t}: rho fixed {self.rho_fixed:g}, T_eff {self.teff:.1f}, K {self.N:.4g}, "
+                    f"S {self.S:.4g} -> r {self.r_hid:.3g} [{'tf32' if self.tf32_now else 'fp32'}, floor ratio "
+                    f"{self.floor_ratio:.2g}, m {self.last_refresh.get('m_used', 0):.0f}, {self.last_refresh.get('seconds', 0):.0f}s]")
         if not q:
             return f"[hybrid-v3] refresh t={self.t}: SLQ only (no halves or curvature batch yet)"
         return (f"[hybrid-v3] refresh t={q['t']}: E_c {q['E_c']:.4g} E_half {q['E_half']:.4g} -> E_delta {q['E_delta']:.4g} (rich gap "

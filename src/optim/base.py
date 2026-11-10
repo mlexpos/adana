@@ -108,8 +108,8 @@ def train(
     model.train()
 
     # adana-slq: split-half gradient statistics (needs >= 2 micro-steps) and quadrature refreshes
-    slq_split = hasattr(opt, "set_split_stats") and cfg.acc_steps >= 2
-    if hasattr(opt, "set_split_stats") and cfg.acc_steps < 2 and distributed_backend.is_master_process():
+    slq_split = hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps >= 2
+    if hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps < 2 and distributed_backend.is_master_process():
         print("[adana-slq] acc_steps < 2: no split-half noise statistics (mu = 1, water-filling falls back to global)")
     if hasattr(opt, "log_dir") and opt.log_dir is None and distributed_backend.is_master_process():
         opt.log_dir = Path(exp_dir)

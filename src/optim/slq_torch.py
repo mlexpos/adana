@@ -57,11 +57,13 @@ class GaussNewtonOperator:
     Distributed: each rank uses its own batch; products are averaged across ranks (identical Lanczos on all ranks).
     """
 
-    def __init__(self, model, names, params, x, y, r=None, fd_rel=1e-3, chunk=2, mode="jvp", cache=True):
+    def __init__(self, model, names, params, x, y, r=None, fd_rel=1e-3, chunk=2, mode="jvp", cache=True, attn="math"):
         self.model, self.names, self.params = model, names, params
         self.x, self.y, self.r = x, y, r
         self.fd_rel, self.chunk = fd_rel, chunk
-        self.mode, self.cache = mode, cache
+        if mode == "jvpt":                                  # jvp with the fused Triton attention derivative (attn_jvp.py)
+            mode, attn = "jvp", "triton"
+        self.mode, self.cache, self.attn = mode, cache, attn
         self._cache = {}
         self.dtype = torch.float64 if params[0].dtype == torch.float64 else torch.float32
         self.pnorm = math.sqrt(float(_dot([p.detach() for p in params], [p.detach() for p in params])))
@@ -124,7 +126,12 @@ class GaussNewtonOperator:
         prim = tuple(p.detach() for p in self.params)
         tang = tuple(di.to(p.dtype) for di, p in zip(d, self.params))
         B = self.x.shape[0]
-        with torch.autocast(device_type=self.x.device.type, enabled=False), sdpa_kernel(SDPBackend.MATH):
+        if self.attn == "triton":                           # fused attention tangent; primal / reverse via memory-efficient SDPA
+            from .attn_jvp import triton_causal_sdpa
+            attn_ctx = triton_causal_sdpa()
+        else:                                               # forward-mode AD needs the math backend
+            attn_ctx = sdpa_kernel(SDPBackend.MATH)
+        with torch.autocast(device_type=self.x.device.type, enabled=False), attn_ctx:
             for k, i in enumerate(range(0, B, self.chunk)):
                 xc, yc = self.x[i:i + self.chunk], self.y[i:i + self.chunk]
                 if self.cache:
@@ -227,7 +234,7 @@ def fsum(th, w, g, D):
 
 # ------------------------------------------------------------------ Lanczos driver
 @torch.no_grad()
-def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None, splits=None):
+def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, generator=None, splits=None, aitken_strict=False):
     """Run `probes` Lanczos recurrences (no reorthogonalization; Gauss quadrature of a smooth f is robust to it) of up to
     m_max steps on `op` (list-of-tensors -> list-of-tensors, symmetric PSD).  Stops a probe early when the Gauss / Gauss-
     Radau bracket on N(D) for every D in D_check is within relative eps.  For f(x) = g x / (g x + D) the Gauss rule is an
@@ -235,7 +242,9 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
     lower bound, so a recurrence stopped at m_max still returns a certified (conservative) N.  Returns dict with nodes
     (P, m), weights (P, m), block weights (P, m, L) (per-probe arrays padded with zero weight), m used per probe, the final
     bracket gap, and the bracket itself: N_hi (Gauss) and N_lo (Radau), each (P, len(D_check)).
-    splits: optional number of equal dim-0 chunks per tensor; the block weights are then per chunk (L = sum(splits))."""
+    splits: optional number of equal dim-0 chunks per tensor; the block weights are then per chunk (L = sum(splits)).
+    aitken_strict: extrapolate only a clearly geometric tail (four checkpoints, two successive ratios in (0, 0.9) within 1.5x of
+    each other); otherwise the correction is 1 (the Gauss rule as is)."""
     splits = [1] * len(like) if splits is None else [int(k) for k in splits]
     L = sum(splits)
     D_check = [] if D_check is None else list(D_check)
@@ -294,10 +303,15 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
             NG = [fsum(th, w, g, D) for D in D_check]
             seq = [h for h in hist if h[0] < m_used] + [(m_used, NG)]
             for k in range(len(D_check)):
-                if len(seq) >= 3:
+                if len(seq) >= (4 if aitken_strict else 3):
                     n1, n2, n3 = seq[-3][1][k], seq[-2][1][k], seq[-1][1][k]
                     d1, d2 = n2 - n1, n3 - n2
-                    if d1 < 0 and d2 < 0 and 0 < d2 / d1 < 1:
+                    geo = d1 < 0 and d2 < 0 and 0 < d2 / d1 < 1
+                    if geo and aitken_strict:
+                        d0 = n1 - seq[-4][1][k]
+                        q1, q2 = (d1 / d0 if d0 < 0 else -1.0), d2 / d1
+                        geo = 0 < q1 < 0.9 and 0 < q2 < 0.9 and max(q1, q2) <= 1.5 * min(q1, q2)
+                    if geo:
                         corr.append(float(np.clip((n3 - d2 * d2 / (d2 - d1)) / max(n3, 1e-30), 0.25, 1.0)))
                         continue
                 corr.append(1.0)

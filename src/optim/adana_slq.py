@@ -89,7 +89,8 @@ class ADanaSLQ(ADana):
                  wd_ts=1.0, s=0.25, kprime=0.0, cap=1.0, alloc="global", m_max=128, probes=1, slq_batch=8,
                  slq_eps=0.03, refresh_ratio=2.0, max_gap=100, teff="auto", batch_seqs=1, log_dir=None, seed=0,
                  gn_mode="jvp", first_refresh=4, aitken=None, gn_chunk=2, gn_cache=True,
-                 type_frac=None, reject_gap=None, depth_ratio=0.6, slq_tf32=False):
+                 type_frac=None, reject_gap=None, depth_ratio=0.6, slq_tf32=False, fp32_floor=0.0, refresh_sched=None,
+                 aitken_strict=False):
         super().__init__(params, lr=lr, delta=delta, kappa=1.0, epsilon=epsilon, weight_decay=weight_decay,
                          clipsnr=clipsnr, wd_decaying=wd_decaying, wd_ts=wd_ts, gamma_3_factor=1.0, use_foreach=False)
         self.s, self.kprime, self.cap, self.alloc = float(s), float(kprime), float(cap), alloc
@@ -99,6 +100,18 @@ class ADanaSLQ(ADana):
         self.gn_mode = gn_mode
         self.gn_chunk, self.gn_cache = int(gn_chunk), bool(gn_cache)
         self.slq_tf32 = bool(slq_tf32)
+        # with slq_tf32, a refresh runs in fp32 once theta*/(u lam_max) < fp32_floor (u = 2^-11, lam_max of the previous refresh,
+        # theta* = Delta at the next refresh / g): below ~2 TF32 rounding of a product reaches the threshold (24h Enoki: 0/29
+        # refreshes broke at >= 2, 22/26 at < 0.5).  0 = never.
+        self.fp32_floor = float(fp32_floor)
+        self.tf32_now, self.floor_ratio = self.slq_tf32, float("nan")
+        # refresh_sched "r1@t1,r2@t2,...,rK": ratio r1 between refreshes until t1, r2 until t2, ..., rK after (default refresh_ratio)
+        self.sched = []
+        if refresh_sched:
+            for part in refresh_sched.split(","):
+                r_, _, t_ = part.partition("@")
+                self.sched.append((float(r_), float(t_) if t_ else math.inf))
+        self.aitken_strict = bool(aitken_strict)
         v2 = alloc in ("waterfill_v2", "typed_v2")
         self.aitken = (not v2) if aitken is None else bool(aitken)
         self.reject_gap = (-1.0 if v2 else 0.5) if reject_gap is None else float(reject_gap)
@@ -320,8 +333,14 @@ class ADanaSLQ(ADana):
         Matmuls run in full fp32 (TF32 off) unless slq_tf32: TF32 rounding in a non-diagonal R (rotations around a
         wide-range diagonal) perturbs R GN R by ~1e-3 lam_max, far above the threshold Delta/gamma, and breaks the
         quadrature (Enoki SOAP-DANA: N 2.8x too high, Gauss/Radau bracket open)."""
+        self.floor_ratio = float("nan")
+        lam_prev = self.last_refresh.get("lam_max", float("nan"))
+        if self.slq_tf32 and self.fp32_floor > 0 and math.isfinite(lam_prev) and lam_prev > 0:
+            theta = self.delta / (self.delta + self._next_after(self.t) + 1) / (self.lr * getattr(self, "g0_mult", 1.0))
+            self.floor_ratio = theta / (2.0 ** -11 * lam_prev)
+        self.tf32_now = self.slq_tf32 and not self.floor_ratio < self.fp32_floor
         prev = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
-        torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = self.slq_tf32
+        torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = self.tf32_now
         try:
             self._refresh(model, x, y)
         finally:
@@ -342,7 +361,7 @@ class ADanaSLQ(ADana):
         D_now = self.delta / (self.delta + self.t + 1)
         D_next = self.delta / (self.delta + self._next_after(self.t) + 1)
         res = slq(op, self.plist, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr,
-                  D_check=[D_now, D_next], generator=self.gen, splits=self._slq_splits())
+                  D_check=[D_now, D_next], generator=self.gen, splits=self._slq_splits(), aitken_strict=self.aitken_strict)
         K = res["nodes"].size
         nodes = res["nodes"].reshape(K)
         w = res["weights"].reshape(K)
@@ -377,7 +396,7 @@ class ADanaSLQ(ADana):
                                  N_hi=float(np.mean(res["N_hi"][:, 0])) if res["N_hi"].size else float("nan"),
                                  N_lo=float(np.mean(res["N_lo"][:, 0])) if res["N_lo"].size else float("nan"),
                                  lam_max=res["lam_max"], trF=float(np.sum(w * np.maximum(nodes, 0.0))),
-                                 teff_raw=te_new, seconds=dt)
+                                 teff_raw=te_new, seconds=dt, tf32=float(self.tf32_now), floor_ratio=self.floor_ratio)
         self.next_refresh = self._next_after(self.t)
         self._compute_ratio(self.delta / (self.delta + self.t + 1))
         if self.q is not None:
@@ -395,7 +414,8 @@ class ADanaSLQ(ADana):
         return None                                 # one block per tensor
 
     def _next_after(self, t):
-        return max(t + 1, min(int(math.ceil(t * self.refresh_ratio)), t + self.max_gap))
+        ratio = next((r_ for r_, until in self.sched if t < until), self.refresh_ratio)
+        return max(t + 1, min(int(math.ceil(t * ratio)), t + self.max_gap))
 
     # ---------------------------------------------------------------- step
     @torch.no_grad()
