@@ -57,11 +57,12 @@ through the whole model and are not supported under FSDP.
 | 16 | 151M | **3.060** | 3.108 | 3.166 | 3.215 |
 | 20 | 295M | **2.895** | 2.943 | 2.977 | 3.013 |
 | 24 | 510M | **2.769** | 2.813 | 2.838 | 2.886 |
+| 28 | 809M | **2.668** | 2.711 | — | — |
 
-Final validation loss.
+Final validation loss. At 28 heads only the hybrid and d-muon were run (d-muon at ×½ and ×1 its formula rate).
 
 - **Seed spread.** At 12 heads the hybrid spans 3.286–3.292 over three seeds (water-filling: 3.286–3.290 over six), and d-muon
   spans 3.334–3.338 over six seeds.
 - **Compute gain.** Under the broken power-law fit of the ADana paper, d-muon needs about 1.4× the hybrid's compute to reach
-  the same loss, from 12 to 24 heads.
+  the same loss (1.34–1.46×), from 12 to 28 heads.
 - **γ0.** At 12 heads the result is flat in γ0 from L/32 to L/128 (3.285–3.291).
