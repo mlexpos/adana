@@ -351,6 +351,8 @@ class ADanaSLQ(ADana):
         if self.gen is None:
             # same probes on every rank (the Lanczos is replicated; products are averaged across ranks)
             self.gen = torch.Generator(device=x.device); self.gen.manual_seed(1234)
+            if getattr(self, "_gen_state", None) is not None:   # resumed run: continue the probe stream
+                self.gen.set_state(self._gen_state); self._gen_state = None
         names_by_id = {id(p): n for n, p in model.named_parameters()}
         names = [names_by_id[id(p)] for p in self.plist]
         xb, yb = x[: self.slq_batch], y[: self.slq_batch]
@@ -416,6 +418,50 @@ class ADanaSLQ(ADana):
     def _next_after(self, t):
         ratio = next((r_ for r_, until in self.sched if t < until), self.refresh_ratio)
         return max(t + 1, min(int(math.ceil(t * ratio)), t + self.max_gap))
+
+    # ---------------------------------------------------------------- checkpointing
+    # The estimator lives in plain attributes (step count t, next refresh, quadrature q, T_eff, split statistics, ratio, history of
+    # slq_diag.npz, and the subclasses' rule state: rho-hat, tau, g0_mult, wave state, ...), which torch's Optimizer.state_dict()
+    # does not see: a resumed run would restart the estimator at t = 0 (r = 0 until the first refresh, refreshes on the early
+    # schedule).  state_dict() adds every such attribute under "slq_extra" (tensors moved to the CPU) plus the probe generator's
+    # state; load_state_dict() restores them.  Excluded: torch's own fields, parameter references, compiled functions, log_dir.
+    _EXTRA_SKIP = {"state", "param_groups", "defaults", "plist", "pidx", "gen", "log_dir", "_compiled_functions", "_gen_state"}
+
+    @staticmethod
+    def _map_tensors(x, fn):
+        if torch.is_tensor(x):
+            return fn(x)
+        if isinstance(x, dict):
+            return {k: ADanaSLQ._map_tensors(v, fn) for k, v in x.items()}
+        if isinstance(x, (list, tuple)):
+            return type(x)(ADanaSLQ._map_tensors(v, fn) for v in x)
+        return x
+
+    def state_dict(self):
+        sd = super().state_dict()
+        extra = {}
+        for k, v in self.__dict__.items():
+            if k in self._EXTRA_SKIP or k.startswith(("_optimizer", "_warned", "_zero_grad", "_patched")) or callable(v):
+                continue
+            extra[k] = self._map_tensors(v, lambda t: t.detach().cpu().clone())
+        sd["slq_extra"] = extra
+        if self.gen is not None:
+            sd["slq_gen_state"] = self.gen.get_state()
+        return sd
+
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        extra = state_dict.pop("slq_extra", None)
+        gen_state = state_dict.pop("slq_gen_state", None)
+        super().load_state_dict(state_dict)
+        if extra is None:
+            print("[adana-slq] checkpoint has no estimator state (saved before 2026-11-11): the estimator restarts at t = 0")
+            return
+        dev = self.plist[0].device if self.plist else torch.device("cpu")
+        for k, v in extra.items():
+            setattr(self, k, self._map_tensors(v, lambda t: t.to(dev)))
+        self._gen_state = gen_state                     # applied when _refresh creates the generator on the batch's device
+        self.gen = None
 
     # ---------------------------------------------------------------- step
     @torch.no_grad()
