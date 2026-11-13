@@ -15,12 +15,21 @@ import wandb
 # Background rsync thread handle for checkpoint reliability
 _rsync_thread = None
 
+# Checkpointing must never stop training. Time limits (seconds), overridable from the environment:
+#   CKPT_WAIT         how long rank 0 waits for the previous copy before the next checkpoint is skipped. The other
+#                     ranks wait in a collective meanwhile, so this must stay well below the NCCL timeout (600 s).
+#   CKPT_RSYNC_LIMIT  how long one copy to the project disk may run before it is abandoned (older copy kept).
+#   CKPT_FINAL_WAIT   how long the end of training waits for the last copy.
+CKPT_WAIT = float(os.environ.get("ADANA_CKPT_WAIT", 120))
+CKPT_RSYNC_LIMIT = float(os.environ.get("ADANA_CKPT_RSYNC_LIMIT", 3600))
+CKPT_FINAL_WAIT = float(os.environ.get("ADANA_CKPT_FINAL_WAIT", 1800))
+
 
 def _rsync_checkpoint_to_project(local_ckpt_dir, project_ckpt_dir):
     """Background rsync from local SLURM_TMPDIR checkpoint to project directory.
 
     Uses atomic pattern: rsync to temp dir, then mv to final location.
-    On failure, leaves temp dir intact (does not corrupt existing checkpoint).
+    On failure or timeout, leaves temp dir intact (does not corrupt existing checkpoint).
     """
     job_id = os.environ.get("SLURM_JOB_ID", "unknown")
     project_parent = Path(project_ckpt_dir).parent
@@ -34,6 +43,7 @@ def _rsync_checkpoint_to_project(local_ckpt_dir, project_ckpt_dir):
             ["rsync", "-a", "--delete", f"{local_ckpt_dir}/", f"{tmp_dir}/"],
             check=True,
             capture_output=True,
+            timeout=CKPT_RSYNC_LIMIT,
         )
         # Atomic rename: remove old final, move temp to final
         if final_dir.exists():
@@ -64,11 +74,22 @@ def _background_rsync(local_ckpt_dir, project_ckpt_dir):
     _rsync_thread.start()
 
 
-def wait_for_rsync():
-    """Wait for any in-flight background rsync to complete."""
+def wait_for_rsync(timeout=None):
+    """Wait for any in-flight background rsync, at most `timeout` seconds (None: no limit).
+    Returns True if no copy is in flight afterwards."""
     global _rsync_thread
     if _rsync_thread is not None and _rsync_thread.is_alive():
-        _rsync_thread.join()
+        _rsync_thread.join(timeout)
+    return _rsync_thread is None or not _rsync_thread.is_alive()
+
+
+def all_ranks_ok(flag, device):
+    """True iff `flag` is true on every rank (a collective: every rank must call it)."""
+    if not dist.is_initialized():
+        return bool(flag)
+    t = torch.tensor([1 if flag else 0], device=device if dist.get_backend() == "nccl" else "cpu")
+    dist.all_reduce(t, op=dist.ReduceOp.MIN)
+    return bool(t.item())
 
 
 def get_batch(datareader, device="cpu"):

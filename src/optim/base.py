@@ -13,13 +13,54 @@ from logger.logger import DynamicsLogger
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
                     load_worker_state, log_prodigy_lr, log_optimizer_schedules,
                     save_checkpoint, save_worker_state, rsync_if_slurm,
-                    visualize_routing, wait_for_rsync)
+                    visualize_routing, wait_for_rsync, all_ranks_ok,
+                    CKPT_WAIT, CKPT_FINAL_WAIT)
 from .tau_stats_collector import TauStatsCollector
 
 
 def _all_ranks_checkpoint(backend):
     """Check if checkpoint save/load requires all ranks (e.g. FSDP)."""
     return hasattr(backend, 'all_ranks_checkpoint') and backend.all_ranks_checkpoint()
+
+
+def _checkpoint(label, ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader,
+                fsdp_all_ranks):
+    """Write one checkpoint; never stop training.
+
+    Every rank calls this. All ranks agree to skip the checkpoint if the copy of the previous one to the project disk
+    is still running after CKPT_WAIT seconds (the local files are still being read). If any rank fails to write its
+    part, the checkpoint is not copied and the previous copy on the project disk is kept.
+    """
+    master = distributed_backend.is_master_process()
+    if not all_ranks_ok(wait_for_rsync(CKPT_WAIT) if master else True, cfg.device):
+        if master:
+            print(f"[Checkpoint] SKIP  {label} iter={curr_iter}: previous copy still running after {CKPT_WAIT:.0f}s; "
+                  f"training continues")
+        return
+    if master:
+        print(f"[Checkpoint] START {label} iter={curr_iter} -> {ckpt_dir}")
+    ok = True
+    try:
+        if master or fsdp_all_ranks:
+            save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
+        if master and cfg.wandb and wandb.run is not None:
+            exp_dir.mkdir(parents=True, exist_ok=True)
+            with open(exp_dir / "wandb_run_id.txt", "w") as f:
+                f.write(wandb.run.id)
+        # All ranks save their own worker state (RNG + dataloader position)
+        save_worker_state(ckpt_dir, train_reader=train_reader)
+    except Exception as e:
+        ok = False
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        print(f"[Checkpoint] WARNING rank {rank}: writing {label} iter={curr_iter} failed ({e!r}); training continues")
+    # Also the barrier: all ranks have finished writing before rank 0 copies
+    ok = all_ranks_ok(ok, cfg.device)
+    if master:
+        if ok:
+            rsync_if_slurm(ckpt_dir)
+            print(f"[Checkpoint] END   {label} iter={curr_iter} -> {ckpt_dir}")
+        else:
+            print(f"[Checkpoint] ABANDON {label} iter={curr_iter}: not copied; the previous copy is kept")
 
 
 def train(
@@ -119,49 +160,13 @@ def train(
         if cfg.permanent_ckpt_interval > 0:
             if curr_iter % cfg.permanent_ckpt_interval == 0:
                 ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
-                if distributed_backend.is_master_process():
-                    print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
-                if distributed_backend.is_master_process() or _fsdp_all_ranks:
-                    save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
-                if distributed_backend.is_master_process():
-                    # Save wandb run ID when saving checkpoint
-                    if cfg.wandb and wandb.run is not None:
-                        wandb_id_file = exp_dir / "wandb_run_id.txt"
-                        exp_dir.mkdir(parents=True, exist_ok=True)
-                        with open(wandb_id_file, "w") as f:
-                            f.write(wandb.run.id)
-                # All ranks save their own worker state (RNG + dataloader position)
-                save_worker_state(ckpt_dir, train_reader=train_reader)
-                # Barrier ensures all ranks finish writing before rank 0 rsyncs
-                if dist.is_initialized():
-                    dist.barrier()
-                if distributed_backend.is_master_process():
-                    rsync_if_slurm(ckpt_dir)
-                    print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
+                _checkpoint("permanent", ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader, _fsdp_all_ranks)
 
         # Save temporary checkpoint for resuming training
         if cfg.latest_ckpt_interval > 0:
             if curr_iter % cfg.latest_ckpt_interval == 0 or curr_iter == cfg.iterations:
                 ckpt_dir = exp_dir / "ckpts" / "latest"
-                if distributed_backend.is_master_process():
-                    print(f"[Checkpoint] START latest    iter={curr_iter} -> {ckpt_dir}")
-                if distributed_backend.is_master_process() or _fsdp_all_ranks:
-                    save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
-                if distributed_backend.is_master_process():
-                    # Save wandb run ID when saving checkpoint
-                    if cfg.wandb and wandb.run is not None:
-                        wandb_id_file = exp_dir / "wandb_run_id.txt"
-                        exp_dir.mkdir(parents=True, exist_ok=True)
-                        with open(wandb_id_file, "w") as f:
-                            f.write(wandb.run.id)
-                # All ranks save their own worker state (RNG + dataloader position)
-                save_worker_state(ckpt_dir, train_reader=train_reader)
-                # Barrier ensures all ranks finish writing before rank 0 rsyncs
-                if dist.is_initialized():
-                    dist.barrier()
-                if distributed_backend.is_master_process():
-                    rsync_if_slurm(ckpt_dir)
-                    print(f"[Checkpoint] END   latest    iter={curr_iter} -> {ckpt_dir}")
+                _checkpoint("latest", ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader, _fsdp_all_ranks)
 
         ws = distributed_backend.get_world_size()
         tokens = ws * substep * cfg.sequence_length * cfg.batch_size
@@ -194,44 +199,12 @@ def train(
         if cfg.iterations_to_run is not None and iterations_in_run >= cfg.iterations_to_run:
             # Save checkpoint before stopping
             ckpt_dir = exp_dir / "ckpts" / "latest"
-            if distributed_backend.is_master_process():
-                print(f"[Checkpoint] START latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
-            if distributed_backend.is_master_process() or _fsdp_all_ranks:
-                save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
-            if distributed_backend.is_master_process():
-                # Save wandb run ID when saving checkpoint
-                if cfg.wandb and wandb.run is not None:
-                    wandb_id_file = exp_dir / "wandb_run_id.txt"
-                    exp_dir.mkdir(parents=True, exist_ok=True)
-                    with open(wandb_id_file, "w") as f:
-                        f.write(wandb.run.id)
-            save_worker_state(ckpt_dir, train_reader=train_reader)
-            if dist.is_initialized():
-                dist.barrier()
-            if distributed_backend.is_master_process():
-                rsync_if_slurm(ckpt_dir)
-                print(f"[Checkpoint] END   latest (iterations_to_run reached) iter={curr_iter} iterations_in_run={iterations_in_run} -> {ckpt_dir}")
+            _checkpoint(f"latest (iterations_to_run={iterations_in_run} reached)", ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader, _fsdp_all_ranks)
             # Also save permanent checkpoint if interval is set
             if cfg.permanent_ckpt_interval > 0:
                 if curr_iter % cfg.permanent_ckpt_interval == 0:
                     ckpt_dir = exp_dir / "ckpts" / str(curr_iter)
-                    if distributed_backend.is_master_process():
-                        print(f"[Checkpoint] START permanent iter={curr_iter} -> {ckpt_dir}")
-                    if distributed_backend.is_master_process() or _fsdp_all_ranks:
-                        save_checkpoint(model, opt, scheduler, curr_iter, ckpt_dir, distributed_backend=distributed_backend)
-                    if distributed_backend.is_master_process():
-                        # Save wandb run ID when saving checkpoint
-                        if cfg.wandb and wandb.run is not None:
-                            wandb_id_file = exp_dir / "wandb_run_id.txt"
-                            exp_dir.mkdir(parents=True, exist_ok=True)
-                            with open(wandb_id_file, "w") as f:
-                                f.write(wandb.run.id)
-                    save_worker_state(ckpt_dir, train_reader=train_reader)
-                    if dist.is_initialized():
-                        dist.barrier()
-                    if distributed_backend.is_master_process():
-                        rsync_if_slurm(ckpt_dir)
-                        print(f"[Checkpoint] END   permanent iter={curr_iter} -> {ckpt_dir}")
+                    _checkpoint("permanent", ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader, _fsdp_all_ranks)
             break
 
         if curr_iter == cfg.iterations:
@@ -407,8 +380,9 @@ def train(
 
             grad_norms = []
 
-    # Wait for any background checkpoint rsync to complete before returning
-    wait_for_rsync()
+    # Wait for the last checkpoint copy, but not forever: an unfinished copy is abandoned and the older one kept
+    if distributed_backend.is_master_process() and not wait_for_rsync(CKPT_FINAL_WAIT):
+        print(f"[Checkpoint] WARNING: last copy still running after {CKPT_FINAL_WAIT:.0f}s; abandoned, older copy kept")
 
     return stats
 
