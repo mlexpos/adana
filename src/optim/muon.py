@@ -10,6 +10,10 @@ from typing import Dict, Tuple
 
 import torch
 import torch.distributed as dist
+try:                                       # FSDP2 parameters and gradients are DTensors
+    from torch.distributed.tensor import DTensor as _DTensor, Replicate as _Replicate
+except ImportError:
+    _DTensor = _Replicate = None
 
 from .schedule import cos_inf_schedule, wsd_schedule # cos_schedule, cosine_wsd_decay_schedule, DOES NOT EXIST
 
@@ -369,8 +373,15 @@ class DistributedMuon(torch.optim.Optimizer):
                     dist.all_gather(ns_input_shards, ns_input, self.tp_group)
                     ns_input = torch.cat(ns_input_shards, dim=tp_split_dim)
 
-                # calc update
-                update = zeropower_via_newtonschulz5(ns_input, steps=ns_steps)
+                # calc update.  Under FSDP2 the momentum is a DTensor sharded by rows: gather the full matrix once (bf16), run
+                # Newton-Schulz on a plain tensor, and take back this rank's shard (Replicate -> Shard is a local slice)
+                if _DTensor is not None and isinstance(ns_input, _DTensor):
+                    full = zeropower_via_newtonschulz5(ns_input.full_tensor(), steps=ns_steps)
+                    update = _DTensor.from_local(full, ns_input.device_mesh, [_Replicate()] * ns_input.device_mesh.ndim,
+                                                 run_check=False).redistribute(ns_input.device_mesh, ns_input.placements)
+                    del full
+                else:
+                    update = zeropower_via_newtonschulz5(ns_input, steps=ns_steps)
 
                 # only local tp part
                 if tp_split_dim != -1:

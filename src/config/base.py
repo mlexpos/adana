@@ -44,6 +44,16 @@ def parse_args(base_parser, args, namespace):
         type=int,
         help="Tensor parallelism degree (default: 1 = disabled). Requires --distributed_backend fsdp.",
     )
+    # FSDP2 communication and precision.  Defaults: gather parameters once per optimizer step in bf16, keep them gathered across
+    # the gradient-accumulation window, accumulate gradients in fp32 (FSDP2 accumulates in reduce_dtype) and reduce-scatter
+    # once, in fp32.  --fsdp_reshard microstep --fsdp_param_dtype float32 --fsdp_reduce_dtype bfloat16 restores the old behaviour.
+    parser.add_argument("--fsdp_param_dtype", default="bfloat16", choices=["bfloat16", "float32"],
+                        help="dtype of the gathered (unsharded) parameters used in forward/backward; master weights stay fp32")
+    parser.add_argument("--fsdp_reduce_dtype", default="float32", choices=["float32", "bfloat16"],
+                        help="dtype of gradient accumulation across micro-steps and of the reduce-scatter")
+    parser.add_argument("--fsdp_reshard", default="step", choices=["step", "microstep"],
+                        help="step: gather once per optimizer step and keep parameters unsharded until the last micro-step's "
+                             "backward; microstep: reshard after every forward and backward (re-gather each micro-step)")
     parser.add_argument("--log_interval", default=50, type=int)
 
     # Checkpointing

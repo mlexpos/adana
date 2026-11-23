@@ -3,23 +3,24 @@ import os
 from contextlib import contextmanager
 
 import torch
-from torch.distributed import (destroy_process_group, get_world_size,
+from torch.distributed import (broadcast, destroy_process_group, get_world_size,
                                init_process_group)
 
 from .backend import DistributedBackend
 
 # FSDP2 composable API (PyTorch 2.4+)
 try:
-    from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy
+    from torch.distributed._composable.fsdp import fully_shard, MixedPrecisionPolicy, FSDPModule
 except ImportError:
-    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy
+    from torch.distributed.fsdp import fully_shard, MixedPrecisionPolicy, FSDPModule
 
 
 class FSDPDistributedBackend(DistributedBackend):
     """FSDP2 (per-parameter sharding) distributed backend.
 
     Uses the composable ``fully_shard`` API with FULL_SHARD strategy.
-    Mixed precision: bf16 compute, fp32 params.
+    Mixed precision: bf16 gathered params by default (--fsdp_param_dtype), fp32 master weights, fp32 gradient
+    accumulation and reduce-scatter (--fsdp_reduce_dtype); one gather per optimizer step (--fsdp_reshard step).
     Checkpoints use ``torch.distributed.checkpoint`` for sharded state dicts.
 
     When ``tp_size > 1``, a 2-D DeviceMesh (dp, tp) is created. Tensor
@@ -36,11 +37,18 @@ class FSDPDistributedBackend(DistributedBackend):
         init_process_group(backend="nccl")
         self.local_rank = int(os.environ["LOCAL_RANK"])
 
-        # Mixed precision policy: compute in bf16, keep params in fp32
+        # Mixed precision: the gathered parameters used in forward/backward are --fsdp_param_dtype (bf16 by default; the matmuls
+        # run under bf16 autocast either way), the sharded master weights and optimizer state stay fp32.  Gradients are accumulated
+        # across micro-steps and reduce-scattered in --fsdp_reduce_dtype (fp32 by default, as DDP): when the computed gradient is
+        # bf16, FSDP2 upcasts each micro-step's gradient into an fp32 accumulator (FSDPParam.unsharded_accumulated_grad).
+        dt = {"bfloat16": torch.bfloat16, "float32": torch.float32}
         self.mp_policy = MixedPrecisionPolicy(
-            param_dtype=torch.float32,
-            reduce_dtype=torch.bfloat16,
+            param_dtype=dt[getattr(args, "fsdp_param_dtype", "bfloat16")],
+            reduce_dtype=dt[getattr(args, "fsdp_reduce_dtype", "float32")],
         )
+        # "step": parameters are gathered at the first micro-step's forward and stay unsharded until the last micro-step's
+        # backward (one all-gather and one reduce-scatter per optimizer step); "microstep": reshard after every forward and backward.
+        self.reshard = getattr(args, "fsdp_reshard", "step")
 
         # Tensor parallelism configuration
         self.tp_size = getattr(args, "tp_size", 1)
@@ -86,6 +94,13 @@ class FSDPDistributedBackend(DistributedBackend):
         return args
 
     def transform_model(self, model):
+        # Every rank initialised its own model with seed + rank; fully_shard keeps each rank's slice of its OWN initialisation,
+        # so without this the sharded model would be a patchwork of world_size different inits.  Broadcast rank 0's weights
+        # first, as DDP does, so FSDP and DDP start from the same model.
+        if get_world_size() > 1:
+            with torch.no_grad():
+                for t in list(model.parameters()) + list(model.buffers()):
+                    broadcast(t.data, src=0)
         # Apply TP first (if enabled), then FSDP.
         if self.tp_size > 1:
             from torch.distributed.tensor.parallel import parallelize_module
@@ -104,7 +119,7 @@ class FSDPDistributedBackend(DistributedBackend):
 
         # Apply FSDP per-block, then to the full model.
         # All model architectures use model.transformer.h for blocks.
-        fsdp_kwargs = dict(mp_policy=self.mp_policy)
+        fsdp_kwargs = dict(mp_policy=self.mp_policy, reshard_after_forward=(self.reshard == "microstep"))
         if self.dp_mesh is not None:
             fsdp_kwargs["mesh"] = self.dp_mesh
 
@@ -161,16 +176,24 @@ class FSDPDistributedBackend(DistributedBackend):
     def get_context_for_microstep_forward(
         self, model, microstep_idx, gradient_accumulation_steps
     ):
-        # FSDP2 composable API: set_requires_gradient_sync controls all-reduce.
-        # Skip sync on non-final microsteps for gradient accumulation.
-        if microstep_idx < gradient_accumulation_steps - 1:
-            model.set_requires_gradient_sync(False)
-        else:
-            model.set_requires_gradient_sync(True)
+        # Non-final micro-steps: no reduce-scatter (gradients accumulate locally, in reduce_dtype) and, with --fsdp_reshard step,
+        # no resharding after backward either, so the next micro-step reuses the gathered parameters.  The final micro-step
+        # reduce-scatters and reshards, so the optimizer sees sharded parameters and gradients.
+        last = microstep_idx == gradient_accumulation_steps - 1
+        model.set_requires_gradient_sync(last)
+        if self.reshard == "step":
+            model.set_reshard_after_backward(last)
         try:
             yield
         finally:
             pass
+
+    def reshard_all(self, model):
+        """Reshard every FSDP module (FSDPModule.reshard is not recursive).  Called after evaluation, whose forward passes leave
+        the gathered parameters in place when reshard_after_forward=False."""
+        for m in model.modules():
+            if isinstance(m, FSDPModule):
+                m.reshard()
 
     def is_master_process(self) -> bool:
         return self.rank == 0

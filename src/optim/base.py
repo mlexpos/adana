@@ -189,6 +189,10 @@ def train(
                 opt,
                 full_eval=(curr_iter in cfg.full_eval_at),
             )
+            # FSDP with reshard_after_forward=False leaves the evaluation's gathered parameters in place; reshard so that
+            # checkpoints and the optimizer always see sharded parameters (no-op for other backends)
+            if hasattr(distributed_backend, "reshard_all"):
+                distributed_backend.reshard_all(model)
 
             # Collect tau statistics if enabled
             if tau_stats_collector is not None and tau_stats_collector.should_collect(curr_iter, is_eval_step):
