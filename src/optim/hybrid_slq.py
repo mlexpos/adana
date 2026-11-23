@@ -47,6 +47,7 @@ import torch
 
 from .adana_slq import ADanaSLQ
 from .muon import zeropower_via_newtonschulz5
+from .dtensor_utils import is_dtensor, local, matrix_fn, sum_local_scalars
 
 
 class HybridSLQ(ADanaSLQ):
@@ -225,10 +226,12 @@ class HybridSLQ(ADanaSLQ):
                 st["v"].mul_(1 - Dm).addcmul_(g, g, value=Dm)
                 norm = torch.sqrt(st["v"]).add_(eps).reciprocal_()
                 mom = st["m"] * norm
-                st["mz2"] = (st["m"] * mom).sum()
+                st["mz2"] = (local(st["m"]) * local(mom)).sum()   # this rank's part (all of it unless sharded); summed below
                 if self.use_muon[i]:
                     st["buf"].mul_(self.beta).add_(g)
-                    u = zeropower_via_newtonschulz5(g.add(st["buf"], alpha=self.beta).bfloat16(), steps=self.ns_steps)
+                    # msign of the whole matrix: under FSDP2 the Nesterov input is gathered once, orthogonalised, and resharded
+                    u = matrix_fn(lambda G: zeropower_via_newtonschulz5(G, steps=self.ns_steps),
+                                  g.add(st["buf"], alpha=self.beta).bfloat16())
                     p.add_(u.to(p.dtype), alpha=-g2 * hmul * self._scale(p))
                 elif self.plain == "adamw":           # d-muon's AdamW direction (bias-corrected), at va gamma0
                     b1, b2 = self.adam_betas
@@ -243,9 +246,11 @@ class HybridSLQ(ADanaSLQ):
                 else:
                     wd_factor = -wd * schedule_factor
                 p.mul_(1 + wd_factor)
-        for i, p in enumerate(self.plist):
-            if "mz2" in self.state.get(p, {}):
-                self.mz2[i] = float(self.state[p]["mz2"])
+        # |m_T|_z^2 per tensor: one all-reduce of the local sums under FSDP2, one device sync in all cases
+        idx = [i for i, p in enumerate(self.plist) if "mz2" in self.state.get(p, {})]
+        sharded = any(is_dtensor(p) for p in self.plist)
+        for i, v in zip(idx, sum_local_scalars([self.state[self.plist[i]]["mz2"] for i in idx], sharded)):
+            self.mz2[i] = v
         return loss
 
     def _sk(self, G):

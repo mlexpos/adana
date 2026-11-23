@@ -35,6 +35,7 @@ Everything else (moments, weight decay, optional per-element SNR clip `clipsnr`)
 the whole update, so the ratio is computed at the peak LR.
 """
 import math
+import os
 import re
 import time
 from pathlib import Path
@@ -44,7 +45,8 @@ import torch
 import torch.distributed as dist
 
 from .adana import ADana
-from .slq_torch import GaussNewtonOperator, effective_tokens, slq
+from .slq_torch import GaussNewtonOperator, ShardedOperator, effective_tokens, slq
+from .dtensor_utils import full, is_dtensor, materialize, release
 
 
 def _alloc_group(name):
@@ -341,10 +343,15 @@ class ADanaSLQ(ADana):
         self.tf32_now = self.slq_tf32 and not self.floor_ratio < self.fp32_floor
         prev = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32)
         torch.backends.cuda.matmul.allow_tf32 = torch.backends.cudnn.allow_tf32 = self.tf32_now
+        cuda = x.is_cuda
+        if cuda:                                    # the refresh's own peak memory (training steps after it record theirs again)
+            torch.cuda.reset_peak_memory_stats(x.device)
         try:
             self._refresh(model, x, y)
         finally:
             torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32 = prev
+        if cuda:
+            self.last_refresh["peak_gib"] = torch.cuda.max_memory_allocated(x.device) / 2 ** 30
 
     def _refresh(self, model, x, y):
         t0 = time.time()
@@ -358,12 +365,53 @@ class ADanaSLQ(ADana):
         xb, yb = x[: self.slq_batch], y[: self.slq_batch]
         was_training = model.training
         model.eval()
-        op = GaussNewtonOperator(model, names, self.plist, xb, yb, r=self._slq_r(), mode=self.gn_mode,
-                                 chunk=self.gn_chunk, cache=self.gn_cache)
+        # Under FSDP2 the parameters are sharded DTensors, which functional_call / torch.func.jvp cannot use.  The trainer gives the
+        # optimizer an unwrapped copy of the architecture built on the meta device (shadow_model); for the length of the refresh it
+        # holds the full fp32 weights (gathered once: the weights do not change during a refresh), and the Gauss-Newton products,
+        # the Lanczos recurrence and T_eff run on it exactly as under DDP (full-size vectors, products averaged across ranks).
+        shadow = None
+        if any(is_dtensor(p) for p in self.plist):
+            shadow = getattr(self, "shadow_model", None)
+            if shadow is None:
+                raise RuntimeError("adana-slq under FSDP needs opt.shadow_model (an unwrapped copy of the model on the meta device)")
+            sp = materialize(shadow, model)
+            shadow.eval()
+            op_model, pl = shadow, [sp[n] for n in names]
+        else:
+            op_model, pl = model, self.plist
+        if shadow is not None and os.environ.get("ADANA_SLQ_REPLICATED") != "1":
+            # sharded recurrence: the Lanczos vectors and r are DTensors sharded like the parameters (1 / world of the memory);
+            # each product gathers r u, runs on the full weights and this rank's sequences, and is reduce-scattered back
+            op = ShardedOperator(GaussNewtonOperator(op_model, names, pl, xb, yb, r=None, mode=self.gn_mode, chunk=self.gn_chunk,
+                                                     cache=self.gn_cache, reduce=False), self.plist, self._slq_r(sharded=True))
+            vecs = self.plist
+        else:
+            op = GaussNewtonOperator(op_model, names, pl, xb, yb, r=self._slq_r(), mode=self.gn_mode,
+                                     chunk=self.gn_chunk, cache=self.gn_cache)
+            vecs = pl
         D_now = self.delta / (self.delta + self.t + 1)
         D_next = self.delta / (self.delta + self._next_after(self.t) + 1)
-        res = slq(op, self.plist, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr,
+        if shadow is not None and os.environ.get("ADANA_SLQ_COMPARE") == "1":
+            # diagnostic: the replicated recurrence on the same weights, curvature batch and probe, before the sharded one
+            g_state = self.gen.get_state()
+            op_r = GaussNewtonOperator(op_model, names, pl, xb, yb, r=self._slq_r(), mode=self.gn_mode, chunk=self.gn_chunk,
+                                       cache=self.gn_cache)
+            res_r = slq(op_r, pl, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr, D_check=[D_now, D_next],
+                        generator=self.gen, splits=self._slq_splits(), aitken_strict=self.aitken_strict)
+            del op_r
+            self.gen.set_state(g_state)
+        res = slq(op, vecs, m_max=self.m_max, probes=self.probes, eps=self.slq_eps, g=self.lr,
                   D_check=[D_now, D_next], generator=self.gen, splits=self._slq_splits(), aitken_strict=self.aitken_strict)
+        if shadow is not None and os.environ.get("ADANA_SLQ_COMPARE") == "1" and (not dist.is_initialized() or dist.get_rank() == 0):
+            gq = self.lr * getattr(self, "g0_mult", 1.0)
+            Nq = lambda rr: float(np.sum(rr["weights"].reshape(-1) * gq * np.maximum(rr["nodes"].reshape(-1), 0)
+                                         / (gq * np.maximum(rr["nodes"].reshape(-1), 0) + D_now)))
+            top3 = lambda rr: [float(f"{x:.4g}") for x in np.sort(rr["nodes"].reshape(-1))[::-1][:3]]
+            print(f"[slq-compare] t={self.t}: N(Delta_t) replicated {Nq(res_r):.6g} sharded {Nq(res):.6g} "
+                  f"(ratio {Nq(res) / max(Nq(res_r), 1e-30):.6f}); m {int(res_r['m_used'].mean())}/{int(res['m_used'].mean())}; "
+                  f"lam_max {res_r['lam_max']:.6g}/{res['lam_max']:.6g}; top nodes rep {top3(res_r)} "
+                  f"shard {top3(res)}", flush=True)
+            del res_r
         K = res["nodes"].size
         nodes = res["nodes"].reshape(K)
         w = res["weights"].reshape(K)
@@ -383,12 +431,16 @@ class ADanaSLQ(ADana):
         te_new = float("nan")
         if self.teff_mode == "auto":
             with torch.enable_grad():
-                te_new, _, _ = effective_tokens(model, self.plist, xb, yb, generator=self.gen)
+                te_new, _, _ = effective_tokens(op_model, pl, xb, yb, generator=self.gen)
             if dist.is_available() and dist.is_initialized():
                 tt = torch.tensor([te_new], device=x.device, dtype=torch.float64); dist.all_reduce(tt)
                 te_new = float(tt) / dist.get_world_size()
             te_new = float(np.clip(te_new, 1.0, yb.shape[1]))
             self.teff = te_new if self.n_refresh == 0 else math.sqrt(self.teff * te_new)
+        del op, vecs
+        if shadow is not None:
+            del pl, sp
+            release(shadow)
         if was_training:
             model.train()
         dt = time.time() - t0
@@ -398,18 +450,25 @@ class ADanaSLQ(ADana):
                                  N_hi=float(np.mean(res["N_hi"][:, 0])) if res["N_hi"].size else float("nan"),
                                  N_lo=float(np.mean(res["N_lo"][:, 0])) if res["N_lo"].size else float("nan"),
                                  lam_max=res["lam_max"], trF=float(np.sum(w * np.maximum(nodes, 0.0))),
-                                 teff_raw=te_new, seconds=dt, tf32=float(self.tf32_now), floor_ratio=self.floor_ratio)
+                                 teff_raw=te_new, seconds=dt, tf32=float(self.tf32_now), floor_ratio=self.floor_ratio,
+                                 peak_gib=float("nan"))            # set by refresh() once the refresh has finished
         self.next_refresh = self._next_after(self.t)
         self._compute_ratio(self.delta / (self.delta + self.t + 1))
         if self.q is not None:
             self._save_diag()
 
-    def _slq_r(self):
-        """r = P^{-1/2} per tensor (the z coordinates of the quadrature): Adam's diagonal (sqrt(v) + eps)^{-1/2}."""
+    def _slq_r(self, sharded=False):
+        """r = P^{-1/2} per tensor (the z coordinates of the quadrature): Adam's diagonal (sqrt(v) + eps)^{-1/2}.
+        sharded: placed like the parameters (DTensors under FSDP2, for the sharded recurrence); otherwise full tensors (v gathered
+        under FSDP2) for full-size vectors."""
         r = []
         for p in self.plist:
             st = self.state.get(p, {})
-            r.append((torch.sqrt(st["v"]) + self.epsilon).rsqrt() if "v" in st else torch.ones_like(p))
+            if sharded:
+                r.append((torch.sqrt(st["v"]) + self.epsilon).rsqrt() if "v" in st else torch.ones_like(p))
+            else:
+                r.append((torch.sqrt(full(st["v"])) + self.epsilon).rsqrt() if "v" in st
+                         else torch.ones(p.shape, device=p.device, dtype=p.dtype))
         return r
 
     def _slq_splits(self):
@@ -555,7 +614,7 @@ class ADanaSLQ(ADana):
                                  lam_max=self.q["lam_max"], **{k: v for k, v in self.last_refresh.items() if k not in ("t", "lam_max")}))
         out = {"names": np.array(self.bnames)}
         for k in self.history[0]:
-            vals = [h[k] for h in self.history]
+            vals = [h.get(k, float("nan")) for h in self.history]      # keys added in later versions: NaN in older rows
             try:
                 out[k] = np.array(vals)
             except ValueError:

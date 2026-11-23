@@ -149,7 +149,10 @@ def train(
     model.train()
 
     # adana-slq: split-half gradient statistics (needs >= 2 micro-steps) and quadrature refreshes
-    slq_split = hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps >= 2
+    # split-batch statistics read p.grad half-way through the accumulation window; under FSDP2 gradients are only reduced (and
+    # p.grad populated) at the last micro-step, so they are off there (version 0's rule does not use them; diagnostics only)
+    slq_split = (hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps >= 2
+                 and not getattr(distributed_backend, "_is_fsdp", False))
     if hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps < 2 and distributed_backend.is_master_process():
         print("[adana-slq] acc_steps < 2: no split-half noise statistics (mu = 1, water-filling falls back to global)")
     if hasattr(opt, "log_dir") and opt.log_dir is None and distributed_backend.is_master_process():

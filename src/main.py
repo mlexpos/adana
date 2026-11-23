@@ -418,6 +418,14 @@ def main(args, parser):
     )  # todo: take care of initializing the model if args.use_pretrained != 'none'
     print(f"\nModel:\n{model}")
 
+    # FSDP2: an unwrapped copy of the architecture on the meta device (no memory).  Optimizers that measure the curvature
+    # (adana-slq family) load the full weights into it for the length of a refresh, since forward-mode AD cannot run on the
+    # sharded module.
+    shadow_model = None
+    if getattr(distributed_backend, "_is_fsdp", False):
+        with torch.device("meta"):
+            shadow_model = get_model(args)
+
     model = distributed_backend.transform_model(model)
 
     group_specs = distributed_backend.get_raw_model(model).get_parameter_group_specs()
@@ -450,6 +458,8 @@ def main(args, parser):
     args.world_size = distributed_backend.get_world_size()
 
     opt = build_optimizer(args, model, group_specs)
+    if shadow_model is not None and hasattr(opt, "refresh"):
+        opt.shadow_model = shadow_model
     if distributed_backend.is_master_process():
         print(f"\nOptimizer:\n{opt}")
 

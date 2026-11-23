@@ -84,6 +84,27 @@ dmuon)     # d-muon under FSDP2 as it stands (Newton-Schulz on the sharded DTens
     run 28 d-muon fsdp 16 32 step
     run 24 d-muon nccl 16 32 par1 $P
     run 24 d-muon fsdp 16 32 par1 $P ;;
+hybrid)    # version 0 (hybrid-v3, rho-hat = 1) at 24 heads, B = 512, s_b = 1/2 with the production flags, 80 steps (refreshes at
+           # t = 4, 8, 16, 32, 64): DDP against FSDP2 (SLQ refresh on the unwrapped shadow model), per-refresh K / T_eff / r and loss
+    V0="--v3_rho_fixed 1 --lr 2.3454493653934658e-05 --hyb_msign_lr 0.001501087593851818 --hyb_va 64 --slq_s 0.5 --slq_tf32
+        --slq_first_refresh 4 --slq_max_gap 100000 --v3_kernel slq --v3_mom all --v3_split global --weight_decay 0.0031570639305445935
+        --wd_decaying --wd_ts 1267 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
+        --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --iterations 80 --warmup_steps 79"
+    run 24 hybrid-v3 nccl 16 32 v0 $V0
+    run 24 hybrid-v3 fsdp 16 32 v0 $V0 ;;
+hybrid_shard)  # the same version-0 test under FSDP2: Lanczos vectors sharded (default) against replicated (ADANA_SLQ_REPLICATED=1)
+    V0="--v3_rho_fixed 1 --lr 2.3454493653934658e-05 --hyb_msign_lr 0.001501087593851818 --hyb_va 64 --slq_s 0.5 --slq_tf32
+        --slq_first_refresh 4 --slq_max_gap 100000 --v3_kernel slq --v3_mom all --v3_split global --weight_decay 0.0031570639305445935
+        --wd_decaying --wd_ts 1267 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
+        --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --iterations 80 --warmup_steps 79"
+    run 24 hybrid-v3 fsdp 16 32 v0shard $V0
+    ADANA_SLQ_REPLICATED=1 run 24 hybrid-v3 fsdp 16 32 v0repl $V0 ;;
+hybrid_cmp)    # every refresh computed twice on the same weights and probe: replicated then sharded recurrence ([slq-compare] lines)
+    V0="--v3_rho_fixed 1 --lr 2.3454493653934658e-05 --hyb_msign_lr 0.001501087593851818 --hyb_va 64 --slq_s 0.5 --slq_tf32
+        --slq_first_refresh 4 --slq_max_gap 100000 --v3_kernel slq --v3_mom all --v3_split global --weight_decay 0.0031570639305445935
+        --wd_decaying --wd_ts 1267 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
+        --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --iterations 80 --warmup_steps 79"
+    ADANA_SLQ_COMPARE=1 run 24 hybrid-v3 fsdp 16 32 v0cmp $V0 ;;
 esac
 
 echo "=== summary ($SUMMARY)"

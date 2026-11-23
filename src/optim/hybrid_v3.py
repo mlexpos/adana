@@ -295,7 +295,8 @@ class HybridV3(HybridSLQ):
         if self.rho_fixed is not None:
             return (f"[hybrid-v0] refresh t={self.t}: rho fixed {self.rho_fixed:g}, T_eff {self.teff:.1f}, K {self.N:.4g}, "
                     f"S {self.S:.4g} -> r {self.r_hid:.3g} [{'tf32' if self.tf32_now else 'fp32'}, floor ratio "
-                    f"{self.floor_ratio:.2g}, m {self.last_refresh.get('m_used', 0):.0f}, {self.last_refresh.get('seconds', 0):.0f}s]")
+                    f"{self.floor_ratio:.2g}, m {self.last_refresh.get('m_used', 0):.0f}, {self.last_refresh.get('seconds', 0):.0f}s, "
+                    f"peak {self.last_refresh.get('peak_gib', float('nan')):.1f} GiB]")
         if not q:
             return f"[hybrid-v3] refresh t={self.t}: SLQ only (no halves or curvature batch yet)"
         return (f"[hybrid-v3] refresh t={q['t']}: E_c {q['E_c']:.4g} E_half {q['E_half']:.4g} -> E_delta {q['E_delta']:.4g} (rich gap "

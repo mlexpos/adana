@@ -21,9 +21,26 @@ import torch
 import torch.distributed as dist
 from torch.func import functional_call
 
+from .dtensor_utils import DTensor, is_dtensor, local
+from .dtensor_utils import like as _like_param
+
+try:
+    from torch.distributed.tensor import Partial as _Partial
+except ImportError:
+    _Partial = None
+
+
+def _allreduce_(t):
+    """Sum a tensor over the ranks in place (used for the partial sums of sharded vectors)."""
+    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+        dist.all_reduce(t)
+    return t
+
 
 # ------------------------------------------------------------------ small list-of-tensors helpers
 def _dot(a, b):
+    if a and is_dtensor(a[0]):                 # vectors sharded like FSDP2's parameters: local partial sums, one all-reduce
+        return _allreduce_(sum((local(x).double() * local(y).double()).sum() for x, y in zip(a, b)))
     return sum((x.double() * y.double()).sum() for x, y in zip(a, b))
 
 
@@ -39,12 +56,19 @@ def _apply_r(r, u):
 
 
 def _block_dots(a, b, splits):
-    """<a_T, b_T> per block: tensor i contributes splits[i] equal chunks along dim 0 (e.g. q, k, v of a fused QKV)."""
-    out = []
+    """<a_T, b_T> per block: tensor i contributes splits[i] equal chunks along dim 0 (e.g. q, k, v of a fused QKV).
+    One device sync for all blocks; sharded vectors (FSDP2): local partial sums and one all-reduce (one block per tensor only)."""
+    sharded = bool(a) and is_dtensor(a[0])
+    if sharded and any(k != 1 for k in splits):
+        raise NotImplementedError("block dots with splits > 1 on sharded vectors")
+    parts = []
     for x, y, k in zip(a, b, splits):
-        xy = x.double() * y.double()
-        out.extend([float(xy.sum())] if k == 1 else xy.reshape(k, -1).sum(1).tolist())
-    return out
+        xy = local(x).double() * local(y).double()
+        parts.append(xy.sum().reshape(1) if k == 1 else xy.reshape(k, -1).sum(1))
+    v = torch.cat(parts)
+    if sharded:
+        _allreduce_(v)
+    return v.tolist()
 
 
 # ------------------------------------------------------------------ Gauss-Newton operator
@@ -57,8 +81,9 @@ class GaussNewtonOperator:
     Distributed: each rank uses its own batch; products are averaged across ranks (identical Lanczos on all ranks).
     """
 
-    def __init__(self, model, names, params, x, y, r=None, fd_rel=1e-3, chunk=2, mode="jvp", cache=True, attn="math"):
+    def __init__(self, model, names, params, x, y, r=None, fd_rel=1e-3, chunk=2, mode="jvp", cache=True, attn="math", reduce=True):
         self.model, self.names, self.params = model, names, params
+        self.reduce = reduce                                # False: return this rank's product (ShardedOperator reduce-scatters it)
         self.x, self.y, self.r = x, y, r
         self.fd_rel, self.chunk = fd_rel, chunk
         if mode == "jvpt":                                  # jvp with the fused Triton attention derivative (attn_jvp.py)
@@ -155,7 +180,7 @@ class GaussNewtonOperator:
         d = _apply_r(self.r, u) if self.r is not None else u
         if self.mode == "jvp":
             out = self._call_jvp(d)
-            if self.world > 1:
+            if self.world > 1 and self.reduce:
                 for o in out:                                # per tensor: no flat copy of the whole product
                     dist.all_reduce(o)
                     o /= self.world
@@ -192,6 +217,31 @@ class GaussNewtonOperator:
         if self.r is not None:
             out = _apply_r(self.r, out)
         return out
+
+
+class ShardedOperator:
+    """The Lanczos vectors sharded like FSDP2's parameters (DTensors): u -> r G r u.  d = r u is formed on the shards and
+    all-gathered; `op` (a GaussNewtonOperator on the full weights with r=None, reduce=False) returns this rank's product on its
+    own curvature sequences; the products are summed over ranks by a reduce-scatter into the parameters' shards (Partial ->
+    Shard) and divided by the world size (the mean over ranks, as the replicated operator's all-reduce), then multiplied by r.
+    Communication per product equals the replicated operator's all-reduce (all-gather + reduce-scatter); the vectors and r
+    take 1 / world of the memory."""
+
+    def __init__(self, op, like, r):
+        self.op, self.like, self.r = op, like, r
+        self.world = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+
+    def __call__(self, u):
+        dfull = [(ri * ui).full_tensor() for ri, ui in zip(self.r, u)]
+        out = self.op(dfull)
+        del dfull
+        res = []
+        for k in range(len(out)):
+            ref = self.like[k]; mesh = ref.device_mesh
+            s = DTensor.from_local(out[k], mesh, [_Partial()] * mesh.ndim, run_check=False).redistribute(mesh, ref.placements)
+            out[k] = None
+            res.append(s.mul_(self.r[k]).div_(self.world))
+        return res
 
 
 # ------------------------------------------------------------------ quadrature (host side, numpy)
@@ -251,7 +301,9 @@ def slq(op, like, m_max=128, probes=1, chunk=8, eps=0.03, g=1.0, D_check=None, g
     out_th, out_w, out_wT, used, gaps, hists, corrs, convs = [], [], [], [], [], [], [], []
     n_hi, n_lo = [], []
     for _ in range(probes):
-        z = [(torch.randint(0, 2, x.shape, device=x.device, generator=generator, dtype=torch.int8).to(x.dtype) * 2 - 1)
+        # full draw with the generator shared by all ranks; for sharded vectors each rank keeps its slice (the same probe as the
+        # replicated recurrence)
+        z = [_like_param(torch.randint(0, 2, x.shape, device=x.device, generator=generator, dtype=torch.int8).to(x.dtype) * 2 - 1, x)
              for x in like]
         zn = math.sqrt(float(_dot(z, z)))
         v = [zi / zn for zi in z]
