@@ -484,7 +484,12 @@ class ADanaSLQ(ADana):
     # does not see: a resumed run would restart the estimator at t = 0 (r = 0 until the first refresh, refreshes on the early
     # schedule).  state_dict() adds every such attribute under "slq_extra" (tensors moved to the CPU) plus the probe generator's
     # state; load_state_dict() restores them.  Excluded: torch's own fields, parameter references, compiled functions, log_dir.
-    _EXTRA_SKIP = {"state", "param_groups", "defaults", "plist", "pidx", "gen", "log_dir", "_compiled_functions", "_gen_state"}
+    # Under FSDP the checkpoint goes through torch.distributed.checkpoint, whose get/set_optimizer_state_dict keep only "state" and
+    # "param_groups": the estimator state is then written separately (extra_state_dict(), rank 0, in meta.pt) and restored with
+    # load_extra_state_dict() after the sharded state (optim/utils.py).  It is the same on every rank (all its inputs are
+    # all-reduced), so rank 0's copy is the state of every rank.
+    _EXTRA_SKIP = {"state", "param_groups", "defaults", "plist", "pidx", "gen", "log_dir", "_compiled_functions", "_gen_state",
+                   "shadow_model", "_extra_elsewhere"}
 
     @staticmethod
     def _map_tensors(x, fn):
@@ -496,23 +501,25 @@ class ADanaSLQ(ADana):
             return type(x)(ADanaSLQ._map_tensors(v, fn) for v in x)
         return x
 
-    def state_dict(self):
-        sd = super().state_dict()
+    def extra_state_dict(self):
+        """The estimator state that Optimizer.state_dict() does not see (see above), on the CPU."""
+        def cpu(t):
+            if is_dtensor(t):   # a sharded tensor saved from one rank would silently keep one shard
+                raise TypeError("adana-slq: a DTensor in the estimator state cannot be checkpointed from one rank")
+            return t.detach().cpu().clone()
         extra = {}
         for k, v in self.__dict__.items():
             if k in self._EXTRA_SKIP or k.startswith(("_optimizer", "_warned", "_zero_grad", "_patched")) or callable(v):
                 continue
-            extra[k] = self._map_tensors(v, lambda t: t.detach().cpu().clone())
-        sd["slq_extra"] = extra
-        if self.gen is not None:
-            sd["slq_gen_state"] = self.gen.get_state()
-        return sd
+            try:
+                extra[k] = self._map_tensors(v, cpu)
+            except TypeError as e:
+                raise TypeError(f"{e} (attribute {k!r})") from None
+        return {"slq_extra": extra, "slq_gen_state": self.gen.get_state() if self.gen is not None else getattr(self, "_gen_state", None)}
 
-    def load_state_dict(self, state_dict):
-        state_dict = dict(state_dict)
-        extra = state_dict.pop("slq_extra", None)
-        gen_state = state_dict.pop("slq_gen_state", None)
-        super().load_state_dict(state_dict)
+    def load_extra_state_dict(self, sd):
+        self.__dict__.pop("_extra_elsewhere", None)
+        extra, gen_state = sd.get("slq_extra"), sd.get("slq_gen_state")
         if extra is None:
             print("[adana-slq] checkpoint has no estimator state (saved before 2026-11-11): the estimator restarts at t = 0")
             return
@@ -521,6 +528,21 @@ class ADanaSLQ(ADana):
             setattr(self, k, self._map_tensors(v, lambda t: t.to(dev)))
         self._gen_state = gen_state                     # applied when _refresh creates the generator on the batch's device
         self.gen = None
+
+    def state_dict(self):
+        sd = super().state_dict()
+        if getattr(self, "_extra_elsewhere", False):    # FSDP: written separately by optim/utils.save_checkpoint
+            return sd
+        sd.update(self.extra_state_dict())
+        return sd
+
+    def load_state_dict(self, state_dict):
+        state_dict = dict(state_dict)
+        extra = {k: state_dict.pop(k, None) for k in ("slq_extra", "slq_gen_state")}
+        super().load_state_dict(state_dict)
+        if getattr(self, "_extra_elsewhere", False):    # FSDP: restored by optim/utils.load_checkpoint after this call
+            return
+        self.load_extra_state_dict(extra)
 
     # ---------------------------------------------------------------- step
     @torch.no_grad()

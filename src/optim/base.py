@@ -13,7 +13,7 @@ from logger.logger import DynamicsLogger
 from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
                     load_worker_state, log_prodigy_lr, log_optimizer_schedules,
                     save_checkpoint, save_worker_state, rsync_if_slurm,
-                    visualize_routing, wait_for_rsync, all_ranks_ok,
+                    visualize_routing, wait_for_rsync, all_ranks_ok, has_tensor_state,
                     CKPT_WAIT, CKPT_FINAL_WAIT)
 from .tau_stats_collector import TauStatsCollector
 
@@ -32,6 +32,13 @@ def _checkpoint(label, ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg,
     part, the checkpoint is not copied and the previous copy on the project disk is kept.
     """
     master = distributed_backend.is_master_process()
+    if fsdp_all_ranks and not has_tensor_state(opt):
+        # FSDP: before the first step there is nothing to save, and torch's get_optimizer_state_dict would create the missing
+        # state by taking one optimizer step with zero gradients, which advances step counts (and the adana-slq estimator) of
+        # the run itself
+        if master:
+            print(f"[Checkpoint] SKIP  {label} iter={curr_iter}: no optimizer state yet")
+        return
     if not all_ranks_ok(wait_for_rsync(CKPT_WAIT) if master else True, cfg.device):
         if master:
             print(f"[Checkpoint] SKIP  {label} iter={curr_iter}: previous copy still running after {CKPT_WAIT:.0f}s; "

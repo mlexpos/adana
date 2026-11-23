@@ -105,6 +105,51 @@ hybrid_cmp)    # every refresh computed twice on the same weights and probe: rep
         --wd_decaying --wd_ts 1267 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
         --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --iterations 80 --warmup_steps 79"
     ADANA_SLQ_COMPARE=1 run 24 hybrid-v3 fsdp 16 32 v0cmp $V0 ;;
+ckpt)      # checkpoint and resume under FSDP2.  Version 0 at 16 heads, 160 steps (refreshes at t = 4, 8, ..., 64, 128, 153):
+           # two uninterrupted references (run-to-run noise) and one run stopped at step 40 (--iterations_to_run, as a chained
+           # job would) and auto-resumed to the end; the same for d-muon over 60 steps, stopped at 30.  Compare per-step train
+           # losses and the refreshes after the restart.
+    V0="--v3_rho_fixed 1 --lr 2.3454493653934658e-05 --hyb_msign_lr 0.001501087593851818 --hyb_va 64 --slq_s 0.5 --slq_tf32
+        --slq_first_refresh 4 --slq_max_gap 100000 --v3_kernel slq --v3_mom all --v3_split global --weight_decay 0.0031570639305445935
+        --wd_decaying --wd_ts 1267 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
+        --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --iterations 160 --warmup_steps 20"
+    DM="--iterations 60 --warmup_steps 10 --omega 0.001 --seed 0"
+    ckrun() {   # subfolder tag heads opt [args...]: one launch into $RESULTS_BASE_FOLDER/<subfolder>, checkpoints kept
+        local sub=$1 tag=$2 h=$3 opt=$4; shift 4
+        local log="$LOGDIR/ckpt_${tag}.log"
+        echo "[$(date +%T)] $tag ($sub)"
+        # --results_base_folder last on the command line (launch.sh appends extra args after its own; config.local resets the
+        # environment variable), so that references and the split run never share an experiment folder
+        bash scripts/launch.sh --arch enoki --heads "$h" --opt "$opt" --nproc 4 \
+            --distributed_backend fsdp --batch_size 16 --acc_steps 32 --eval_interval 100000 --log_interval 1 \
+            --latest_ckpt_interval 0 --permanent_ckpt_interval 0 --no_wandb "$@" --results_base_folder "$RESULTS_BASE_FOLDER/$sub" \
+            > "$log" 2>&1
+        echo "  exit $?; $(grep -c 'Train: Iter=' "$log") steps"
+        grep -h "Checkpoint\] \(START\|END\|SKIP\|ABANDON\|WARNING\)\|Resuming\|estimator restarts\|Error\|error:" "$log" | sort -u | cut -c1-250
+    }
+    ckrun v0_ref1  v0_ref1   16 hybrid-v3 $V0
+    ckrun v0_ref2  v0_ref2   16 hybrid-v3 $V0
+    ckrun v0_split v0_part1  16 hybrid-v3 $V0 --iterations_to_run 40
+    ckrun v0_split v0_part2  16 hybrid-v3 $V0
+    ckrun dm_ref1  dm_ref1   16 d-muon $DM
+    ckrun dm_ref2  dm_ref2   16 d-muon $DM
+    ckrun dm_split dm_part1  16 d-muon $DM --iterations_to_run 30
+    ckrun dm_split dm_part2  16 d-muon $DM
+    loss() { grep -ho "Train: Iter=[0-9]* .*train_loss=[0-9.]*" "$@" | sed 's/Train: Iter=\([0-9]*\) .*train_loss=/\1 /' | sort -k1,1 -u; }   # lexicographic, as join needs
+    cmp() {     # label file1 file2 resume-step: max |loss difference| before and after the resume step
+        join "$2" "$3" | awk -v R="$4" -v L="$1" '{d=$3-$2; if (d<0) d=-d; r=($1<=R)?"before":"after "; if (d>m[r]) m[r]=d; n[r]++}
+                                                 END{for (r in m) printf "  %s, steps %s resume: max %.4g over %d steps\n", L, r, m[r], n[r]}' | sort
+    }
+    for k in v0 dm; do
+        R=$([ $k = v0 ] && echo 40 || echo 30)
+        loss "$LOGDIR/ckpt_${k}_ref1.log" > "$LOGDIR/$k.ref1"; loss "$LOGDIR/ckpt_${k}_ref2.log" > "$LOGDIR/$k.ref2"
+        loss "$LOGDIR/ckpt_${k}_part1.log" "$LOGDIR/ckpt_${k}_part2.log" > "$LOGDIR/$k.split"
+        echo "=== $k: |train loss difference| against ref1 (resume at step $R)"
+        cmp "split" "$LOGDIR/$k.ref1" "$LOGDIR/$k.split" $R
+        cmp "ref2 " "$LOGDIR/$k.ref1" "$LOGDIR/$k.ref2" $R
+        echo "  final validation loss:"; grep -H "Eval: Iter=$([ $k = v0 ] && echo 160 || echo 60) " "$LOGDIR"/ckpt_${k}_*.log | sed 's/.*ckpt_//; s/.log:.*val_loss=/ /; s/ val_pp.*//'
+    done
+    echo "=== version-0 refreshes"; for x in v0_ref1 v0_ref2 v0_part1 v0_part2; do echo "-- $x"; grep -h "hybrid-v0\] refresh" "$LOGDIR/ckpt_$x.log" | cut -c1-120; done ;;
 esac
 
 echo "=== summary ($SUMMARY)"

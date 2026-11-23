@@ -278,6 +278,36 @@ def rsync_if_slurm(ckpt_dir: Path):
         _background_rsync(local_dir, project_dir)
 
 
+def has_tensor_state(opt):
+    """True once the optimizer holds per-parameter tensors (momentum buffers, moments); False before its first step."""
+    return any(torch.is_tensor(v) for st in getattr(opt, "state", {}).values() for v in st.values())
+
+
+def _prime_optimizer_state(opt):
+    """Create the optimizer's per-parameter tensors with one step at zero gradients and zero learning rates.
+
+    torch.distributed.checkpoint loads only the keys present in the state dict it is handed, so a fresh optimizer must already
+    hold every buffer.  torch's get_optimizer_state_dict does this step itself, but only when the state is empty: d-muon fills
+    its state with per-parameter flags (use_muon) at construction, so without this its momentum buffers and AdamW moments
+    would silently not be loaded.  The parameters are overwritten by the checkpoint afterwards."""
+    if has_tensor_state(opt):
+        return
+    params = [p for g in opt.param_groups for p in g["params"] if p.requires_grad]
+    if any(p.grad is not None for p in params):
+        return
+    for p in params:
+        p.grad = torch.zeros_like(p)
+    lrs = [g.get("lr") for g in opt.param_groups]
+    for g in opt.param_groups:
+        if "lr" in g:
+            g["lr"] = torch.tensor(0.0) if torch.is_tensor(g["lr"]) else 0.0
+    opt.step()
+    for g, lr in zip(opt.param_groups, lrs):
+        if lr is not None:
+            g["lr"] = lr
+    opt.zero_grad(set_to_none=True)
+
+
 def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, distributed_backend=None):
     # Determine if we should write to SLURM_TMPDIR first for speed + reliability.
     local_dir, project_ckpt_dir, is_slurm = _get_local_ckpt_dir(ckpt_dir)
@@ -301,8 +331,17 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, distributed_back
             get_model_state_dict, get_optimizer_state_dict, StateDictOptions,
         )
 
-        model_sd = get_model_state_dict(model)
-        opt_sd = get_optimizer_state_dict(model, opt)
+        # get_optimizer_state_dict keeps only "state" and "param_groups"; an optimizer's state outside them (the adana-slq
+        # estimator: step count, refresh schedule, quadrature, history, probe generator) is the same on every rank and goes
+        # into meta.pt below
+        has_extra = hasattr(opt, "extra_state_dict")
+        if has_extra:
+            opt._extra_elsewhere = True
+        try:
+            model_sd = get_model_state_dict(model)
+            opt_sd = get_optimizer_state_dict(model, opt)
+        finally:
+            opt.__dict__.pop("_extra_elsewhere", None)
         state_dict = {
             "model": model_sd,
             "optimizer": opt_sd,
@@ -316,6 +355,8 @@ def save_checkpoint(model, opt, scheduler, itr, ckpt_dir: Path, distributed_back
                 "scheduler": scheduler.state_dict() if scheduler is not None else None,
                 "itr": itr,
             }
+            if has_extra:
+                meta["opt_extra"] = opt.extra_state_dict()
             torch.save(meta, ckpt_dir / "meta.pt")
     else:
         # DDP / single: standard full state dict save
@@ -346,16 +387,26 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device, distributed_backen
 
         ckpt_dir = ckpt_path.parent if hasattr(ckpt_path, 'parent') else Path(ckpt_path).parent
 
-        model_sd = get_model_state_dict(model)
-        opt_sd = get_optimizer_state_dict(model, opt)
-        state_dict = {
-            "model": model_sd,
-            "optimizer": opt_sd,
-        }
-        dcp.load(state_dict, checkpoint_id=str(ckpt_dir / "sharded"))
+        # A fresh optimizer first takes one step with zero gradients and zero learning rates to create the state it loads into
+        # (_prime_optimizer_state); for adana-slq that step also advances the estimator, which load_extra_state_dict below
+        # overwrites with the saved one.
+        has_extra = hasattr(opt, "extra_state_dict")
+        if has_extra:
+            opt._extra_elsewhere = True
+        try:
+            _prime_optimizer_state(opt)
+            model_sd = get_model_state_dict(model)
+            opt_sd = get_optimizer_state_dict(model, opt)
+            state_dict = {
+                "model": model_sd,
+                "optimizer": opt_sd,
+            }
+            dcp.load(state_dict, checkpoint_id=str(ckpt_dir / "sharded"))
 
-        set_model_state_dict(model, state_dict["model"])
-        set_optimizer_state_dict(model, opt, state_dict["optimizer"])
+            set_model_state_dict(model, state_dict["model"])
+            set_optimizer_state_dict(model, opt, state_dict["optimizer"])
+        finally:
+            opt.__dict__.pop("_extra_elsewhere", None)
 
         # Load scheduler and iteration from meta (saved by rank 0)
         try:
@@ -364,6 +415,8 @@ def load_checkpoint(model, opt, scheduler, ckpt_path, device, distributed_backen
             meta = torch.load(ckpt_dir / "meta.pt", map_location='cpu', weights_only=False)
         if scheduler is not None and meta.get("scheduler") is not None:
             scheduler.load_state_dict(meta["scheduler"])
+        if has_extra:
+            opt.load_extra_state_dict(meta.get("opt_extra", {}))
         return meta["itr"]
     else:
         # DDP / single: standard full state dict load
