@@ -46,7 +46,7 @@ import torch.distributed as dist
 
 from .adana import ADana
 from .slq_torch import GaussNewtonOperator, ShardedOperator, effective_tokens, slq
-from .dtensor_utils import full, is_dtensor, materialize, release
+from .dtensor_utils import full, is_dtensor, local, materialize, release, sum_local_scalars
 
 
 def _alloc_group(name):
@@ -296,23 +296,40 @@ class ADanaSLQ(ADana):
         return a
 
     # ---------------------------------------------------------------- estimator inputs from the training loop
+    @property
+    def split_needed(self):
+        """The rule reads the split-half statistics: the buffer signal G_T (waterfill, waterfill_v2, typed) or mu (k' > 0).
+        Otherwise (global, independent or typed_v2 with k' = 0) they only feed the B / B_noise diagnostic."""
+        return self.alloc in ("waterfill", "waterfill_v2", "typed") or self.kprime > 0
+
+    @property
+    def fsdp_split_ok(self):
+        """Split-half statistics under FSDP2 (the trainer reduce-scatters the gradient at the middle micro-step as well): only
+        through this class's set_split_stats, which works on local shards; subclasses with their own are not ported."""
+        return type(self).set_split_stats is ADanaSLQ.set_split_stats
+
     @torch.no_grad()
     def set_split_stats(self, half, full):
         """half / full: per-parameter gradients accumulated over the first half / all micro-steps (averaged over ranks).
-        g1 = 2 half and g2 = 2 (full - half) are the mean gradients of the two halves of the (global) batch."""
+        g1 = 2 half and g2 = 2 (full - half) are the mean gradients of the two halves of the (global) batch.
+        Under FSDP2 the gradients are sharded: the three sums per tensor are taken on the local shards and summed across ranks in
+        one all-reduce (one device sync in all cases)."""
         L = len(self.plist)
         xg, dg, dz = np.zeros(L), np.zeros(L), np.zeros(L)
+        idx, vals = [], []
         for i, (p, h, f) in enumerate(zip(self.plist, half, full)):
             if h is None or f is None:
                 continue
-            g1 = 2.0 * h.float(); g2 = 2.0 * (f.float() - h.float())
+            hl, fl = local(h).float(), local(f).float()
+            g1 = 2.0 * hl; g2 = 2.0 * (fl - hl)
             d = g1 - g2
-            xg[i] = float((g1 * g2).sum()); dg[i] = float((d * d).sum())
+            dd = d * d
             st = self.state.get(p, {})
-            if "v" in st:
-                dz[i] = float((d * d / (torch.sqrt(st["v"]) + self.epsilon)).sum())
-            else:
-                dz[i] = dg[i]
+            dzi = (dd / (torch.sqrt(local(st["v"]).float()) + self.epsilon)).sum() if "v" in st else dd.sum()
+            idx.append(i); vals += [(g1 * g2).sum(), dd.sum(), dzi]
+        sums = sum_local_scalars(vals, any(is_dtensor(p) for p in self.plist))
+        for k, i in enumerate(idx):
+            xg[i], dg[i], dz[i] = sums[3 * k], sums[3 * k + 1], sums[3 * k + 2]
         self._accumulate_split(xg, dg, dz)
 
     def _accumulate_split(self, xg, dg, dz):
@@ -571,8 +588,11 @@ class ADanaSLQ(ADana):
                 state["step"] += 1
                 step = state["step"]
                 dev = p.device
-                fn = self._get_compiled_fn(p.shape)
-                _, _, mz2 = fn(p, p.grad, state["m"], state["v"],
+                # the update is elementwise, so under FSDP2 it runs on this rank's shards (plain tensors, in place: the compiled
+                # function never sees a DTensor) and mz2 is this rank's part of |m_T|_z^2, summed across ranks below
+                pl_, gl, ml, vl = local(p), local(p.grad), local(state["m"]), local(state["v"])
+                fn = self._get_compiled_fn(pl_.shape)
+                _, _, mz2 = fn(pl_, gl, ml, vl,
                                torch.tensor(self.delta / (self.delta + step), device=dev, dtype=torch.float32),
                                torch.tensor(g2, device=dev, dtype=torch.float32),
                                torch.tensor(A_by_param[id(p)], device=dev, dtype=torch.float32),
@@ -581,9 +601,10 @@ class ADanaSLQ(ADana):
                                torch.tensor(step, device=dev, dtype=torch.float32),
                                eps, self.clipsnr, self.wd_decaying, self.wd_ts)
                 state["mz2"] = mz2
-        for i, p in enumerate(self.plist):
-            if "mz2" in self.state.get(p, {}):
-                self.mz2[i] = float(self.state[p]["mz2"])
+        idx = [i for i, p in enumerate(self.plist) if "mz2" in self.state.get(p, {})]
+        sharded = any(is_dtensor(p) for p in self.plist)
+        for i, v in zip(idx, sum_local_scalars([self.state[self.plist[i]]["mz2"] for i in idx], sharded)):
+            self.mz2[i] = v
         return loss
 
     # ---------------------------------------------------------------- logging

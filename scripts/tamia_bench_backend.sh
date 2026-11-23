@@ -48,6 +48,27 @@ run() {   # heads opt backend micro acc [tag extra-args...]
     find "$RESULTS_BASE_FOLDER" -path "$LOGDIR" -prune -o -type d -name "ckpts" -prune -exec rm -rf {} + 2>/dev/null
 }
 
+# checkpoint tests (RUNSET=ckpt, adanaslq)
+ckrun() {   # subfolder tag heads opt [args...]: one launch into $RESULTS_BASE_FOLDER/<subfolder>, checkpoints kept
+            # (BE=nccl for DDP; FSDP2 by default)
+    local sub=$1 tag=$2 h=$3 opt=$4; shift 4
+    local log="$LOGDIR/ckpt_${tag}.log"
+    echo "[$(date +%T)] $tag ($sub)"
+    # --results_base_folder last on the command line (launch.sh appends extra args after its own; config.local resets the
+    # environment variable), so that references and the split run never share an experiment folder
+    bash scripts/launch.sh --arch enoki --heads "$h" --opt "$opt" --nproc 4 \
+        --distributed_backend "${BE:-fsdp}" --batch_size 16 --acc_steps 32 --eval_interval 100000 --log_interval 1 \
+        --latest_ckpt_interval 0 --permanent_ckpt_interval 0 --no_wandb "$@" --results_base_folder "$RESULTS_BASE_FOLDER/$sub" \
+        > "$log" 2>&1
+    echo "  exit $?; $(grep -c 'Train: Iter=' "$log") steps"
+    grep -h "Checkpoint\] \(START\|END\|SKIP\|ABANDON\|WARNING\)\|Resuming\|estimator restarts\|Error\|error:" "$log" | sort -u | cut -c1-250
+}
+loss() { grep -ho "Train: Iter=[0-9]* .*train_loss=[0-9.]*" "$@" | sed 's/Train: Iter=\([0-9]*\) .*train_loss=/\1 /' | sort -k1,1 -u; }   # lexicographic, as join needs
+cmp() {     # label file1 file2 resume-step: max |loss difference| before and after the resume step
+    join "$2" "$3" | awk -v R="$4" -v L="$1" '{d=$3-$2; if (d<0) d=-d; r=($1<=R)?"before":"after "; if (d>m[r]) m[r]=d; n[r]++}
+                                             END{for (r in m) printf "  %s, steps %s resume: max %.4g over %d steps\n", L, r, m[r], n[r]}' | sort
+}
+
 # global batch 512 = micro x acc (launch.sh: --batch_size x --acc_steps is the global batch).  RUNSET picks the list.
 case "${RUNSET:-backend}" in
 backend)   # DDP against FSDP (job 776257)
@@ -114,19 +135,6 @@ ckpt)      # checkpoint and resume under FSDP2.  Version 0 at 16 heads, 160 step
         --wd_decaying --wd_ts 1267 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
         --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --iterations 160 --warmup_steps 20"
     DM="--iterations 60 --warmup_steps 10 --omega 0.001 --seed 0"
-    ckrun() {   # subfolder tag heads opt [args...]: one launch into $RESULTS_BASE_FOLDER/<subfolder>, checkpoints kept
-        local sub=$1 tag=$2 h=$3 opt=$4; shift 4
-        local log="$LOGDIR/ckpt_${tag}.log"
-        echo "[$(date +%T)] $tag ($sub)"
-        # --results_base_folder last on the command line (launch.sh appends extra args after its own; config.local resets the
-        # environment variable), so that references and the split run never share an experiment folder
-        bash scripts/launch.sh --arch enoki --heads "$h" --opt "$opt" --nproc 4 \
-            --distributed_backend fsdp --batch_size 16 --acc_steps 32 --eval_interval 100000 --log_interval 1 \
-            --latest_ckpt_interval 0 --permanent_ckpt_interval 0 --no_wandb "$@" --results_base_folder "$RESULTS_BASE_FOLDER/$sub" \
-            > "$log" 2>&1
-        echo "  exit $?; $(grep -c 'Train: Iter=' "$log") steps"
-        grep -h "Checkpoint\] \(START\|END\|SKIP\|ABANDON\|WARNING\)\|Resuming\|estimator restarts\|Error\|error:" "$log" | sort -u | cut -c1-250
-    }
     ckrun v0_ref1  v0_ref1   16 hybrid-v3 $V0
     ckrun v0_ref2  v0_ref2   16 hybrid-v3 $V0
     ckrun v0_split v0_part1  16 hybrid-v3 $V0 --iterations_to_run 40
@@ -135,11 +143,6 @@ ckpt)      # checkpoint and resume under FSDP2.  Version 0 at 16 heads, 160 step
     ckrun dm_ref2  dm_ref2   16 d-muon $DM
     ckrun dm_split dm_part1  16 d-muon $DM --iterations_to_run 30
     ckrun dm_split dm_part2  16 d-muon $DM
-    loss() { grep -ho "Train: Iter=[0-9]* .*train_loss=[0-9.]*" "$@" | sed 's/Train: Iter=\([0-9]*\) .*train_loss=/\1 /' | sort -k1,1 -u; }   # lexicographic, as join needs
-    cmp() {     # label file1 file2 resume-step: max |loss difference| before and after the resume step
-        join "$2" "$3" | awk -v R="$4" -v L="$1" '{d=$3-$2; if (d<0) d=-d; r=($1<=R)?"before":"after "; if (d>m[r]) m[r]=d; n[r]++}
-                                                 END{for (r in m) printf "  %s, steps %s resume: max %.4g over %d steps\n", L, r, m[r], n[r]}' | sort
-    }
     for k in v0 dm; do
         R=$([ $k = v0 ] && echo 40 || echo 30)
         loss "$LOGDIR/ckpt_${k}_ref1.log" > "$LOGDIR/$k.ref1"; loss "$LOGDIR/ckpt_${k}_ref2.log" > "$LOGDIR/$k.ref2"
@@ -150,6 +153,72 @@ ckpt)      # checkpoint and resume under FSDP2.  Version 0 at 16 heads, 160 step
         echo "  final validation loss:"; grep -H "Eval: Iter=$([ $k = v0 ] && echo 160 || echo 60) " "$LOGDIR"/ckpt_${k}_*.log | sed 's/.*ckpt_//; s/.log:.*val_loss=/ /; s/ val_pp.*//'
     done
     echo "=== version-0 refreshes"; for x in v0_ref1 v0_ref2 v0_part1 v0_part2; do echo "-- $x"; grep -h "hybrid-v0\] refresh" "$LOGDIR/ckpt_$x.log" | cut -c1-120; done ;;
+adanaslq|adanaslq_global)
+           # adana-slq (SLQ-ADana: ADana moments, SLQ long momentum) under FSDP2 against DDP, and checkpoint/resume.  16 heads,
+           # B = 512, lr = ADana's formula x 1/8, s = 1/2, 160 steps (refreshes at t = 4, 8, ..., 64, 128, 153).  DDP once, FSDP2
+           # twice (run-to-run noise); one FSDP2 and one DDP run stopped at step 40 and resumed.
+           # adanaslq: water-filling with split-half noise statistics (k' = 64).  adanaslq_global: one global ratio min{S/N, cap},
+           # k' = 0 (no split statistics under FSDP2: the rule does not read them).
+    if [ "$RUNSET" = adanaslq_global ]; then ALLOC="--slq_alloc global --slq_kprime 0"; else ALLOC="--slq_alloc waterfill --slq_kprime 64"; fi
+    AS="--slq_s 0.5 $ALLOC --slq_chunk 1 --slq_no_cache --lr 4.772659519385709e-05 --seed 0
+        --slq_first_refresh 4 --slq_max_gap 100000 --slq_refresh_sched 2@128,1.1892 --iterations 160 --warmup_steps 20"
+    BE=nccl ckrun as_ddp     as_ddp      16 adana-slq $AS
+    ckrun         as_ref1    as_ref1     16 adana-slq $AS
+    ckrun         as_ref2    as_ref2     16 adana-slq $AS
+    ckrun         as_split   as_part1    16 adana-slq $AS --iterations_to_run 40
+    ckrun         as_split   as_part2    16 adana-slq $AS
+    BE=nccl ckrun as_dsplit  as_dpart1   16 adana-slq $AS --iterations_to_run 40
+    BE=nccl ckrun as_dsplit  as_dpart2   16 adana-slq $AS
+    for x in ddp ref1 ref2; do loss "$LOGDIR/ckpt_as_$x.log" > "$LOGDIR/as.$x"; done
+    loss "$LOGDIR/ckpt_as_part1.log" "$LOGDIR/ckpt_as_part2.log" > "$LOGDIR/as.split"
+    loss "$LOGDIR/ckpt_as_dpart1.log" "$LOGDIR/ckpt_as_dpart2.log" > "$LOGDIR/as.dsplit"
+    echo "=== adana-slq: |train loss difference| against FSDP ref1 (resume at step 40)"
+    cmp "FSDP ref2  " "$LOGDIR/as.ref1" "$LOGDIR/as.ref2" 40
+    cmp "DDP        " "$LOGDIR/as.ref1" "$LOGDIR/as.ddp" 40
+    cmp "FSDP split " "$LOGDIR/as.ref1" "$LOGDIR/as.split" 40
+    cmp "DDP split  " "$LOGDIR/as.ddp" "$LOGDIR/as.dsplit" 40
+    echo "  final validation loss:"; grep -H "Eval: Iter=160 " "$LOGDIR"/ckpt_as_*.log | sed 's/.*ckpt_//; s/.log:.*val_loss=/ /; s/ val_pp.*//'
+    echo "  median step time (s, steps 20-40):"
+    for x in ddp ref1 ref2 part1 dpart1; do printf "    %-7s %s\n" $x "$(grep -o "Train: Iter=[0-9]* .*iter_dt=[0-9.e+-]*s" "$LOGDIR/ckpt_as_$x.log" \
+        | awk -F'Iter=' '{split($2,a," "); if (a[1]+0 >= 20 && a[1]+0 <= 40) print}' | grep -o "iter_dt=[0-9.e+-]*" | cut -d= -f2 | sort -g \
+        | awk '{v[NR]=$1} END{if (NR) print v[int((NR+1)/2)]}')"; done
+    echo "=== estimator per refresh (slq_diag.npz): N, S, mu, B/B_noise, mean ratio, budget spent, refresh peak GiB"
+    ~/danastarenv/bin/python - "$RESULTS_BASE_FOLDER" <<'PY'
+import glob, sys, numpy as np
+root = sys.argv[1]
+for sub in ["as_ddp", "as_ref1", "as_ref2", "as_split", "as_dsplit"]:
+    f = glob.glob(f"{root}/{sub}/*/slq_diag.npz")
+    if not f:
+        print(f"-- {sub}: no slq_diag.npz"); continue
+    z = np.load(f[0], allow_pickle=True)
+    print(f"-- {sub}")
+    for i, t in enumerate(z["t"]):
+        pk = z["peak_gib"][i] if "peak_gib" in z.files else float("nan")
+        print(f"   t={int(t):4d}  N {z['N'][i]:.4g}  S {z['S'][i]:.4g}  mu {z['mu'][i]:.3g}  B/Bn {z['bnr'][i]:.4g}  "
+              f"ratio {np.mean(z['ratio'][i]):.3g}  spent {z['spent'][i]:.3g}  G>0 {int(np.sum(z['G'][i] > 0))}/{len(z['G'][i])}  peak {pk:.1f}")
+PY
+    ;;
+h28smoke)  # before the 28-head campaign: version 0 at 28 heads, B = 512, s_b = 1/2, the campaign's exact command (rate 1.2175e-3,
+           # T = 18873), FSDP2.  (1) a 35-minute deadline: the trainer must checkpoint and stop on its own; (2) resume, 20 more
+           # steps; (3) a 30-step d-muon run at 16 heads launched twice: the second launch must exit at once ("run is complete").
+           # Reports step time, peak memory (training and refresh), refresh times and the checkpoint size.
+    V28="--v3_rho_fixed 1 --lr 1.9023588997557684e-05 --hyb_msign_lr 0.0012175096958436918 --hyb_va 64 --slq_s 0.5 --slq_tf32
+         --slq_first_refresh 4 --slq_max_gap 100000 --v3_kernel slq --v3_mom all --v3_split global --weight_decay 0.0021197668256491787
+         --wd_decaying --wd_ts 1887 --slq_no_cache --seed 0 --slq_gn jvpt --slq_chunk 4 --slq_fp32_floor 2
+         --slq_refresh_sched 2@128,1.1892 --slq_m 512 --slq_aitken_strict --eval_interval 50"
+    ADANA_DEADLINE=$(( $(date +%s) + 2100 )) ckrun h28 h28_part1 28 hybrid-v3 $V28
+    ckrun h28 h28_part2 28 hybrid-v3 $V28 --iterations_to_run 20
+    ckrun dmdone dm_done1 16 d-muon --iterations 30 --warmup_steps 5 --omega 0.001 --latest_ckpt_interval 10
+    ckrun dmdone dm_done2 16 d-muon --iterations 30 --warmup_steps 5 --omega 0.001 --latest_ckpt_interval 10
+    for x in h28_part1 h28_part2 dm_done1 dm_done2; do
+        f="$LOGDIR/ckpt_$x.log"; echo "-- $x"
+        grep -h "\[deadline\]\|\[resume\]\|Resuming\|Checkpoint\] \(END\|SKIP\|ABANDON\)\|Error" "$f" | sort -u | cut -c1-200
+        grep -o "Train: Iter=[0-9]* .*iter_dt=[0-9.e+-]*s" "$f" | awk -F'Iter=' '{split($2,a," "); if (a[1]+0 >= 10) print}' \
+            | grep -o "iter_dt=[0-9.e+-]*" | cut -d= -f2 | sort -g | awk '{v[NR]=$1} END{if (NR) printf "   median step %.2f s over %d steps\n", v[int((NR+1)/2)], NR}'
+        grep -o "peak_allocated=[0-9.]*" "$f" | cut -d= -f2 | sort -g | tail -1 | sed 's/^/   max training peak_allocated GiB /'
+        grep -h "hybrid-v0\] refresh" "$f" | cut -c1-170
+    done
+    du -sh "$RESULTS_BASE_FOLDER"/h28/*/ckpts/latest 2>/dev/null ;;
 esac
 
 echo "=== summary ($SUMMARY)"

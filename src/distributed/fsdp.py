@@ -49,6 +49,7 @@ class FSDPDistributedBackend(DistributedBackend):
         # "step": parameters are gathered at the first micro-step's forward and stay unsharded until the last micro-step's
         # backward (one all-gather and one reduce-scatter per optimizer step); "microstep": reshard after every forward and backward.
         self.reshard = getattr(args, "fsdp_reshard", "step")
+        self.sync_microsteps = set()
 
         # Tensor parallelism configuration
         self.tp_size = getattr(args, "tp_size", 1)
@@ -179,8 +180,10 @@ class FSDPDistributedBackend(DistributedBackend):
         # Non-final micro-steps: no reduce-scatter (gradients accumulate locally, in reduce_dtype) and, with --fsdp_reshard step,
         # no resharding after backward either, so the next micro-step reuses the gathered parameters.  The final micro-step
         # reduce-scatters and reshards, so the optimizer sees sharded parameters and gradients.
+        # sync_microsteps: further micro-steps whose backward also reduce-scatters (the trainer sets the middle one for adana-slq's
+        # split-half statistics: p.grad then holds the first half's mean gradient, and FSDP2 adds the final reduce-scatter to it)
         last = microstep_idx == gradient_accumulation_steps - 1
-        model.set_requires_gradient_sync(last)
+        model.set_requires_gradient_sync(last or microstep_idx in self.sync_microsteps)
         if self.reshard == "step":
             model.set_reshard_after_backward(last)
         try:

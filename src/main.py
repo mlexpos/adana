@@ -548,6 +548,20 @@ def main(args, parser):
         elif distributed_backend.is_master_process():
             exp_dir.mkdir(parents=True, exist_ok=True)
 
+    # A chained job (scripts/tamia_job.sh: jobs of at most 24 h, each resuming the last) whose run has already reached its last
+    # iteration: nothing to train.  Exit before compiling, and without rewriting summary.json.  (FSDP checkpoints only: their
+    # meta.pt holds the iteration; a DDP main.pt is too large to open for this.)
+    if args.resume_from is not None:
+        rdir = Path(args.resume_from)
+        rdir = rdir.parent if rdir.suffix == ".pt" else rdir
+        if (rdir / "meta.pt").exists():
+            itr = torch.load(rdir / "meta.pt", map_location="cpu", weights_only=False).get("itr", -1)
+            if itr >= args.iterations:
+                if distributed_backend.is_master_process():
+                    print(f"[resume] {rdir} is at iteration {itr} >= {args.iterations}: the run is complete; nothing to do")
+                distributed_backend.finalize()
+                return
+
     stats = train(
         model=model,
         opt=opt,

@@ -18,13 +18,59 @@ from .utils import (eval, get_batch, get_parameter_norms, load_checkpoint,
 from .tau_stats_collector import TauStatsCollector
 
 
+class _StepProfiler:
+    """ADANA_PROFILE="start:steps": a torch.profiler trace of optimizer steps start .. start+steps-1 (rank 0 only; the other ranks run
+    unprofiled), for performance analysis.  Writes <exp_dir>/profile_rank0.json: every kernel and every aten op with device time,
+    grouped by name and input shapes (GEMMs can then be attributed to layers by shape), and the wall time of the profiled steps;
+    ADANA_PROFILE_TRACE=1 also writes a Chrome trace.  Off unless the variable is set."""
+
+    def __init__(self, exp_dir, master):
+        spec = __import__("os").environ.get("ADANA_PROFILE", "")
+        self.on = bool(spec) and master
+        if self.on:
+            a, b = spec.split(":")
+            self.start, self.steps, self.exp_dir, self.prof = int(a), int(b), Path(exp_dir), None
+
+    def tick(self, curr_iter):
+        if not self.on:
+            return
+        if curr_iter == self.start:
+            from torch.profiler import ProfilerActivity, profile
+            torch.cuda.synchronize()
+            self.prof = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True)
+            self.prof.__enter__()
+            self.t0 = time.perf_counter()
+        elif curr_iter == self.start + self.steps and self.prof is not None:
+            torch.cuda.synchronize()
+            wall = time.perf_counter() - self.t0
+            self.prof.__exit__(None, None, None)
+            import json
+            import os
+            rows = []
+            for e in self.prof.key_averages(group_by_input_shape=True):
+                dt = float(getattr(e, "device_time_total", 0) or 0)
+                sdt = float(getattr(e, "self_device_time_total", 0) or 0)
+                if dt <= 0 and sdt <= 0:
+                    continue
+                rows.append(dict(key=e.key, shapes=str(e.input_shapes), count=int(e.count), self_us=sdt, total_us=dt,
+                                 device_type=str(getattr(e, "device_type", ""))))
+            self.exp_dir.mkdir(parents=True, exist_ok=True)
+            with open(self.exp_dir / "profile_rank0.json", "w") as f:
+                json.dump(dict(start=self.start, steps=self.steps, wall_s=wall, rows=rows), f)
+            if os.environ.get("ADANA_PROFILE_TRACE") == "1":
+                self.prof.export_chrome_trace(str(self.exp_dir / "profile_rank0.trace.json"))
+            print(f"[profile] steps {self.start}..{self.start + self.steps - 1}: {wall / self.steps:.3f} s/step; "
+                  f"{len(rows)} rows -> {self.exp_dir / 'profile_rank0.json'}", flush=True)
+            self.on = False
+
+
 def _all_ranks_checkpoint(backend):
     """Check if checkpoint save/load requires all ranks (e.g. FSDP)."""
     return hasattr(backend, 'all_ranks_checkpoint') and backend.all_ranks_checkpoint()
 
 
 def _checkpoint(label, ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader,
-                fsdp_all_ranks):
+                fsdp_all_ranks, wait=CKPT_WAIT):
     """Write one checkpoint; never stop training.
 
     Every rank calls this. All ranks agree to skip the checkpoint if the copy of the previous one to the project disk
@@ -39,9 +85,9 @@ def _checkpoint(label, ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg,
         if master:
             print(f"[Checkpoint] SKIP  {label} iter={curr_iter}: no optimizer state yet")
         return
-    if not all_ranks_ok(wait_for_rsync(CKPT_WAIT) if master else True, cfg.device):
+    if not all_ranks_ok(wait_for_rsync(wait) if master else True, cfg.device):
         if master:
-            print(f"[Checkpoint] SKIP  {label} iter={curr_iter}: previous copy still running after {CKPT_WAIT:.0f}s; "
+            print(f"[Checkpoint] SKIP  {label} iter={curr_iter}: previous copy still running after {wait:.0f}s; "
                   f"training continues")
         return
     if master:
@@ -156,15 +202,25 @@ def train(
     model.train()
 
     # adana-slq: split-half gradient statistics (needs >= 2 micro-steps) and quadrature refreshes
-    # split-batch statistics read p.grad half-way through the accumulation window; under FSDP2 gradients are only reduced (and
-    # p.grad populated) at the last micro-step, so they are off there (version 0's rule does not use them; diagnostics only)
+    # split-batch statistics read p.grad half-way through the accumulation window.  DDP: the local half is all-reduced below.
+    # FSDP2: gradients are only reduced (and p.grad populated) at a syncing micro-step, so the middle micro-step syncs as well (one
+    # more reduce-scatter per step, as DDP's extra all-reduce), for the optimizers whose split statistics run on sharded gradients
+    # (adana-slq) and whose rule reads them (split_needed: under FSDP the extra reduce-scatter is not spent on the B / B_noise
+    # diagnostic alone); off for the others (version 0's rule does not use them)
+    fsdp = getattr(distributed_backend, "_is_fsdp", False)
     slq_split = (hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps >= 2
-                 and not getattr(distributed_backend, "_is_fsdp", False))
+                 and (not fsdp or (getattr(opt, "fsdp_split_ok", False) and getattr(opt, "split_needed", True))))
+    if slq_split and fsdp:
+        distributed_backend.sync_microsteps = {cfg.acc_steps // 2 - 1}
     if hasattr(opt, "set_split_stats") and getattr(opt, "split_stats", True) and cfg.acc_steps < 2 and distributed_backend.is_master_process():
         print("[adana-slq] acc_steps < 2: no split-half noise statistics (mu = 1, water-filling falls back to global)")
     if hasattr(opt, "log_dir") and opt.log_dir is None and distributed_backend.is_master_process():
         opt.log_dir = Path(exp_dir)
 
+    profiler = _StepProfiler(exp_dir, distributed_backend.is_master_process())
+    deadline = float(__import__("os").environ.get("ADANA_DEADLINE", "0") or 0)
+    if deadline and distributed_backend.is_master_process():
+        print(f"[deadline] checkpoint and stop at {time.strftime('%F %T', time.localtime(deadline))}")
     while curr_iter <= cfg.iterations:
         # Save permanent checkpoint
         if cfg.permanent_ckpt_interval > 0:
@@ -221,9 +277,23 @@ def train(
                     _checkpoint("permanent", ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend, train_reader, _fsdp_all_ranks)
             break
 
+        # ADANA_DEADLINE (unix time; scripts/tamia_job.sh sets it a margin before the job's time limit): write the latest checkpoint
+        # and stop, for the next job of the chain to resume.  Checked every 10 steps; every rank must agree (the FSDP checkpoint is
+        # a collective), so the decision is all-reduced.
+        if (deadline and iterations_in_run > 0 and curr_iter % 10 == 0 and curr_iter < cfg.iterations
+                and not all_ranks_ok(time.time() < deadline, cfg.device)):
+            ckpt_dir = exp_dir / "ckpts" / "latest"
+            _checkpoint("latest (job deadline)", ckpt_dir, curr_iter, model, opt, scheduler, exp_dir, cfg, distributed_backend,
+                        train_reader, _fsdp_all_ranks, wait=900)    # the margin covers a copy in flight
+            if distributed_backend.is_master_process():
+                print(f"[deadline] stopped at iteration {curr_iter} of {cfg.iterations}; the next job resumes from {ckpt_dir}")
+            break
+
         if curr_iter == cfg.iterations:
             # Save checkpoints and evaluate at final iteration, but no need to train further
             break
+
+        profiler.tick(curr_iter)
 
         # Train model
         t_start = time.perf_counter_ns()
@@ -244,7 +314,7 @@ def train(
                 slq_half = [p.grad.detach().clone() if p.grad is not None else None for p in opt.plist]
 
         if slq_split:
-            if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+            if not fsdp and dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
                 live = [h for h in slq_half if h is not None]
                 flat = torch.cat([h.reshape(-1).float() for h in live])
                 dist.all_reduce(flat)

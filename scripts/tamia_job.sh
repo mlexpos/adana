@@ -27,6 +27,18 @@ mkdir -p "$MPLCONFIGDIR" "$WANDB_CACHE_DIR" "$WANDB_CONFIG_DIR"
 export TIKTOKEN_CACHE_DIR="${TIKTOKEN_CACHE_DIR:-$HOME/tiktoken_cache}"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 
+# Runs longer than one job (partitions stop at 24 h) are chains of jobs (sbatch --dependency=afterany:<previous>, same arguments,
+# auto-resume).  ADANA_DEADLINE: ADANA_MARGIN seconds (default 45 min: a refresh in progress, a checkpoint copy in flight, the
+# final copy) before this job's end, the trainer writes the latest checkpoint and stops; the next job resumes from it, and a
+# job whose run is already complete exits at once (src/main.py).
+if [ -n "${SLURM_JOB_ID:-}" ] && [ -z "${ADANA_DEADLINE:-}" ]; then
+    END=$(squeue -h -j "$SLURM_JOB_ID" -o %e 2>/dev/null)
+    if END_S=$(date -d "$END" +%s 2>/dev/null); then
+        export ADANA_DEADLINE=$((END_S - ${ADANA_MARGIN:-2700}))
+        echo "job ends $END; checkpoint and stop at $(date -d @$ADANA_DEADLINE '+%F %T')"
+    fi
+fi
+
 NGPU=$(nvidia-smi -L 2>/dev/null | wc -l)
 export NPROC_PER_NODE="${NPROC_PER_NODE:-${NGPU:-1}}"
 
