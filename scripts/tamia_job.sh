@@ -2,6 +2,8 @@
 #SBATCH --account=aip-cypaquet
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=h100:4
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=0
 #SBATCH --time=3:00:00
 #SBATCH --output=/scratch/e/epaq/adana-runs/slurm/%x_%j.out
 # =============================================================================
